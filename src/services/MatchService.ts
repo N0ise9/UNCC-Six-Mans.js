@@ -49,6 +49,24 @@ export async function createRandomMatch(): Promise<ActiveMatchCreated> {
   return await startMatch(createdTeams);
 }
 
+export async function getActiveMatch(playerInMatchId: string): Promise<ActiveMatchCreated> {
+  const teams = await ActiveMatchRepository.getAllPlayersInActiveMatch(playerInMatchId);
+  const { blueProbabilityDecimal, orangeProbabilityDecimal } = calculateProbabilityDecimal(teams);
+
+  return {
+    blue: {
+      mmrStake: calculateMMR(blueProbabilityDecimal),
+      players: teams.blueTeam,
+      winProbability: calculateProbability(blueProbabilityDecimal),
+    },
+    orange: {
+      mmrStake: calculateMMR(orangeProbabilityDecimal),
+      players: teams.orangeTeam,
+      winProbability: calculateProbability(orangeProbabilityDecimal),
+    },
+  };
+}
+
 export async function createMatchFromChosenTeams(): Promise<ActiveMatchCreated> {
   const createdTeams: NewActiveMatchInput[] = [];
 

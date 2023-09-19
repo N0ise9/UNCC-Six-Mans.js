@@ -70,6 +70,65 @@ export class ActiveMatchRepository {
       });
   }
 
+  async getAllBrokenQueueVotesInActiveMatch(playerInMatchId: string): Promise<number> {
+    const allPlayersInMatch = await this.#ActiveMatch
+      .findUnique({
+        select: {
+          id: true,
+        },
+        where: {
+          playerId: playerInMatchId,
+        },
+      })
+      .then((match) => {
+
+        return this.#ActiveMatch.count({
+          where: {
+            brokenQueue: true,
+            id: match?.id,
+          },
+        });
+      });
+
+    return allPlayersInMatch;
+  }
+
+  async getAllBrokenQueueVotersInActiveMatch(playerInMatchId: string): Promise<ActiveMatchTeams> {
+    const allPlayersInMatch = await this.#ActiveMatch
+      .findUnique({
+        select: {
+          id: true,
+        },
+        where: {
+          playerId: playerInMatchId,
+        },
+      })
+      .then((match) => {
+        if (!match) {
+          console.warn(`Player with ID: ${playerInMatchId} is not in an active match.`);
+          return [];
+        }
+
+        return this.#ActiveMatch.findMany({
+          where: {
+            brokenQueue: true,
+            id: match.id,
+          },
+        });
+      });
+
+    const allPlayersInActiveMatch = await waitForAllPromises(allPlayersInMatch, async (playerInMatch) => {
+      return await this.#getPlayerInActiveMatchWithMmr(playerInMatch);
+    });
+
+    const [blueTeam, orangeTeam] = splitArray(allPlayersInActiveMatch, (p) => p.team === Team.Blue);
+
+    return {
+      blueTeam,
+      orangeTeam,
+    };
+  }
+
   async getAllPlayersInActiveMatch(playerInMatchId: string): Promise<ActiveMatchTeams> {
     const allPlayersInMatch = await this.#ActiveMatch
       .findUnique({
@@ -108,6 +167,7 @@ export class ActiveMatchRepository {
   async #getPlayerInActiveMatchWithMmr(playerInMatch: ActiveMatch): Promise<PlayerInActiveMatch> {
     const stats = await LeaderboardRepository.getPlayerStats(playerInMatch.playerId);
     return {
+      brokenQueue: playerInMatch.brokenQueue,
       id: playerInMatch.playerId,
       matchId: playerInMatch.id,
       mmr: stats ? stats.mmr : 100,

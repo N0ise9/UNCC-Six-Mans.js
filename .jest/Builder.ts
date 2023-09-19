@@ -69,6 +69,7 @@ class ActiveMatchBuilderClass extends Builder<PlayerInActiveMatch> {
       matchId: faker.datatype.uuid(),
       reportedTeam: null,
       team: mockBallChaser.team!,
+      brokenQueue: false,
       ...overrides,
     };
   }

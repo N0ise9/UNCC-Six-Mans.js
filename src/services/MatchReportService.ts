@@ -1,5 +1,6 @@
 import ActiveMatchRepository from "../repositories/ActiveMatchRepository";
 import { ActiveMatchTeams, PlayerInActiveMatch } from "../repositories/ActiveMatchRepository/types";
+import EventRepository from "../repositories/EventRepository/EventRepository";
 import LeaderboardRepository from "../repositories/LeaderboardRepository";
 import { UpdatePlayerStatsInput } from "../repositories/LeaderboardRepository/types";
 import { Team } from "../types/common";
@@ -79,12 +80,13 @@ export async function confirmMatch(winner: Team, teams: ActiveMatchTeams, player
   const updateStats: Array<UpdatePlayerStatsInput> = [];
   await waitForAllPromises([...teams.blueTeam, ...teams.orangeTeam], async (player) => {
     const isPlayerOnWinningTeam = player.team === winner;
+    const event = await EventRepository.getCurrentEvent();
     const playerStats = await LeaderboardRepository.getPlayerStats(player.id);
     if (playerStats) {
       const stats: UpdatePlayerStatsInput = isPlayerOnWinningTeam
         ? {
             id: player.id,
-            mmr: playerStats.mmr + mmr,
+            mmr: playerStats.mmr + mmr * event.mmrMult,
             wins: playerStats.wins + 1,
           }
         : {
@@ -97,7 +99,7 @@ export async function confirmMatch(winner: Team, teams: ActiveMatchTeams, player
       const stats: UpdatePlayerStatsInput = isPlayerOnWinningTeam
         ? {
             id: player.id,
-            mmr: 100 + mmr,
+            mmr: 100 + mmr * event.mmrMult,
             wins: 1,
           }
         : {

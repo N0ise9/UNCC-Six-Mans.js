@@ -4,7 +4,7 @@ import { DateTime } from "luxon";
 import LeaderboardRepository from "../LeaderboardRepository";
 import { waitForAllPromises } from "../../utils";
 import { Team } from "../../types/common";
-import { InvalidCommand, isRecordNotFoundError } from "../../utils/InvalidCommand";
+// import { InvalidCommand, isRecordNotFoundError } from "../../utils/InvalidCommand";
 import { ButtonInteraction } from "discord.js";
 import { ButtonCustomID } from "../../utils/MessageHelper/CustomButtons";
 
@@ -106,12 +106,14 @@ export class QueueRepository {
    * @param id Discord ID of the BallChaser to remove from the queue
    */
   async removeBallChaserFromQueue(id: string): Promise<void> {
-    await this.#Queue.delete({ where: { playerId: id } }).catch((err) => {
-      if (isRecordNotFoundError(err)) {
-        throw new InvalidCommand("Player not in queue.");
-      } else {
-        console.error(err);
-      }
+    await this.#Queue.delete({ where: { playerId: id } }).catch(() => {
+
+      // Commenting this out because if a player leaves while not in queue, the bot freezes and stops
+      // if (isRecordNotFoundError(err)) {
+      //   throw new InvalidCommand("Player not in queue.");
+      // } else {
+      //   console.error(err);
+      // }
     });
   }
 

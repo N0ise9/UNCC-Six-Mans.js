@@ -6,6 +6,7 @@ export interface PlayerInActiveMatch {
   reportedTeam: Team | null;
   matchId: string;
   mmr: number;
+  brokenQueue: boolean;
 }
 
 export interface ActiveMatchTeams {

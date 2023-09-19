@@ -12,6 +12,7 @@ const chooseTeamsButton = new CustomButton({ customId: ButtonCustomID.ChooseTeam
 const breakMatchButton = new CustomButton({ customId: ButtonCustomID.BreakMatch });
 const reportBlueWonButton = new CustomButton({ customId: ButtonCustomID.ReportBlue });
 const reportOrangeWonButton = new CustomButton({ customId: ButtonCustomID.ReportOrange });
+const brokenQueueButton = new CustomButton({ customId: ButtonCustomID.BrokenQueue });
 
 export default class ButtonBuilder extends MessageButton {
   static queueButtons(options: QueueButtonOptions = { disabled: false }): MessageActionRow {
@@ -43,7 +44,7 @@ export default class ButtonBuilder extends MessageButton {
   }
 
   static activeMatchButtons(): MessageActionRow {
-    const components = [reportBlueWonButton, reportOrangeWonButton];
+    const components = [brokenQueueButton, reportBlueWonButton, reportOrangeWonButton];
     if (isDev) {
       components.push(breakMatchButton);
     }

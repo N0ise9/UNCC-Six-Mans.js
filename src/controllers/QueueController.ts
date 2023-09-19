@@ -17,7 +17,7 @@ export function startQueueTimer(queueEmbed: Message) {
     } else if (minuteCounter >= 5) {
       const allPlayers = await QueueRepository.getAllBallChasersInQueue();
 
-      if (allPlayers.length > 0) {
+      if (allPlayers.length > 0 && allPlayers.length < 6) {
         await queueEmbed.edit(MessageBuilder.queueMessage(allPlayers));
       }
 

@@ -10,16 +10,17 @@ export const enum ButtonCustomID {
   BreakMatch = "breakMatch",
   ReportBlue = "reportBlue",
   ReportOrange = "reportOrange",
+  BrokenQueue = "brokenQueue",
 }
 
 export type QueueButtonOptions =
   | {
-      disabled: true;
-      buttonId: ButtonCustomID;
-    }
+    disabled: true;
+    buttonId: ButtonCustomID;
+  }
   | {
-      disabled: false;
-    };
+    disabled: false;
+  };
 
 interface CustomButtonOptions extends Partial<Omit<InteractionButtonOptions, "customId">> {
   customId: ButtonCustomID;
@@ -81,6 +82,12 @@ export default class CustomButton extends MessageButton {
           return {
             label: "🔶 Orange Team Won 🔶",
             style: "SECONDARY",
+            ...customOptions,
+          };
+        case ButtonCustomID.BrokenQueue:
+          return {
+            label: "Broken Queue",
+            style: "DANGER",
             ...customOptions,
           };
       }

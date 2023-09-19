@@ -1,8 +1,9 @@
 import { MessageEmbed, MessageEmbedOptions } from "discord.js";
 import { ActiveMatchCreated } from "../../services/MatchService";
 import { Team } from "../../types/common";
+import EventRepository from "../../repositories/EventRepository/EventRepository";
 
-class BaseEmbed extends MessageEmbed {
+export class BaseEmbed extends MessageEmbed {
   private static readonly normIconURL =
     "https://raw.githubusercontent.com/mattwells19/UNCC-Six-Mans.js/main/media/norm_still.png";
 
@@ -25,7 +26,7 @@ export default class EmbedBuilder {
     return new BaseEmbed({ color: "GREEN", description, title: "Queue is Full" });
   }
 
-  static activeMatchEmbed({ blue, orange }: ActiveMatchCreated): BaseEmbed {
+  static async activeMatchEmbed({ blue, orange }: ActiveMatchCreated): Promise<BaseEmbed> {
     const blueTeam: Array<string> = blue.players.map((player) => "<@" + player.id + ">");
     const orangeTeam: Array<string> = orange.players.map((player) => "<@" + player.id + ">");
     const activeMatchEmbed = new BaseEmbed({
@@ -50,14 +51,18 @@ export default class EmbedBuilder {
       winner = "Both teams are";
     }
 
+    const event = await EventRepository.getCurrentEvent();
+    const blueMMR = blue.mmrStake * event.mmrMult;
+    const orangeMMR = orange.mmrStake * event.mmrMult;
+
     activeMatchEmbed.addField(
       "MMR Stake & Probability Rating:\n",
       "🔷 Blue Team: \u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0**(+" +
-        blue.mmrStake.toString() +
+        blueMMR.toString() +
         ")**\u00A0\u00A0**(-" +
         orange.mmrStake.toString() +
         ")** 🔷\n🔶 Orange Team:\u00A0\u00A0**(+" +
-        orange.mmrStake.toString() +
+        orangeMMR.toString() +
         ")**\u00A0\u00A0**(-" +
         blue.mmrStake.toString() +
         ")** 🔶\n" +
@@ -66,6 +71,15 @@ export default class EmbedBuilder {
         probability +
         "%** chance of winning."
     );
+
+    if (event.mmrMult > 1) {
+      activeMatchEmbed.addField(
+        "X" + event.mmrMult.toString() + " MMR Event!",
+        "Winnings are multiplied by **" + event.mmrMult.toString() + "** for this match!"
+      );
+    }
+
+    activeMatchEmbed.addField("Reporting", "Use the buttons to report which team won the match.");
 
     return activeMatchEmbed;
   }

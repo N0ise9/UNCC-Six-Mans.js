@@ -2,6 +2,7 @@ import {
   ButtonInteraction,
   EmbedField,
   MessageActionRow,
+  MessageButton,
   MessageEmbed,
   MessageOptions,
   MessageSelectMenu,
@@ -11,9 +12,11 @@ import { ActiveMatchCreated } from "../../services/MatchService";
 import { Team } from "../../types/common";
 import { getEnvVariable } from "../utils";
 import { PlayerInQueue } from "../../repositories/QueueRepository/types";
-import EmbedBuilder from "./EmbedBuilder";
+import EmbedBuilder, { BaseEmbed } from "./EmbedBuilder";
 import ButtonBuilder from "./ButtonBuilder";
 import CustomButton, { ButtonCustomID } from "./CustomButtons";
+import { ActiveMatchTeams } from "../../repositories/ActiveMatchRepository/types";
+import EventRepository from "../../repositories/EventRepository/EventRepository";
 
 export const enum MenuCustomID {
   BlueSelect = "blueSelect",
@@ -21,6 +24,8 @@ export const enum MenuCustomID {
 }
 
 export default class MessageBuilder {
+  private static readonly normIconURL =
+    "https://raw.githubusercontent.com/mattwells19/UNCC-Six-Mans.js/main/media/norm_still.png";
   private static readonly isDev = getEnvVariable("ENVIRONMENT") === "dev";
 
   static leaderboardMessage(leaderboardInfo: string[]): MessageOptions {
@@ -61,6 +66,30 @@ export default class MessageBuilder {
   }
 
   static fullQueueMessage(ballchasers: ReadonlyArray<Readonly<PlayerInQueue>>): MessageOptions {
+    const embed = new MessageEmbed({
+      color: "GREEN",
+      thumbnail: { url: this.normIconURL },
+    });
+    const randomTeamsButton = new MessageButton({
+      customId: ButtonCustomID.CreateRandomTeam,
+      label: "Random (0)",
+      style: "PRIMARY",
+    });
+    const pickCaptainsButton = new MessageButton({
+      customId: ButtonCustomID.ChooseTeam,
+      label: "Captains (0)",
+      style: "PRIMARY",
+    });
+    const leaveButton = new MessageButton({
+      customId: ButtonCustomID.LeaveQueue,
+      label: "Leave",
+      style: "DANGER",
+    });
+    const removeAllButton = new MessageButton({
+      customId: ButtonCustomID.RemoveAll,
+      label: "DEV: Remove All",
+      style: "DANGER",
+    });
     const ballChaserList = ballchasers
       .map((ballChaser) => {
         // + 1 since it seems that joining the queue calculates to 59 instead of 60
@@ -69,16 +98,20 @@ export default class MessageBuilder {
       })
       .join("\n");
 
-    const embed = EmbedBuilder.fullQueueEmbed("Click the Create Teams button to get started! \n\n" + ballChaserList);
+    embed
+      .setTitle("Queue is Full")
+      .setDescription("Vote for Captains or Random teams to get started! \n\n" + ballChaserList);
 
     return {
-      components: [ButtonBuilder.fullQueueButtons()],
+      components: this.isDev
+        ? [new MessageActionRow({ components: [pickCaptainsButton, randomTeamsButton, leaveButton, removeAllButton] })]
+        : [new MessageActionRow({ components: [pickCaptainsButton, randomTeamsButton, leaveButton] })],
       embeds: [embed],
     };
   }
 
-  static activeMatchMessage({ blue, orange }: ActiveMatchCreated): MessageOptions {
-    const embed = EmbedBuilder.activeMatchEmbed({ blue, orange });
+  static async activeMatchMessage({ blue, orange }: ActiveMatchCreated): Promise<MessageOptions> {
+    const embed = await EmbedBuilder.activeMatchEmbed({ blue, orange });
 
     return {
       components: [ButtonBuilder.activeMatchButtons()],
@@ -138,6 +171,101 @@ export default class MessageBuilder {
     };
   }
 
+  static async voteBrokenQueueMessage(
+    { blue, orange }: ActiveMatchCreated,
+    brokenQueuePlayers: ActiveMatchTeams,
+    brokenQueueVotes: number
+  ): Promise<MessageOptions> {
+    const brokenHeart = "\uD83D\uDC94";
+    const blueTeam = blue.players.map((player) => {
+      const voter = brokenQueuePlayers.blueTeam.find((p) => p.id == player.id);
+      if (voter) {
+        return `<@${player.id}> ${brokenHeart}`;
+      } else {
+        return `<@${player.id}>`;
+      }
+    });
+    const orangeTeam: Array<string> = orange.players.map((player) => {
+      const voter = brokenQueuePlayers.orangeTeam.find((p) => p.id == player.id);
+      if (voter) {
+        return `<@${player.id}> ${brokenHeart}`;
+      } else {
+        return `<@${player.id}>`;
+      }
+    });
+    const brokenQueueButton = new CustomButton({
+      customId: ButtonCustomID.BrokenQueue,
+      label: "Broken Queue (" + brokenQueueVotes + ")",
+    });
+    const reportBlueWonButton = new CustomButton({
+      customId: ButtonCustomID.ReportBlue,
+    });
+    const reportOrangeWonButton = new CustomButton({
+      customId: ButtonCustomID.ReportOrange,
+    });
+    const activeMatchEmbed = new BaseEmbed({
+      color: "DARK_RED",
+      fields: [
+        { name: "🔷 Blue Team 🔷", value: blueTeam.join("\n") },
+        { name: "🔶 Orange Team 🔶", value: orangeTeam.join("\n") },
+      ],
+      title: "Teams are set!",
+    });
+
+    let probability;
+    let winner;
+    if (blue.winProbability > orange.winProbability) {
+      probability = blue.winProbability;
+      winner = "Blue Team is";
+    } else if (blue.winProbability < orange.winProbability) {
+      probability = orange.winProbability;
+      winner = "Orange Team is";
+    } else {
+      probability = "50";
+      winner = "Both teams are";
+    }
+
+    const event = await EventRepository.getCurrentEvent();
+    const blueMMR = blue.mmrStake * event.mmrMult;
+    const orangeMMR = orange.mmrStake * event.mmrMult;
+
+    activeMatchEmbed.addField(
+      "MMR Stake & Probability Rating:\n",
+      "🔷 Blue Team: \u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0**(+" +
+        blueMMR.toString() +
+        ")**\u00A0\u00A0**(-" +
+        orange.mmrStake.toString() +
+        ")** 🔷\n🔶 Orange Team:\u00A0\u00A0**(+" +
+        orangeMMR.toString() +
+        ")**\u00A0\u00A0**(-" +
+        blue.mmrStake.toString() +
+        ")** 🔶\n" +
+        winner +
+        " predicted to have a **" +
+        probability +
+        "%** chance of winning."
+    );
+
+    if (event.mmrMult != 1) {
+      activeMatchEmbed.addField(
+        "X" + event.mmrMult.toString() + " MMR Event!",
+        "Winnings are multiplied by **" + event.mmrMult.toString() + "** for this match!"
+      );
+    }
+
+    activeMatchEmbed.addField("Reporting", "Use the buttons to report which team won the match.");
+    const components = [
+      new MessageActionRow({
+        components: [brokenQueueButton, reportBlueWonButton, reportOrangeWonButton],
+      }),
+    ];
+
+    return {
+      components: components,
+      embeds: [activeMatchEmbed],
+    };
+  }
+
   static voteCaptainsOrRandomMessage(
     ballchasers: ReadonlyArray<Readonly<PlayerInQueue>>,
     captainsVotes: number,
@@ -147,15 +275,30 @@ export default class MessageBuilder {
   ): MessageOptions {
     const captainsCounterLabel = captainsVotes;
     const randomCounterLabel = randomVotes;
-    const randomTeams = new CustomButton({
+    const embed = new MessageEmbed({
+      color: "GREEN",
+      thumbnail: { url: this.normIconURL },
+    });
+    const randomTeamsButton = new MessageButton({
       customId: ButtonCustomID.CreateRandomTeam,
       label: "Random (" + randomCounterLabel.toString() + ")",
+      style: "PRIMARY",
     });
-    const chooseCaptain = new CustomButton({
+    const pickCaptainsButton = new MessageButton({
       customId: ButtonCustomID.ChooseTeam,
       label: "Captains (" + captainsCounterLabel.toString() + ")",
+      style: "PRIMARY",
     });
-    const leaveQueue = new CustomButton({ customId: ButtonCustomID.LeaveQueue });
+    const leaveButton = new MessageButton({
+      customId: ButtonCustomID.LeaveQueue,
+      label: "Leave",
+      style: "DANGER",
+    });
+    const removeAllButton = new MessageButton({
+      customId: ButtonCustomID.RemoveAll,
+      label: "DEV: Remove All",
+      style: "DANGER",
+    });
 
     const cap = "\uD83C\uDDE8";
     const ran = "\uD83C\uDDF7";
@@ -175,18 +318,80 @@ export default class MessageBuilder {
       })
       .join("\n");
 
-    const embed = EmbedBuilder.voteForCaptainsOrRandomEmbed(
-      "Queue is Full",
-      "Vote for Captains or Random teams to get started! \n\n" + ballChaserList
-    );
-
-    const components = [new MessageActionRow({ components: [chooseCaptain, randomTeams, leaveQueue] })];
-    if (this.isDev) {
-      components.push(ButtonBuilder.removeAllButtons());
-    }
+    embed
+      .setTitle("Queue is Full")
+      .setDescription("Vote for Captains or Random teams to get started! \n\n" + ballChaserList);
 
     return {
-      components,
+      components: this.isDev
+        ? [new MessageActionRow({ components: [pickCaptainsButton, randomTeamsButton, leaveButton, removeAllButton] })]
+        : [new MessageActionRow({ components: [pickCaptainsButton, randomTeamsButton, leaveButton] })],
+      embeds: [embed],
+    };
+  }
+
+  static disabledVoteCaptainsOrRandomMessage(
+    ballchasers: ReadonlyArray<Readonly<PlayerInQueue>>,
+    captainsVotes: number,
+    randomVotes: number,
+    voterList: PlayerInQueue[],
+    players: Map<string, string>
+  ): MessageOptions {
+    const captainsCounterLabel = captainsVotes;
+    const randomCounterLabel = randomVotes;
+    const embed = new MessageEmbed({
+      color: "GREEN",
+      thumbnail: { url: this.normIconURL },
+    });
+    const randomTeamsButton = new MessageButton({
+      customId: ButtonCustomID.CreateRandomTeam,
+      disabled: true,
+      label: "Random (" + randomCounterLabel.toString() + ")",
+      style: "PRIMARY",
+    });
+    const pickCaptainsButton = new MessageButton({
+      customId: ButtonCustomID.ChooseTeam,
+      disabled: true,
+      label: "Captains (" + captainsCounterLabel.toString() + ")",
+      style: "PRIMARY",
+    });
+    const leaveButton = new MessageButton({
+      customId: ButtonCustomID.LeaveQueue,
+      label: "Leave",
+      style: "DANGER",
+    });
+    const removeAllButton = new MessageButton({
+      customId: ButtonCustomID.RemoveAll,
+      label: "DEV: Remove All",
+      style: "DANGER",
+    });
+
+    const cap = "\uD83C\uDDE8";
+    const ran = "\uD83C\uDDF7";
+    const ballChaserList = ballchasers
+      .map((ballChaser) => {
+        // + 1 since it seems that joining the queue calculates to 59 instead of 60
+        const queueTime = ballChaser.queueTime?.diffNow().as("minutes") ?? 0;
+        const voter = voterList.find((p) => p.id == ballChaser.id);
+        const vote = players.get(ballChaser.id);
+        if (voter && vote == ButtonCustomID.ChooseTeam) {
+          return `${cap} ${ballChaser.name} (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
+        } else if (voter && vote == ButtonCustomID.CreateRandomTeam) {
+          return `${ran} ${ballChaser.name} (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
+        } else {
+          return `${ballChaser.name} (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
+        }
+      })
+      .join("\n");
+
+    embed
+      .setTitle("Queue is Full")
+      .setDescription("Vote for Captains or Random teams to get started! \n\n" + ballChaserList);
+
+    return {
+      components: this.isDev
+        ? [new MessageActionRow({ components: [pickCaptainsButton, randomTeamsButton, leaveButton, removeAllButton] })]
+        : [new MessageActionRow({ components: [pickCaptainsButton, randomTeamsButton, leaveButton] })],
       embeds: [embed],
     };
   }
@@ -230,7 +435,7 @@ export default class MessageBuilder {
     embed.setFields(updatedFields);
 
     return {
-      components: [new MessageActionRow({ components: [reportBlue, reportOrange] }), ButtonBuilder.breakMatchButtons()],
+      components: [new MessageActionRow({ components: [reportBlue, reportOrange] })],
       embeds: [embed],
     };
   }

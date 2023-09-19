@@ -36,9 +36,12 @@ export async function handleMenuInteraction(menuInteraction: SelectMenuInteracti
         const newActiveMatch = await createMatchFromChosenTeams();
 
         Promise.all([
-          await message.channel.send(MessageBuilder.activeMatchMessage(newActiveMatch)),
+          await message.channel.send(await MessageBuilder.activeMatchMessage(newActiveMatch)),
           await message.edit(MessageBuilder.queueMessage(emptyQueue)),
         ]);
+
+        QueueRepository.resetCaptainsRandomVoters();
+
         break;
       }
 
