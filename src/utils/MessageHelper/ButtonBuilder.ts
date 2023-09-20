@@ -1,6 +1,6 @@
 import { ActionRowBuilder, ButtonBuilder } from "discord.js";
 import { getEnvVariable } from "../utils";
-import CustomButton, { ButtonCustomID, QueueButtonOptions } from "./CustomButtons";
+import CustomButton, { ButtonCustomID } from "./CustomButtons";
 
 const isDev = getEnvVariable("ENVIRONMENT") === "dev";
 
@@ -15,19 +15,15 @@ const reportOrangeWonButton = new CustomButton({ customId: ButtonCustomID.Report
 const brokenQueueButton = new CustomButton({ customId: ButtonCustomID.BrokenQueue });
 
 export default class MessageButtons extends ButtonBuilder {
-  static queueButtons(options: QueueButtonOptions = { disabled: false }): ActionRowBuilder {
-    const dynamicJoinButton = new CustomButton({
+  static queueButtons(): ActionRowBuilder {
+    const joinButton = new CustomButton({
       customId: ButtonCustomID.JoinQueue,
-      disabled: options.disabled,
-      label: options.disabled && options.buttonId === ButtonCustomID.JoinQueue ? "Please wait..." : "Join",
     });
-    const dynamicLeaveButton = new CustomButton({
+    const leaveButton = new CustomButton({
       customId: ButtonCustomID.LeaveQueue,
-      disabled: options.disabled,
-      label: options.disabled && options.buttonId === ButtonCustomID.LeaveQueue ? "Please wait..." : "Leave",
     });
 
-    const components = [dynamicJoinButton, dynamicLeaveButton];
+    const components = [joinButton, leaveButton];
     if (isDev) {
       components.push(fillTeamButton, removeAllButton);
     }
