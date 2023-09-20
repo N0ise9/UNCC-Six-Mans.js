@@ -1,4 +1,4 @@
-import { MessageActionRow, MessageButton } from "discord.js";
+import { ActionRowBuilder, ButtonBuilder } from "discord.js";
 import { getEnvVariable } from "../utils";
 import CustomButton, { ButtonCustomID, QueueButtonOptions } from "./CustomButtons";
 
@@ -14,8 +14,8 @@ const reportBlueWonButton = new CustomButton({ customId: ButtonCustomID.ReportBl
 const reportOrangeWonButton = new CustomButton({ customId: ButtonCustomID.ReportOrange });
 const brokenQueueButton = new CustomButton({ customId: ButtonCustomID.BrokenQueue });
 
-export default class ButtonBuilder extends MessageButton {
-  static queueButtons(options: QueueButtonOptions = { disabled: false }): MessageActionRow {
+export default class MessageButtons extends ButtonBuilder {
+  static queueButtons(options: QueueButtonOptions = { disabled: false }): ActionRowBuilder {
     const dynamicJoinButton = new CustomButton({
       customId: ButtonCustomID.JoinQueue,
       disabled: options.disabled,
@@ -31,31 +31,31 @@ export default class ButtonBuilder extends MessageButton {
     if (isDev) {
       components.push(fillTeamButton, removeAllButton);
     }
-    return new MessageActionRow({ components: components });
+    return new ActionRowBuilder({ components: components });
   }
 
-  static fullQueueButtons(): MessageActionRow {
+  static fullQueueButtons(): ActionRowBuilder {
     const components = [chooseTeamsButton, randomTeamsButton, leaveButton];
 
     if (isDev) {
       components.push(removeAllButton);
     }
-    return new MessageActionRow({ components: components });
+    return new ActionRowBuilder({ components: components });
   }
 
-  static activeMatchButtons(): MessageActionRow {
+  static activeMatchButtons(): ActionRowBuilder {
     const components = [brokenQueueButton, reportBlueWonButton, reportOrangeWonButton];
     if (isDev) {
       components.push(breakMatchButton);
     }
-    return new MessageActionRow({ components: components });
+    return new ActionRowBuilder({ components: components });
   }
 
-  static breakMatchButtons(): MessageActionRow {
-    return new MessageActionRow({ components: [breakMatchButton] });
+  static breakMatchButtons(): ActionRowBuilder {
+    return new ActionRowBuilder({ components: [breakMatchButton] });
   }
 
-  static removeAllButtons(): MessageActionRow {
-    return new MessageActionRow({ components: [removeAllButton] });
+  static removeAllButtons(): ActionRowBuilder {
+    return new ActionRowBuilder({ components: [removeAllButton] });
   }
 }
