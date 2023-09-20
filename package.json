@@ -11,14 +11,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ClamSageCaleb/UNCC-SIX-MANS.git"
+    "url": "git+https://github.com/N0ise9/UNCC-Six-Mans.js.git"
   },
   "author": "",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/ClamSageCaleb/UNCC-SIX-MANS/issues"
+    "url": "https://github.com/N0ise9/UNCC-Six-Mans.js/issues"
   },
-  "homepage": "https://github.com/ClamSageCaleb/UNCC-SIX-MANS#readme",
+  "homepage": "https://github.com/N0ise9/UNCC-Six-Mans.js/#readme",
   "devDependencies": {
     "@types/faker": "^5.5.8",
     "@types/jest": "^27.5.2",
