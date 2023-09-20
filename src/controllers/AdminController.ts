@@ -1,8 +1,6 @@
-import { CommandInteraction, GuildMemberRoleManager, Message } from "discord.js";
+import { CommandInteraction, GuildMemberRoleManager, Message, Routes } from "discord.js";
+import { RESTPostAPIApplicationCommandsJSONBody, SlashCommandBuilder, REST } from "discord.js";
 import QueueRepository from "../repositories/QueueRepository";
-import { REST } from "@discordjs/rest";
-import { RESTPostAPIApplicationCommandsJSONBody, Routes } from "discord-api-types/v9";
-import { SlashCommandBuilder } from "@discordjs/builders";
 import { kickPlayerFromQueue } from "../services/AdminService";
 import { InvalidCommand } from "../utils/InvalidCommand";
 import MessageBuilder from "../utils/MessageHelper/MessageBuilder";
