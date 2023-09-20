@@ -8,7 +8,7 @@ import { handleAdminInteraction, registerAdminSlashCommands } from "./controller
 import { handleMenuInteraction } from "./controllers/MenuInteractions";
 import { startQueueTimer } from "./controllers/QueueController";
 
-const NormClient = new Client({ intents: "GUILDS" });
+const NormClient = new Client({ intents: "Guilds" });
 
 const guildId = getEnvVariable("guild_id");
 const leaderboardChannelId = getEnvVariable("leaderboard_channel_id");
