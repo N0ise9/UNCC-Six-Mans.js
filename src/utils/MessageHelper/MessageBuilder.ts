@@ -1,12 +1,13 @@
 import {
   ButtonInteraction,
   EmbedField,
-  MessageActionRow,
-  MessageButton,
-  MessageEmbed,
+  ActionRowBuilder,
+  ButtonBuilder as MessageButton,
+  Embed,
   MessageOptions,
   MessageSelectMenu,
   MessageSelectOptionData,
+  ButtonStyle,
 } from "discord.js";
 import { ActiveMatchCreated } from "../../services/MatchService";
 import { Team } from "../../types/common";
@@ -73,22 +74,22 @@ export default class MessageBuilder {
     const randomTeamsButton = new MessageButton({
       customId: ButtonCustomID.CreateRandomTeam,
       label: "Random (0)",
-      style: "PRIMARY",
+      style: ButtonStyle.Primary,
     });
     const pickCaptainsButton = new MessageButton({
       customId: ButtonCustomID.ChooseTeam,
       label: "Captains (0)",
-      style: "PRIMARY",
+      style: ButtonStyle.Primary,
     });
     const leaveButton = new MessageButton({
       customId: ButtonCustomID.LeaveQueue,
       label: "Leave",
-      style: "DANGER",
+      style: ButtonStyle.Danger,
     });
     const removeAllButton = new MessageButton({
       customId: ButtonCustomID.RemoveAll,
       label: "DEV: Remove All",
-      style: "DANGER",
+      style: ButtonStyle.Danger,
     });
     const ballChaserList = ballchasers
       .map((ballChaser) => {
@@ -104,8 +105,8 @@ export default class MessageBuilder {
 
     return {
       components: this.isDev
-        ? [new MessageActionRow({ components: [pickCaptainsButton, randomTeamsButton, leaveButton, removeAllButton] })]
-        : [new MessageActionRow({ components: [pickCaptainsButton, randomTeamsButton, leaveButton] })],
+        ? [new ActionRowBuilder({ components: [pickCaptainsButton, randomTeamsButton, leaveButton, removeAllButton] })]
+        : [new ActionRowBuilder({ components: [pickCaptainsButton, randomTeamsButton, leaveButton] })],
       embeds: [embed],
     };
   }
@@ -161,7 +162,7 @@ export default class MessageBuilder {
       .addField("🔷 Blue Team 🔷", blueTeam.join("\n"))
       .addField("🔶 Orange Team 🔶", orangeTeam.join("\n"));
 
-    const components = [new MessageActionRow({ components: [playerChoices] })];
+    const components = [new ActionRowBuilder({ components: [playerChoices] })];
     if (this.isDev) {
       components.push(ButtonBuilder.breakMatchButtons());
     }
@@ -193,7 +194,7 @@ export default class MessageBuilder {
         return `<@${player.id}>`;
       }
     });
-    const brokenQueueButton = new CustomButton({
+    const brokenQueueButton = new ButtonBuilder({
       customId: ButtonCustomID.BrokenQueue,
       label: "Broken Queue (" + brokenQueueVotes + ")",
     });
@@ -255,7 +256,7 @@ export default class MessageBuilder {
 
     activeMatchEmbed.addField("Reporting", "Use the buttons to report which team won the match.");
     const components = [
-      new MessageActionRow({
+      new ActionRowBuilder({
         components: [brokenQueueButton, reportBlueWonButton, reportOrangeWonButton],
       }),
     ];
@@ -282,22 +283,22 @@ export default class MessageBuilder {
     const randomTeamsButton = new MessageButton({
       customId: ButtonCustomID.CreateRandomTeam,
       label: "Random (" + randomCounterLabel.toString() + ")",
-      style: "PRIMARY",
+      style: ButtonStyle.Primary,
     });
     const pickCaptainsButton = new MessageButton({
       customId: ButtonCustomID.ChooseTeam,
       label: "Captains (" + captainsCounterLabel.toString() + ")",
-      style: "PRIMARY",
+      style: ButtonStyle.Primary,
     });
     const leaveButton = new MessageButton({
       customId: ButtonCustomID.LeaveQueue,
       label: "Leave",
-      style: "DANGER",
+      style: ButtonStyle.Danger,
     });
     const removeAllButton = new MessageButton({
       customId: ButtonCustomID.RemoveAll,
       label: "DEV: Remove All",
-      style: "DANGER",
+      style: ButtonStyle.Danger,
     });
 
     const cap = "\uD83C\uDDE8";
@@ -324,8 +325,8 @@ export default class MessageBuilder {
 
     return {
       components: this.isDev
-        ? [new MessageActionRow({ components: [pickCaptainsButton, randomTeamsButton, leaveButton, removeAllButton] })]
-        : [new MessageActionRow({ components: [pickCaptainsButton, randomTeamsButton, leaveButton] })],
+        ? [new ActionRowBuilder({ components: [pickCaptainsButton, randomTeamsButton, leaveButton, removeAllButton] })]
+        : [new ActionRowBuilder({ components: [pickCaptainsButton, randomTeamsButton, leaveButton] })],
       embeds: [embed],
     };
   }
@@ -347,23 +348,23 @@ export default class MessageBuilder {
       customId: ButtonCustomID.CreateRandomTeam,
       disabled: true,
       label: "Random (" + randomCounterLabel.toString() + ")",
-      style: "PRIMARY",
+      style: ButtonStyle.Primary,
     });
     const pickCaptainsButton = new MessageButton({
       customId: ButtonCustomID.ChooseTeam,
       disabled: true,
       label: "Captains (" + captainsCounterLabel.toString() + ")",
-      style: "PRIMARY",
+      style: ButtonStyle.Primary,
     });
     const leaveButton = new MessageButton({
       customId: ButtonCustomID.LeaveQueue,
       label: "Leave",
-      style: "DANGER",
+      style: ButtonStyle.Danger,
     });
     const removeAllButton = new MessageButton({
       customId: ButtonCustomID.RemoveAll,
       label: "DEV: Remove All",
-      style: "DANGER",
+      style: ButtonStyle.Danger,
     });
 
     const cap = "\uD83C\uDDE8";
@@ -390,8 +391,8 @@ export default class MessageBuilder {
 
     return {
       components: this.isDev
-        ? [new MessageActionRow({ components: [pickCaptainsButton, randomTeamsButton, leaveButton, removeAllButton] })]
-        : [new MessageActionRow({ components: [pickCaptainsButton, randomTeamsButton, leaveButton] })],
+        ? [new ActionRowBuilder({ components: [pickCaptainsButton, randomTeamsButton, leaveButton, removeAllButton] })]
+        : [new ActionRowBuilder({ components: [pickCaptainsButton, randomTeamsButton, leaveButton] })],
       embeds: [embed],
     };
   }
@@ -403,12 +404,12 @@ export default class MessageBuilder {
 
     switch (buttonInteraction.customId) {
       case ButtonCustomID.ReportBlue: {
-        reportBlue.setStyle("PRIMARY");
+        reportBlue.setStyle(ButtonStyle.Primary);
         reportedTeam = "**Blue Team**";
         break;
       }
       case ButtonCustomID.ReportOrange: {
-        reportOrange.setStyle("PRIMARY");
+        reportOrange.setStyle(ButtonStyle.Primary);
         reportedTeam = "**Orange Team**";
         break;
       }
@@ -425,7 +426,7 @@ export default class MessageBuilder {
         "If this is incorrect, click the button of the correct team.",
     };
     const embed = new MessageEmbed(activeMatchEmbed);
-    const updatedFields = embed.fields.map((field) => {
+    const updatedFields = embed.fields.map((field: { name: string }) => {
       if (field.name === "Reporting") {
         return newField;
       } else {
@@ -435,7 +436,7 @@ export default class MessageBuilder {
     embed.setFields(updatedFields);
 
     return {
-      components: [new MessageActionRow({ components: [reportBlue, reportOrange] })],
+      components: [new ActionRowBuilder({ components: [reportBlue, reportOrange] })],
       embeds: [embed],
     };
   }
