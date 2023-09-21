@@ -1,4 +1,4 @@
-import { Client, TextChannel } from "discord.js";
+import { ChannelType, Client, TextChannel } from "discord.js";
 
 export async function deleteAllMessagesInTextChannel(channel: TextChannel): Promise<void> {
   await channel.messages.fetch({ limit: 99 }).then((messages) => channel.bulkDelete(messages));
@@ -17,7 +17,7 @@ export async function getDiscordChannelById(
     return null;
   }
 
-  if (channel.isTextBased()) {
+  if (channel.type === ChannelType.GuildText) {
     return channel as TextChannel;
   }
 
