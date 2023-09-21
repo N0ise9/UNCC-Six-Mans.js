@@ -56,7 +56,7 @@ export default class EmbedBuilder {
     const orangeMMR = orange.mmrStake * event.mmrMult;
 
     activeMatchEmbed.addFields({
-      name: "MMR Stake & Probability Rating:",
+      name: "MMR Stake & Probability Rating:\n",
       value:
         "🔷 Blue Team: \u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0**(+" +
         blueMMR.toString() +

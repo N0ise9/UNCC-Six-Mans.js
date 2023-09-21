@@ -4,6 +4,7 @@ import CustomButton, { ButtonCustomID } from "./CustomButtons";
 
 const isDev = getEnvVariable("ENVIRONMENT") === "dev";
 
+const joinButton = new CustomButton({ customId: ButtonCustomID.JoinQueue });
 const leaveButton = new CustomButton({ customId: ButtonCustomID.LeaveQueue });
 const fillTeamButton = new CustomButton({ customId: ButtonCustomID.FillTeam });
 const removeAllButton = new CustomButton({ customId: ButtonCustomID.RemoveAll });
@@ -15,14 +16,7 @@ const reportOrangeWonButton = new CustomButton({ customId: ButtonCustomID.Report
 const brokenQueueButton = new CustomButton({ customId: ButtonCustomID.BrokenQueue });
 
 export default class MessageButtons extends ButtonBuilder {
-  static queueButtons(): ActionRowBuilder {
-    const joinButton = new CustomButton({
-      customId: ButtonCustomID.JoinQueue,
-    });
-    const leaveButton = new CustomButton({
-      customId: ButtonCustomID.LeaveQueue,
-    });
-
+  static queueButtons(): ActionRowBuilder<ButtonBuilder> {
     const components = [joinButton, leaveButton];
     if (isDev) {
       components.push(fillTeamButton, removeAllButton);
@@ -30,7 +24,7 @@ export default class MessageButtons extends ButtonBuilder {
     return new ActionRowBuilder({ components: components });
   }
 
-  static fullQueueButtons(): ActionRowBuilder {
+  static fullQueueButtons(): ActionRowBuilder<ButtonBuilder> {
     const components = [chooseTeamsButton, randomTeamsButton, leaveButton];
 
     if (isDev) {
@@ -39,7 +33,7 @@ export default class MessageButtons extends ButtonBuilder {
     return new ActionRowBuilder({ components: components });
   }
 
-  static activeMatchButtons(): ActionRowBuilder {
+  static activeMatchButtons(): ActionRowBuilder<ButtonBuilder> {
     const components = [brokenQueueButton, reportBlueWonButton, reportOrangeWonButton];
     if (isDev) {
       components.push(breakMatchButton);
@@ -47,11 +41,11 @@ export default class MessageButtons extends ButtonBuilder {
     return new ActionRowBuilder({ components: components });
   }
 
-  static breakMatchButtons(): ActionRowBuilder {
+  static breakMatchButtons(): ActionRowBuilder<ButtonBuilder> {
     return new ActionRowBuilder({ components: [breakMatchButton] });
   }
 
-  static removeAllButtons(): ActionRowBuilder {
+  static removeAllButtons(): ActionRowBuilder<ButtonBuilder> {
     return new ActionRowBuilder({ components: [removeAllButton] });
   }
 }
