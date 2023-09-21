@@ -33,8 +33,8 @@ const testPlayers: AddBallChaserToQueueInput[] = [
     queueTime: DateTime.now(),
   },
   {
-    id: "209084277223194624",
-    name: "DaffyJr",
+    id: "457671314988204033",
+    name: "capchaotic",
     queueTime: DateTime.now(),
   },
   {
