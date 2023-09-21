@@ -130,7 +130,7 @@ export class QueueRepository {
     await this.#Queue.update({
       data: {
         isCap: updates.isCap,
-        queueTime: updates.queueTime?.toISO(),
+        queueTime: updates.queueTime!.toISO()!,
         team: updates.team,
       },
       where: { playerId: id },
@@ -148,7 +148,7 @@ export class QueueRepository {
         name: ballChaserToAdd.name,
         queue: {
           create: {
-            queueTime: ballChaserToAdd.queueTime.toISO(),
+            queueTime: ballChaserToAdd.queueTime.toISO()!,
           },
         },
       },
@@ -156,7 +156,7 @@ export class QueueRepository {
         name: ballChaserToAdd.name,
         queue: {
           create: {
-            queueTime: ballChaserToAdd.queueTime.toISO(),
+            queueTime: ballChaserToAdd.queueTime.toISO()!,
           },
         },
       },
