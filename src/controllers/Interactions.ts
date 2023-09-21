@@ -1,5 +1,5 @@
 /* eslint-disable no-console */
-import { ButtonInteraction, Client, Message, TextChannel } from "discord.js";
+import { ButtonInteraction, Client, EmbedBuilder, Message, TextChannel } from "discord.js";
 import { joinQueue, leaveQueue } from "../services/QueueService";
 import MessageBuilder from "../utils/MessageHelper/MessageBuilder";
 import { getDiscordChannelById } from "../utils/discordUtils";
@@ -214,7 +214,7 @@ async function report(buttonInteraction: ButtonInteraction, team: Team, message:
     });
   } else {
     const previousEmbed = message.embeds[0];
-    await message.edit(MessageBuilder.reportedTeamButtons(buttonInteraction, previousEmbed));
+    await message.edit(MessageBuilder.reportedTeamButtons(buttonInteraction, EmbedBuilder.from(previousEmbed)));
   }
 }
 
