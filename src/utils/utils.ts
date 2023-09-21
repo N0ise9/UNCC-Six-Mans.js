@@ -17,7 +17,7 @@ export function generateRandomId(): string {
   return chars;
 }
 
-export enum ColorCodes {
+export const enum ColorCodes {
   Green = 5763719,
   Blue = 3447003,
   Orange = 15105570,
