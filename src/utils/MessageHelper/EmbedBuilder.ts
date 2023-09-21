@@ -2,6 +2,7 @@ import { EmbedBuilder as MessageEmbed, EmbedData } from "discord.js";
 import { ActiveMatchCreated } from "../../services/MatchService";
 import { Team } from "../../types/common";
 import EventRepository from "../../repositories/EventRepository/EventRepository";
+import { ColorCodes } from "../utils";
 
 export class BaseEmbed extends MessageEmbed {
   private static readonly normIconURL =
@@ -15,22 +16,22 @@ export class BaseEmbed extends MessageEmbed {
 
 export default class EmbedBuilder {
   static leaderboardEmbed(description: string, title: string): MessageEmbed {
-    return new BaseEmbed({ color: 3447003, description, title });
+    return new BaseEmbed({ color: ColorCodes.Blue, description, title });
   }
 
   static queueEmbed(title: string, description: string): MessageEmbed {
-    return new BaseEmbed({ color: 5763719, description, title });
+    return new BaseEmbed({ color: ColorCodes.Green, description, title });
   }
 
   static fullQueueEmbed(description: string): BaseEmbed {
-    return new BaseEmbed({ color: 5763719, description, title: "Queue is Full" });
+    return new BaseEmbed({ color: ColorCodes.Green, description, title: "Queue is Full" });
   }
 
   static async activeMatchEmbed({ blue, orange }: ActiveMatchCreated): Promise<BaseEmbed> {
     const blueTeam: Array<string> = blue.players.map((player) => "<@" + player.id + ">");
     const orangeTeam: Array<string> = orange.players.map((player) => "<@" + player.id + ">");
     const activeMatchEmbed = new BaseEmbed({
-      color: 10038562,
+      color: ColorCodes.DarkRed,
       fields: [
         { name: "🔷 Blue Team 🔷", value: blueTeam.join("\n") },
         { name: "🔶 Orange Team 🔶", value: orangeTeam.join("\n") },
@@ -86,15 +87,15 @@ export default class EmbedBuilder {
   }
 
   static voteForCaptainsOrRandomEmbed(title: string, description: string): BaseEmbed {
-    return new BaseEmbed({ color: 5763719, description, title });
+    return new BaseEmbed({ color: ColorCodes.Green, description, title });
   }
 
   static captainsChooseEmbed(team: Team, captain: string): BaseEmbed {
     switch (team) {
       case Team.Blue:
-        return new BaseEmbed({ color: 3447003, description: "🔷 " + captain + " 🔷 chooses first" });
+        return new BaseEmbed({ color: ColorCodes.Blue, description: "🔷 " + captain + " 🔷 chooses first" });
       case Team.Orange:
-        return new BaseEmbed({ color: 15105570, description: "🔶 " + captain + " 🔶 choose 2 players" });
+        return new BaseEmbed({ color: ColorCodes.Orange, description: "🔶 " + captain + " 🔶 choose 2 players" });
     }
   }
 }

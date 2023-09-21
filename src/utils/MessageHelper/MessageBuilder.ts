@@ -11,7 +11,7 @@ import {
 } from "discord.js";
 import { ActiveMatchCreated } from "../../services/MatchService";
 import { Team } from "../../types/common";
-import { getEnvVariable } from "../utils";
+import { ColorCodes, getEnvVariable } from "../utils";
 import { PlayerInQueue } from "../../repositories/QueueRepository/types";
 import EmbedBuilder, { BaseEmbed } from "./EmbedBuilder";
 import ButtonBuilder from "./ButtonBuilder";
@@ -68,7 +68,7 @@ export default class MessageBuilder {
 
   static fullQueueMessage(ballchasers: ReadonlyArray<Readonly<PlayerInQueue>>): MessageOptions {
     const embed = new MessageEmbed({
-      color: 5763719,
+      color: ColorCodes.Green,
       thumbnail: { url: this.normIconURL },
     });
     const randomTeamsButton = new MessageButton({
@@ -216,7 +216,7 @@ export default class MessageBuilder {
       customId: ButtonCustomID.ReportOrange,
     });
     const activeMatchEmbed = new BaseEmbed({
-      color: 10038562,
+      color: ColorCodes.DarkRed,
       fields: [
         { name: "🔷 Blue Team 🔷", value: blueTeam.join("\n") },
         { name: "🔶 Orange Team 🔶", value: orangeTeam.join("\n") },
@@ -289,7 +289,7 @@ export default class MessageBuilder {
     const captainsCounterLabel = captainsVotes;
     const randomCounterLabel = randomVotes;
     const embed = new MessageEmbed({
-      color: 5763719,
+      color: ColorCodes.Green,
       thumbnail: { url: this.normIconURL },
     });
     const randomTeamsButton = new MessageButton({
@@ -357,7 +357,7 @@ export default class MessageBuilder {
     const captainsCounterLabel = captainsVotes;
     const randomCounterLabel = randomVotes;
     const embed = new MessageEmbed({
-      color: 5763719,
+      color: ColorCodes.Green,
       thumbnail: { url: this.normIconURL },
     });
     const randomTeamsButton = new MessageButton({
