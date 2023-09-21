@@ -81,7 +81,6 @@ export class ActiveMatchRepository {
         },
       })
       .then((match) => {
-
         return this.#ActiveMatch.count({
           where: {
             brokenQueue: true,

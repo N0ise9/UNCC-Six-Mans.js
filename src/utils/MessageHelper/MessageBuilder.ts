@@ -208,6 +208,7 @@ export default class MessageBuilder {
     const brokenQueueButton = new ButtonBuilder({
       customId: ButtonCustomID.BrokenQueue,
       label: "Broken Queue (" + brokenQueueVotes + ")",
+      style: ButtonStyle.Danger,
     });
     const reportBlueWonButton = new CustomButton({
       customId: ButtonCustomID.ReportBlue,

@@ -57,7 +57,7 @@ NormClient.on("interactionCreate", async (interaction) => {
 
     await handleInteraction(interaction, NormClient);
     await handleDevInteraction(interaction);
-  } else if (interaction.isSelectMenu()) {
+  } else if (interaction.isStringSelectMenu()) {
     await interaction.deferUpdate();
 
     await handleMenuInteraction(interaction);

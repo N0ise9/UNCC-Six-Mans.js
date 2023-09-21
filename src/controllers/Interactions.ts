@@ -48,9 +48,10 @@ export async function handleInteraction(
 
           const msg = await message.channel.send({ content: list.toString() });
           msg;
+          // Implement check against 7> - remove most recent queue time from list
           Promise.all([
             msg.delete(),
-            message.edit(MessageBuilder.fullQueueMessage(ballchasers)),
+            await message.edit(MessageBuilder.fullQueueMessage(ballchasers)),
             QueueRepository.resetCaptainsRandomVoters(),
           ]);
           const diff = new Date().getTime() - time;

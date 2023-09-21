@@ -130,7 +130,7 @@ export class QueueRepository {
     await this.#Queue.update({
       data: {
         isCap: updates.isCap,
-        queueTime: updates.queueTime!.toISO()!,
+        queueTime: updates.queueTime?.toISO()?.toString(),
         team: updates.team,
       },
       where: { playerId: id },
