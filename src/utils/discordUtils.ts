@@ -17,7 +17,7 @@ export async function getDiscordChannelById(
     return null;
   }
 
-  if (channel.isText()) {
+  if (channel.isTextBased()) {
     return channel as TextChannel;
   }
 
