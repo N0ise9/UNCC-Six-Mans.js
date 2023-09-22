@@ -156,7 +156,8 @@ export async function handleInteraction(
 
 async function captainsRandomVote(buttonInteraction: ButtonInteraction, message: Message) {
   const playerInQueue = await QueueRepository.isPlayerInQueue(buttonInteraction.user.id);
-  if (!playerInQueue) return;
+  const queue = await QueueRepository.getAllBallChasersInQueue();
+  if (!playerInQueue || queue.length != 6) return;
   const ballChasers = await QueueRepository.getAllBallChasersInQueue();
 
   const vote = await QueueRepository.countCaptainsRandomVote(buttonInteraction);
@@ -189,7 +190,6 @@ async function captainsRandomVote(buttonInteraction: ButtonInteraction, message:
       if (player) {
         voterList.push(player);
       }
-      // break;
     }
     Promise.all([
       await message.edit(
