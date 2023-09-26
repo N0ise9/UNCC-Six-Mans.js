@@ -61,7 +61,7 @@ async function manuallyAddBallChaserToQueue(ballChaser: PlayerInQueue) {
       queue: {
         create: {
           isCap: ballChaser.isCap,
-          queueTime: ballChaser.queueTime.toISO(),
+          queueTime: ballChaser.queueTime.toISO()!,
           team: ballChaser.team,
         },
       },
@@ -96,7 +96,7 @@ describe("Queue Repository tests", () => {
         queue: {
           create: {
             isCap: expectedBallChaser.isCap,
-            queueTime: expectedBallChaser.queueTime.toISO(),
+            queueTime: expectedBallChaser.queueTime.toISO()!,
             team: expectedBallChaser.team,
           },
         },

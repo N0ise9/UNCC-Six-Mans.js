@@ -8,7 +8,7 @@ import { handleAdminInteraction, registerAdminSlashCommands } from "./controller
 import { handleMenuInteraction } from "./controllers/MenuInteractions";
 import { startQueueTimer } from "./controllers/QueueController";
 
-const NormClient = new Client({ intents: "GUILDS" });
+const NormClient = new Client({ intents: "Guilds" });
 
 const guildId = getEnvVariable("guild_id");
 const leaderboardChannelId = getEnvVariable("leaderboard_channel_id");
@@ -57,7 +57,7 @@ NormClient.on("interactionCreate", async (interaction) => {
 
     await handleInteraction(interaction, NormClient);
     await handleDevInteraction(interaction);
-  } else if (interaction.isSelectMenu()) {
+  } else if (interaction.isStringSelectMenu()) {
     await interaction.deferUpdate();
 
     await handleMenuInteraction(interaction);

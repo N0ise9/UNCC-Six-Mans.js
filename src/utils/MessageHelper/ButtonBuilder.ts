@@ -1,9 +1,10 @@
-import { MessageActionRow, MessageButton } from "discord.js";
+import { ActionRowBuilder, ButtonBuilder } from "discord.js";
 import { getEnvVariable } from "../utils";
-import CustomButton, { ButtonCustomID, QueueButtonOptions } from "./CustomButtons";
+import CustomButton, { ButtonCustomID } from "./CustomButtons";
 
 const isDev = getEnvVariable("ENVIRONMENT") === "dev";
 
+const joinButton = new CustomButton({ customId: ButtonCustomID.JoinQueue });
 const leaveButton = new CustomButton({ customId: ButtonCustomID.LeaveQueue });
 const fillTeamButton = new CustomButton({ customId: ButtonCustomID.FillTeam });
 const removeAllButton = new CustomButton({ customId: ButtonCustomID.RemoveAll });
@@ -14,48 +15,37 @@ const reportBlueWonButton = new CustomButton({ customId: ButtonCustomID.ReportBl
 const reportOrangeWonButton = new CustomButton({ customId: ButtonCustomID.ReportOrange });
 const brokenQueueButton = new CustomButton({ customId: ButtonCustomID.BrokenQueue });
 
-export default class ButtonBuilder extends MessageButton {
-  static queueButtons(options: QueueButtonOptions = { disabled: false }): MessageActionRow {
-    const dynamicJoinButton = new CustomButton({
-      customId: ButtonCustomID.JoinQueue,
-      disabled: options.disabled,
-      label: options.disabled && options.buttonId === ButtonCustomID.JoinQueue ? "Please wait..." : "Join",
-    });
-    const dynamicLeaveButton = new CustomButton({
-      customId: ButtonCustomID.LeaveQueue,
-      disabled: options.disabled,
-      label: options.disabled && options.buttonId === ButtonCustomID.LeaveQueue ? "Please wait..." : "Leave",
-    });
-
-    const components = [dynamicJoinButton, dynamicLeaveButton];
+export default class MessageButtons extends ButtonBuilder {
+  static queueButtons(): ActionRowBuilder<ButtonBuilder> {
+    const components = [joinButton, leaveButton];
     if (isDev) {
       components.push(fillTeamButton, removeAllButton);
     }
-    return new MessageActionRow({ components: components });
+    return new ActionRowBuilder({ components: components });
   }
 
-  static fullQueueButtons(): MessageActionRow {
+  static fullQueueButtons(): ActionRowBuilder<ButtonBuilder> {
     const components = [chooseTeamsButton, randomTeamsButton, leaveButton];
 
     if (isDev) {
       components.push(removeAllButton);
     }
-    return new MessageActionRow({ components: components });
+    return new ActionRowBuilder({ components: components });
   }
 
-  static activeMatchButtons(): MessageActionRow {
+  static activeMatchButtons(): ActionRowBuilder<ButtonBuilder> {
     const components = [brokenQueueButton, reportBlueWonButton, reportOrangeWonButton];
     if (isDev) {
       components.push(breakMatchButton);
     }
-    return new MessageActionRow({ components: components });
+    return new ActionRowBuilder({ components: components });
   }
 
-  static breakMatchButtons(): MessageActionRow {
-    return new MessageActionRow({ components: [breakMatchButton] });
+  static breakMatchButtons(): ActionRowBuilder<ButtonBuilder> {
+    return new ActionRowBuilder({ components: [breakMatchButton] });
   }
 
-  static removeAllButtons(): MessageActionRow {
-    return new MessageActionRow({ components: [removeAllButton] });
+  static removeAllButtons(): ActionRowBuilder<ButtonBuilder> {
+    return new ActionRowBuilder({ components: [removeAllButton] });
   }
 }

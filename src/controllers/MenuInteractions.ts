@@ -1,4 +1,4 @@
-import { Message, SelectMenuInteraction } from "discord.js";
+import { Message, StringSelectMenuInteraction } from "discord.js";
 import QueueRepository from "../repositories/QueueRepository";
 import { PlayerInQueue } from "../repositories/QueueRepository/types";
 import { createMatchFromChosenTeams } from "../services/MatchService";
@@ -7,7 +7,7 @@ import { Team } from "../types/common";
 import { getEnvVariable } from "../utils";
 import MessageBuilder, { MenuCustomID } from "../utils/MessageHelper/MessageBuilder";
 
-export async function handleMenuInteraction(menuInteraction: SelectMenuInteraction): Promise<void> {
+export async function handleMenuInteraction(menuInteraction: StringSelectMenuInteraction): Promise<void> {
   const message = menuInteraction.message;
   if (!(message instanceof Message)) return;
 

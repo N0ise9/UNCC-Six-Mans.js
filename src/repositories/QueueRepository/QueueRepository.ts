@@ -4,7 +4,6 @@ import { DateTime } from "luxon";
 import LeaderboardRepository from "../LeaderboardRepository";
 import { waitForAllPromises } from "../../utils";
 import { Team } from "../../types/common";
-// import { InvalidCommand, isRecordNotFoundError } from "../../utils/InvalidCommand";
 import { ButtonInteraction } from "discord.js";
 import { ButtonCustomID } from "../../utils/MessageHelper/CustomButtons";
 
@@ -107,7 +106,6 @@ export class QueueRepository {
    */
   async removeBallChaserFromQueue(id: string): Promise<void> {
     await this.#Queue.delete({ where: { playerId: id } }).catch(() => {
-
       // Commenting this out because if a player leaves while not in queue, the bot freezes and stops
       // if (isRecordNotFoundError(err)) {
       //   throw new InvalidCommand("Player not in queue.");
@@ -132,7 +130,7 @@ export class QueueRepository {
     await this.#Queue.update({
       data: {
         isCap: updates.isCap,
-        queueTime: updates.queueTime?.toISO(),
+        queueTime: updates.queueTime?.toISO()?.toString(),
         team: updates.team,
       },
       where: { playerId: id },
@@ -150,7 +148,7 @@ export class QueueRepository {
         name: ballChaserToAdd.name,
         queue: {
           create: {
-            queueTime: ballChaserToAdd.queueTime.toISO(),
+            queueTime: ballChaserToAdd.queueTime.toISO()!,
           },
         },
       },
@@ -158,7 +156,7 @@ export class QueueRepository {
         name: ballChaserToAdd.name,
         queue: {
           create: {
-            queueTime: ballChaserToAdd.queueTime.toISO(),
+            queueTime: ballChaserToAdd.queueTime.toISO()!,
           },
         },
       },

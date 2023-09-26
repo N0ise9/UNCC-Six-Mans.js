@@ -17,6 +17,13 @@ export function generateRandomId(): string {
   return chars;
 }
 
+export const enum ColorCodes {
+  Green = 5763719,
+  Blue = 3447003,
+  Orange = 15105570,
+  DarkRed = 10038562,
+}
+
 export function getEnvVariable(token: string): string {
   const envVariable = process.env[token];
 

@@ -1,13 +1,14 @@
-import { MessageEmbed, MessageEmbedOptions } from "discord.js";
+import { EmbedBuilder as MessageEmbed, EmbedData } from "discord.js";
 import { ActiveMatchCreated } from "../../services/MatchService";
 import { Team } from "../../types/common";
 import EventRepository from "../../repositories/EventRepository/EventRepository";
+import { ColorCodes } from "../utils";
 
 export class BaseEmbed extends MessageEmbed {
   private static readonly normIconURL =
-    "https://raw.githubusercontent.com/mattwells19/UNCC-Six-Mans.js/main/media/norm_still.png";
+    "https://raw.githubusercontent.com/N0ise9/UNCC-Six-Mans.js/main/media/norm_still.png";
 
-  constructor(messageOptions: MessageEmbedOptions) {
+  constructor(messageOptions: EmbedData) {
     messageOptions.thumbnail = { url: BaseEmbed.normIconURL };
     super(messageOptions);
   }
@@ -15,22 +16,22 @@ export class BaseEmbed extends MessageEmbed {
 
 export default class EmbedBuilder {
   static leaderboardEmbed(description: string, title: string): MessageEmbed {
-    return new BaseEmbed({ color: "BLUE", description, title });
+    return new BaseEmbed({ color: ColorCodes.Blue, description, title });
   }
 
   static queueEmbed(title: string, description: string): MessageEmbed {
-    return new BaseEmbed({ color: "GREEN", description, title });
+    return new BaseEmbed({ color: ColorCodes.Green, description, title });
   }
 
   static fullQueueEmbed(description: string): BaseEmbed {
-    return new BaseEmbed({ color: "GREEN", description, title: "Queue is Full" });
+    return new BaseEmbed({ color: ColorCodes.Green, description, title: "Queue is Full" });
   }
 
   static async activeMatchEmbed({ blue, orange }: ActiveMatchCreated): Promise<BaseEmbed> {
     const blueTeam: Array<string> = blue.players.map((player) => "<@" + player.id + ">");
     const orangeTeam: Array<string> = orange.players.map((player) => "<@" + player.id + ">");
     const activeMatchEmbed = new BaseEmbed({
-      color: "DARK_RED",
+      color: ColorCodes.DarkRed,
       fields: [
         { name: "🔷 Blue Team 🔷", value: blueTeam.join("\n") },
         { name: "🔶 Orange Team 🔶", value: orangeTeam.join("\n") },
@@ -55,9 +56,10 @@ export default class EmbedBuilder {
     const blueMMR = blue.mmrStake * event.mmrMult;
     const orangeMMR = orange.mmrStake * event.mmrMult;
 
-    activeMatchEmbed.addField(
-      "MMR Stake & Probability Rating:\n",
-      "🔷 Blue Team: \u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0**(+" +
+    activeMatchEmbed.addFields({
+      name: "MMR Stake & Probability Rating:\n",
+      value:
+        "🔷 Blue Team: \u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0**(+" +
         blueMMR.toString() +
         ")**\u00A0\u00A0**(-" +
         orange.mmrStake.toString() +
@@ -69,31 +71,31 @@ export default class EmbedBuilder {
         winner +
         " predicted to have a **" +
         probability +
-        "%** chance of winning."
-    );
+        "%** chance of winning.",
+    });
 
     if (event.mmrMult > 1) {
-      activeMatchEmbed.addField(
-        "X" + event.mmrMult.toString() + " MMR Event!",
-        "Winnings are multiplied by **" + event.mmrMult.toString() + "** for this match!"
-      );
+      activeMatchEmbed.addFields({
+        name: "X" + event.mmrMult.toString() + " MMR Event!",
+        value: "Winnings are multiplied by **" + event.mmrMult.toString() + "** for this match!",
+      });
     }
 
-    activeMatchEmbed.addField("Reporting", "Use the buttons to report which team won the match.");
+    activeMatchEmbed.addFields({ name: "Reporting", value: "Use the buttons to report which team won the match." });
 
     return activeMatchEmbed;
   }
 
   static voteForCaptainsOrRandomEmbed(title: string, description: string): BaseEmbed {
-    return new BaseEmbed({ color: "GREEN", description, title });
+    return new BaseEmbed({ color: ColorCodes.Green, description, title });
   }
 
   static captainsChooseEmbed(team: Team, captain: string): BaseEmbed {
     switch (team) {
       case Team.Blue:
-        return new BaseEmbed({ color: "BLUE", description: "🔷 " + captain + " 🔷 chooses first" });
+        return new BaseEmbed({ color: ColorCodes.Blue, description: "🔷 " + captain + " 🔷 chooses first" });
       case Team.Orange:
-        return new BaseEmbed({ color: "ORANGE", description: "🔶 " + captain + " 🔶 choose 2 players" });
+        return new BaseEmbed({ color: ColorCodes.Orange, description: "🔶 " + captain + " 🔶 choose 2 players" });
     }
   }
 }
