@@ -39,6 +39,19 @@ export async function handleInteraction(
       const queue = await QueueRepository.getAllBallChasersInQueue();
       if (!QueueRepository.isPlayerInQueue(buttonInteraction.user.id) && queue.length === 6) return;
       const ballchasers = await joinQueue(buttonInteraction.user.id, buttonInteraction.user.username);
+      setTimeout(async () => {
+        const queueCheck = await QueueRepository.getAllBallChasersInQueue();
+        if (queueCheck.length > 6) {
+          const diff = new Date().getTime() - time;
+          console.log(
+            `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Removed Excess In Queue: ${
+              queueCheck[queueCheck.length - 1].name
+            } - ${diff}ms`
+          );
+          QueueRepository.removeBallChaserFromQueue(queueCheck[queueCheck.length - 1].id);
+          return;
+        }
+      }, 500);
 
       if (ballchasers) {
         if (ballchasers.length === 6) {
@@ -48,7 +61,7 @@ export async function handleInteraction(
 
           const msg = await message.channel.send({ content: list.toString() });
           msg;
-          // Implement check against 7> - remove most recent queue time from list
+
           Promise.all([
             msg.delete(),
             await message.edit(MessageBuilder.fullQueueMessage(ballchasers)),
@@ -70,8 +83,10 @@ export async function handleInteraction(
               buttonInteraction.user.username
             } - ${diff}ms`
           );
-        } else {
+        } else if (queue.length > 0 && queue.length < 6) {
+          //setTimeout(async () => {
           message.edit(MessageBuilder.queueMessage(ballchasers));
+          //}, 500);
           const diff = new Date().getTime() - time;
           console.log(
             `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Join: ${
@@ -85,6 +100,8 @@ export async function handleInteraction(
     }
 
     case ButtonCustomID.LeaveQueue: {
+      const playerInQueue = await QueueRepository.getBallChaserInQueue(buttonInteraction.user.id);
+      if (!playerInQueue) return;
       await leaveQueue(buttonInteraction.user.id).then(async (remainingMembers) => {
         return message.edit(MessageBuilder.queueMessage(remainingMembers));
       });
@@ -98,6 +115,8 @@ export async function handleInteraction(
     }
 
     case ButtonCustomID.CreateRandomTeam: {
+      const playerInQueue = await QueueRepository.getBallChaserInQueue(buttonInteraction.user.id);
+      if (!playerInQueue) return;
       await captainsRandomVote(buttonInteraction, message);
       const diff = new Date().getTime() - time;
       console.log(
@@ -109,6 +128,8 @@ export async function handleInteraction(
     }
 
     case ButtonCustomID.ChooseTeam: {
+      const playerInQueue = await QueueRepository.getBallChaserInQueue(buttonInteraction.user.id);
+      if (!playerInQueue) return;
       await captainsRandomVote(buttonInteraction, message);
       const diff = new Date().getTime() - time;
       console.log(
