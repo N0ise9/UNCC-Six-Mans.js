@@ -1,4 +1,3 @@
-import faker from "faker";
 import { BallChaserQueueBuilder } from "../../../../.jest/Builder";
 import { ActiveMatchCreated } from "../../../services/MatchService";
 import MessageBuilder from "../MessageBuilder";
