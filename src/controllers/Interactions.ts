@@ -1,4 +1,3 @@
-/* eslint-disable no-console */
 import { ButtonInteraction, Client, EmbedBuilder, Message, TextChannel } from "discord.js";
 import { joinQueue, leaveQueue } from "../services/QueueService";
 import MessageBuilder from "../utils/MessageHelper/MessageBuilder";
@@ -43,7 +42,7 @@ export async function handleInteraction(
         const queueCheck = await QueueRepository.getAllBallChasersInQueue();
         if (queueCheck.length > 6) {
           const diff = new Date().getTime() - time;
-          console.log(
+          console.info(
             `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Removed Excess In Queue: ${
               queueCheck[queueCheck.length - 1].name
             } - ${diff}ms`
@@ -68,7 +67,7 @@ export async function handleInteraction(
             QueueRepository.resetCaptainsRandomVoters(),
           ]);
           const diff = new Date().getTime() - time;
-          console.log(
+          console.info(
             `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Join: ${
               buttonInteraction.user.username
             } - ${diff}ms`
@@ -78,7 +77,7 @@ export async function handleInteraction(
           msg;
           Promise.all([msg.delete(), message.edit(MessageBuilder.queueMessage(ballchasers))]);
           const diff = new Date().getTime() - time;
-          console.log(
+          console.info(
             `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Join: ${
               buttonInteraction.user.username
             } - ${diff}ms`
@@ -88,7 +87,7 @@ export async function handleInteraction(
           message.edit(MessageBuilder.queueMessage(ballchasers));
           //}, 500);
           const diff = new Date().getTime() - time;
-          console.log(
+          console.info(
             `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Join: ${
               buttonInteraction.user.username
             } - ${diff}ms`
@@ -106,7 +105,7 @@ export async function handleInteraction(
         return message.edit(MessageBuilder.queueMessage(remainingMembers));
       });
       const diff = new Date().getTime() - time;
-      console.log(
+      console.info(
         `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Leave: ${
           buttonInteraction.user.username
         } - ${diff}ms`
@@ -119,7 +118,7 @@ export async function handleInteraction(
       if (!playerInQueue) return;
       await captainsRandomVote(buttonInteraction, message);
       const diff = new Date().getTime() - time;
-      console.log(
+      console.info(
         `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Random: ${
           buttonInteraction.user.username
         } - ${diff}ms`
@@ -132,7 +131,7 @@ export async function handleInteraction(
       if (!playerInQueue) return;
       await captainsRandomVote(buttonInteraction, message);
       const diff = new Date().getTime() - time;
-      console.log(
+      console.info(
         `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Captains: ${
           buttonInteraction.user.username
         } - ${diff}ms`
@@ -143,7 +142,7 @@ export async function handleInteraction(
     case ButtonCustomID.ReportBlue: {
       await report(buttonInteraction, Team.Blue, message, NormClient);
       const diff = new Date().getTime() - time;
-      console.log(
+      console.info(
         `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Report Blue: ${
           buttonInteraction.user.username
         } - ${diff}ms`
@@ -154,7 +153,7 @@ export async function handleInteraction(
     case ButtonCustomID.ReportOrange: {
       await report(buttonInteraction, Team.Orange, message, NormClient);
       const diff = new Date().getTime() - time;
-      console.log(
+      console.info(
         `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Report Orange: ${
           buttonInteraction.user.username
         } - ${diff}ms`
@@ -165,7 +164,7 @@ export async function handleInteraction(
     case ButtonCustomID.BrokenQueue: {
       await brokenQueue(buttonInteraction, message);
       const diff = new Date().getTime() - time;
-      console.log(
+      console.info(
         `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Broken Queue: ${
           buttonInteraction.user.username
         } - ${diff}ms`

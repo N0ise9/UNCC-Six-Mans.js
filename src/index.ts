@@ -8,11 +8,12 @@ import { handleAdminInteraction, registerAdminSlashCommands } from "./controller
 import { handleMenuInteraction } from "./controllers/MenuInteractions";
 import { startQueueTimer } from "./controllers/QueueController";
 
-const NormClient = new Client({ intents: "Guilds" });
+const NormClient = new Client({ intents: ["Guilds", "GuildMessages", "GuildMessageReactions", "GuildMessageTyping"] });
 
 const guildId = getEnvVariable("guild_id");
 const leaderboardChannelId = getEnvVariable("leaderboard_channel_id");
 const queueChannelId = getEnvVariable("queue_channel_id");
+const chatChannelId = getEnvVariable("chat_channel_id");
 const discordToken = getEnvVariable("token");
 
 let queueEmbed: Message | null;
@@ -42,7 +43,18 @@ NormClient.on("ready", async (client) => {
       queueEmbed = queueEmbedMsg ?? null;
     });
 
-  await Promise.all([registerAdminCommandsPromise, updateLeaderboardPromise, postCurrentQueuePromise]);
+  const registerChatPromise = getDiscordChannelById(NormClient, chatChannelId).then((chatChannel) => {
+    if (!chatChannel) {
+      console.warn("Unable to access chat channel.");
+    }
+  });
+
+  await Promise.all([
+    registerAdminCommandsPromise,
+    updateLeaderboardPromise,
+    postCurrentQueuePromise,
+    registerChatPromise,
+  ]);
 
   if (queueEmbed) {
     startQueueTimer(queueEmbed);
@@ -66,6 +78,36 @@ NormClient.on("interactionCreate", async (interaction) => {
 
     await interaction.deferReply({ ephemeral: true });
     await handleAdminInteraction(interaction, queueEmbed);
+  }
+});
+
+NormClient.on("messageCreate", async (message) => {
+  if (message.channelId === chatChannelId) {
+    console.info("message sent");
+  }
+});
+
+NormClient.on("messageUpdate", async (message) => {
+  if (message.channelId === chatChannelId) {
+    console.info("message updated");
+  }
+});
+
+NormClient.on("typingStart", async (typing) => {
+  if (typing.channel.id === chatChannelId) {
+    console.info("typing");
+  }
+});
+
+NormClient.on("messageReactionAdd", async (reaction) => {
+  if (reaction.message.channelId === chatChannelId) {
+    console.info("reaction added");
+  }
+});
+
+NormClient.on("messageReactionRemove", async (reaction) => {
+  if (reaction.message.channelId === chatChannelId) {
+    console.info("reaction removed");
   }
 });
 
