@@ -83,6 +83,7 @@ NormClient.on("interactionCreate", async (interaction) => {
 
 NormClient.on("messageCreate", async (message) => {
   if (message.channelId === chatChannelId) {
+    //get message content
     console.info("message sent");
   }
 });
