@@ -50,7 +50,7 @@ export default class MessageBuilder {
         .map((ballChaser) => {
           // + 1 since it seems that joining the queue calculates to 59 instead of 60
           const queueTime = ballChaser.queueTime?.diffNow().as("minutes") ?? 0;
-          return `${ballChaser.name} (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
+          return `<@${ballChaser.id}> (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
         })
         .join("\n");
 

@@ -7,8 +7,11 @@ import { handleDevInteraction } from "./controllers/DevInteractions";
 import { handleAdminInteraction, registerAdminSlashCommands } from "./controllers/AdminController";
 import { handleMenuInteraction } from "./controllers/MenuInteractions";
 import { startQueueTimer } from "./controllers/QueueController";
+import { normCommand, startChatMonitor } from "./controllers/EasterEggs";
 
-const NormClient = new Client({ intents: ["Guilds", "GuildMessages", "GuildMessageReactions", "GuildMessageTyping"] });
+const NormClient = new Client({
+  intents: ["Guilds", "GuildMessages", "GuildMessageReactions", "GuildMessageTyping", "MessageContent"],
+});
 
 const guildId = getEnvVariable("guild_id");
 const leaderboardChannelId = getEnvVariable("leaderboard_channel_id");
@@ -17,6 +20,7 @@ const chatChannelId = getEnvVariable("chat_channel_id");
 const discordToken = getEnvVariable("token");
 
 let queueEmbed: Message | null;
+let chatChannelMonitor: boolean = false;
 
 // function called on startup
 NormClient.on("ready", async (client) => {
@@ -46,6 +50,8 @@ NormClient.on("ready", async (client) => {
   const registerChatPromise = getDiscordChannelById(NormClient, chatChannelId).then((chatChannel) => {
     if (!chatChannel) {
       console.warn("Unable to access chat channel.");
+    } else {
+      return (chatChannelMonitor = true);
     }
   });
 
@@ -60,6 +66,12 @@ NormClient.on("ready", async (client) => {
     startQueueTimer(queueEmbed);
   } else {
     console.warn("Unable to start queue timers since queue embed is null.");
+  }
+
+  if (chatChannelMonitor) {
+    startChatMonitor();
+  } else {
+    console.warn("Unable to start chat monitoring timer on a channel that doesn't exist.");
   }
 });
 
@@ -83,8 +95,8 @@ NormClient.on("interactionCreate", async (interaction) => {
 
 NormClient.on("messageCreate", async (message) => {
   if (message.channelId === chatChannelId) {
-    //get message content
-    console.info("message sent");
+    normCommand(message);
+    //console.info("message sent");
   }
 });
 
