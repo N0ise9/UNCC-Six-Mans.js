@@ -46,6 +46,7 @@ const enum EasterEggCustomID {
   Hi = "!hi",
   Norm = "!norm",
   NormQ = "!normq",
+  FuckIt = "!fuckit",
 }
 
 let eggs: boolean = false;
@@ -151,6 +152,24 @@ export async function normCommand(chatChannel: TextChannel, message: Message): P
         const diff = new Date().getTime() - time;
         console.info(
           `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !norm: ${
+            message.author.username
+          } - ${diff}ms`
+        );
+        reset = true;
+        return;
+      }
+
+      if (message.content.toLowerCase().match(EasterEggCustomID.FuckIt)) {
+        const fButton = new MessageButton({
+          customId: "fuckit",
+          label: "Fuck It All",
+          style: ButtonStyle.Danger,
+        });
+
+        chatChannel.send({ components: [new ActionRowBuilder<ButtonBuilder>({ components: [fButton] })] });
+        const diff = new Date().getTime() - time;
+        console.info(
+          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !fuckit: ${
             message.author.username
           } - ${diff}ms`
         );
