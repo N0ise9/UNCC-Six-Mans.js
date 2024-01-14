@@ -95,7 +95,7 @@ export default class MessageBuilder {
       .map((ballChaser) => {
         // + 1 since it seems that joining the queue calculates to 59 instead of 60
         const queueTime = ballChaser.queueTime?.diffNow().as("minutes") ?? 0;
-        return `${ballChaser.name} (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
+        return `<@${ballChaser.id}> (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
       })
       .join("\n");
 
@@ -130,17 +130,20 @@ export default class MessageBuilder {
     const orangeTeam: Array<string> = [];
     const blueTeam: Array<string> = [];
     let captain = "";
+    let playerName = "";
     const embedColor = firstPick ? Team.Blue : Team.Orange;
 
     ballChasers.forEach((player) => {
       if (player.team === Team.Blue) {
         if (player.isCap && firstPick) {
-          captain = player.name;
+          captain = `<@${player.id}>`;
+          playerName = player.name;
         }
         blueTeam.push("<@" + player.id + ">");
       } else if (player.team === Team.Orange) {
         if (player.isCap && !firstPick) {
-          captain = player.name;
+          captain = `<@${player.id}>`;
+          playerName = player.name;
         }
         orangeTeam.push("<@" + player.id + ">");
       } else {
@@ -157,7 +160,7 @@ export default class MessageBuilder {
     const playerChoices = new StringSelectMenuBuilder();
 
     if (firstPick) {
-      playerChoices.setCustomId(MenuCustomID.BlueSelect).setPlaceholder(captain + " choose a player");
+      playerChoices.setCustomId(MenuCustomID.BlueSelect).setPlaceholder(playerName + " choose a player");
     } else {
       playerChoices
         .setCustomId(MenuCustomID.OrangeSelect)
@@ -323,11 +326,11 @@ export default class MessageBuilder {
         const voter = voterList.find((p) => p.id == ballChaser.id);
         const vote = players.get(ballChaser.id);
         if (voter && vote == ButtonCustomID.ChooseTeam) {
-          return `${cap} ${ballChaser.name} (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
+          return `${cap} <@${ballChaser.id}> (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
         } else if (voter && vote == ButtonCustomID.CreateRandomTeam) {
-          return `${ran} ${ballChaser.name} (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
+          return `${ran} <@${ballChaser.id}> (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
         } else {
-          return `${ballChaser.name} (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
+          return `<@${ballChaser.id}> (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
         }
       })
       .join("\n");
