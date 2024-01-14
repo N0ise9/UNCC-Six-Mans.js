@@ -1,6 +1,15 @@
 /* eslint-disable no-console */
 
-import { Message, TextChannel } from "discord.js";
+import {
+  EmbedBuilder as MessageEmbed,
+  Message,
+  TextChannel,
+  ButtonStyle,
+  ActionRowBuilder,
+  ButtonBuilder as MessageButton,
+} from "discord.js";
+import ButtonBuilder from "../utils/MessageHelper/ButtonBuilder";
+import { ColorCodes } from "../utils";
 
 // const eggCommands: string[] = [
 //   "twan",
@@ -36,10 +45,12 @@ import { Message, TextChannel } from "discord.js";
 const enum EasterEggCustomID {
   Hi = "!hi",
   Norm = "!norm",
+  NormQ = "!normq",
 }
 
 let eggs: boolean = false;
 let reset: boolean = false;
+const normIconURL = "https://raw.githubusercontent.com/N0ise9/UNCC-Six-Mans.js/main/media/norm_still.png";
 
 export async function normCommand(chatChannel: TextChannel, message: Message): Promise<void> {
   if (message.content.charAt(0) === "!") {
@@ -53,7 +64,7 @@ export async function normCommand(chatChannel: TextChannel, message: Message): P
     const mil = new Date().getMilliseconds();
 
     if (eggs) {
-      if (message.content.includes(EasterEggCustomID.Hi)) {
+      if (message.content.toLowerCase().match(EasterEggCustomID.Hi)) {
         chatChannel.send("<@" + message.author + "> " + "hi");
         const diff = new Date().getTime() - time;
         console.info(
@@ -65,7 +76,42 @@ export async function normCommand(chatChannel: TextChannel, message: Message): P
         return;
       }
 
-      if (message.content.includes(EasterEggCustomID.Norm)) {
+      if (message.content.toLowerCase().match(EasterEggCustomID.NormQ)) {
+        const embed = new MessageEmbed({
+          color: ColorCodes.Green,
+          thumbnail: { url: normIconURL },
+        });
+        const joinButton = new MessageButton({
+          customId: "joining",
+          label: "Join",
+          style: ButtonStyle.Success,
+        });
+        const leaveButton = new MessageButton({
+          customId: "leaving",
+          label: "Leave",
+          style: ButtonStyle.Danger,
+        });
+
+        embed
+          .setTitle("Current Queue: 1/6")
+          .setDescription("Click the green button to join the queue! \n\n" + "<@994106480477351946> (60 mins)");
+
+        chatChannel.send({
+          components: [new ActionRowBuilder<ButtonBuilder>({ components: [joinButton, leaveButton] })],
+          embeds: [embed],
+        });
+
+        const diff = new Date().getTime() - time;
+        console.info(
+          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !normq: ${
+            message.author.username
+          } - ${diff}ms`
+        );
+        reset = true;
+        return;
+      }
+
+      if (message.content.toLowerCase().match(EasterEggCustomID.Norm)) {
         const possibleReponse = [
           "hi",
           "That is a resounding no.",
