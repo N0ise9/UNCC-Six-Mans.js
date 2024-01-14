@@ -1,4 +1,4 @@
-import { Client, Message } from "discord.js";
+import { Client, Message, TextChannel } from "discord.js";
 import { updateLeaderboardChannel } from "./controllers/LeaderboardChannelController";
 import { handleInteraction, postCurrentQueue } from "./controllers/Interactions";
 import { getDiscordChannelById } from "./utils/discordUtils";
@@ -21,6 +21,7 @@ const discordToken = getEnvVariable("token");
 
 let queueEmbed: Message | null;
 let chatChannelMonitor: boolean = false;
+let chatChannel: TextChannel;
 
 // function called on startup
 NormClient.on("ready", async (client) => {
@@ -47,10 +48,11 @@ NormClient.on("ready", async (client) => {
       queueEmbed = queueEmbedMsg ?? null;
     });
 
-  const registerChatPromise = getDiscordChannelById(NormClient, chatChannelId).then((chatChannel) => {
-    if (!chatChannel) {
+  const registerChatPromise = getDiscordChannelById(NormClient, chatChannelId).then((getChatChannel) => {
+    if (!getChatChannel) {
       console.warn("Unable to access chat channel.");
     } else {
+      chatChannel = getChatChannel;
       return (chatChannelMonitor = true);
     }
   });
@@ -95,7 +97,7 @@ NormClient.on("interactionCreate", async (interaction) => {
 
 NormClient.on("messageCreate", async (message) => {
   if (message.channelId === chatChannelId) {
-    normCommand(message);
+    normCommand(chatChannel, message);
     //console.info("message sent");
   }
 });
