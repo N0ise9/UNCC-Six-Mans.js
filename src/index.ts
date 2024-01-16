@@ -1,4 +1,4 @@
-import { Client, Message } from "discord.js";
+import { Client, Message, TextChannel } from "discord.js";
 import { updateLeaderboardChannel } from "./controllers/LeaderboardChannelController";
 import { handleInteraction, postCurrentQueue } from "./controllers/Interactions";
 import { getDiscordChannelById } from "./utils/discordUtils";
@@ -7,15 +7,21 @@ import { handleDevInteraction } from "./controllers/DevInteractions";
 import { handleAdminInteraction, registerAdminSlashCommands } from "./controllers/AdminController";
 import { handleMenuInteraction } from "./controllers/MenuInteractions";
 import { startQueueTimer } from "./controllers/QueueController";
+import { normCommand, startChatMonitor } from "./controllers/EasterEggs";
 
-const NormClient = new Client({ intents: "Guilds" });
+const NormClient = new Client({
+  intents: ["Guilds", "GuildMessages", "GuildMessageReactions", "GuildMessageTyping", "MessageContent"],
+});
 
 const guildId = getEnvVariable("guild_id");
 const leaderboardChannelId = getEnvVariable("leaderboard_channel_id");
 const queueChannelId = getEnvVariable("queue_channel_id");
+const chatChannelId = getEnvVariable("chat_channel_id");
 const discordToken = getEnvVariable("token");
 
 let queueEmbed: Message | null;
+let chatChannelMonitor: boolean = false;
+let chatChannel: TextChannel;
 
 // function called on startup
 NormClient.on("ready", async (client) => {
@@ -42,12 +48,32 @@ NormClient.on("ready", async (client) => {
       queueEmbed = queueEmbedMsg ?? null;
     });
 
-  await Promise.all([registerAdminCommandsPromise, updateLeaderboardPromise, postCurrentQueuePromise]);
+  const registerChatPromise = getDiscordChannelById(NormClient, chatChannelId).then((getChatChannel) => {
+    if (!getChatChannel) {
+      console.warn("Unable to access chat channel.");
+    } else {
+      chatChannel = getChatChannel;
+      return (chatChannelMonitor = true);
+    }
+  });
+
+  await Promise.all([
+    registerAdminCommandsPromise,
+    updateLeaderboardPromise,
+    postCurrentQueuePromise,
+    registerChatPromise,
+  ]);
 
   if (queueEmbed) {
     startQueueTimer(queueEmbed);
   } else {
     console.warn("Unable to start queue timers since queue embed is null.");
+  }
+
+  if (chatChannelMonitor) {
+    startChatMonitor();
+  } else {
+    console.warn("Unable to start chat monitoring timer on a channel that doesn't exist.");
   }
 });
 
@@ -66,6 +92,37 @@ NormClient.on("interactionCreate", async (interaction) => {
 
     await interaction.deferReply({ ephemeral: true });
     await handleAdminInteraction(interaction, queueEmbed);
+  }
+});
+
+NormClient.on("messageCreate", async (message) => {
+  if (message.channelId === chatChannelId) {
+    normCommand(chatChannel, message);
+    //console.info("message sent");
+  }
+});
+
+NormClient.on("messageUpdate", async (message) => {
+  if (message.channelId === chatChannelId) {
+    console.info("message updated");
+  }
+});
+
+NormClient.on("typingStart", async (typing) => {
+  if (typing.channel.id === chatChannelId) {
+    console.info("typing");
+  }
+});
+
+NormClient.on("messageReactionAdd", async (reaction) => {
+  if (reaction.message.channelId === chatChannelId) {
+    console.info("reaction added");
+  }
+});
+
+NormClient.on("messageReactionRemove", async (reaction) => {
+  if (reaction.message.channelId === chatChannelId) {
+    console.info("reaction removed");
   }
 });
 
