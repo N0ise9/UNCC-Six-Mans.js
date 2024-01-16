@@ -2,7 +2,7 @@
 
 ## Install NodeJS
 
-Discord.js requires Node 16.11.0 or newer. Go to [nodejs.org](https://nodejs.org/en/), download and install NodeJS 16.11.0 or newer. Be sure to include NPM and adding Node to your PATH during installation.
+Discord.js requires Node 18.18.0 or newer. Go to [nodejs.org](https://nodejs.org/en/), download and install NodeJS 18.18.0 or newer. Be sure to include NPM and adding Node to your PATH during installation.
 
 - NPM stands for Node Package Manager and is a command-line tool for managing dependencies of projects.
 - You can verify node is installed by opening a terminal and typing `node --version`. Verify the version matches the requirements above.
