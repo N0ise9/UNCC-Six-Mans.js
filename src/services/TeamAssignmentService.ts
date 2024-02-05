@@ -7,17 +7,19 @@ export function createRandomTeams(ballchasers: ReadonlyArray<PlayerInQueue>): Ar
   const sortedBallChaser = ballchasers.slice().sort((o, b) => o.mmr - b.mmr);
 
   const activeMatch: NewActiveMatchInput[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let orangeTeamMmr = 0;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let blueTeamMmr = 0;
   let orangeTeamCounter = 0;
   let blueTeamCounter = 0;
 
-  //This splits the teams with the minimal difference in the sum of MMR.
+  //This maintains randomness among assigned teams.
   //This actually splits the ball chasers into two arrays that aren't
-  //neccessarily even arrays.  So the If statements that say .lenght /2
+  //neccessarily even arrays.  So the If statements that say .length /2
   //is ensuring that there aren't 4 players on one team and two on the other.
   sortedBallChaser.forEach((p) => {
-    if (blueTeamMmr > orangeTeamMmr) {
+    if (Math.round(Math.random()) == 1) {
       if (orangeTeamCounter < sortedBallChaser.length / 2) {
         orangeTeamMmr += p.mmr;
         activeMatch.push({ id: p.id, team: Team.Orange });
