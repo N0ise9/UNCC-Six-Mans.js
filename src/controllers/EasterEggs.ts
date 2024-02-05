@@ -125,7 +125,7 @@ export async function normCommand(chatChannel: TextChannel, message: Message, op
         if (reply && reply.length > 1998) {
           reply.slice(0, 1998);
         }
-        chatChannel.send("<@" + message.author + "> " + completion.choices[0].message.content);
+        chatChannel.send("<@" + message.author + "> " + reply);
 
         const diff = new Date().getTime() - time;
         console.info(
