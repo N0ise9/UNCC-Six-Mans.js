@@ -38,6 +38,7 @@
   "dependencies": {
     "@prisma/client": "^3.10.0",
     "discord.js": "^14.13.0",
-    "luxon": "^3.4.3"
+    "luxon": "^3.4.3",
+    "openai": "^4.26.0"
   }
 }

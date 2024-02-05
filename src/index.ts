@@ -8,6 +8,7 @@ import { handleAdminInteraction, registerAdminSlashCommands } from "./controller
 import { handleMenuInteraction } from "./controllers/MenuInteractions";
 import { startQueueTimer } from "./controllers/QueueController";
 import { normCommand, startChatMonitor } from "./controllers/EasterEggs";
+import OpenAI from "openai";
 
 const NormClient = new Client({
   intents: ["Guilds", "GuildMessages", "GuildMessageReactions", "GuildMessageTyping", "MessageContent"],
@@ -18,6 +19,7 @@ const leaderboardChannelId = getEnvVariable("leaderboard_channel_id");
 const queueChannelId = getEnvVariable("queue_channel_id");
 const chatChannelId = getEnvVariable("chat_channel_id");
 const discordToken = getEnvVariable("token");
+const openai = new OpenAI({ apiKey: getEnvVariable("openai") });
 
 let queueEmbed: Message | null;
 let chatChannelMonitor: boolean = false;
@@ -97,7 +99,7 @@ NormClient.on("interactionCreate", async (interaction) => {
 
 NormClient.on("messageCreate", async (message) => {
   if (message.channelId === chatChannelId) {
-    normCommand(chatChannel, message);
+    normCommand(chatChannel, message, openai);
     //console.info("message sent");
   }
 });
