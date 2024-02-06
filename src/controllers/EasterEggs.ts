@@ -11,6 +11,7 @@ import {
 import ButtonBuilder from "../utils/MessageHelper/ButtonBuilder";
 import { ColorCodes } from "../utils";
 import OpenAI from "openai";
+import { ChatCompletionMessageParam } from "openai/resources";
 
 const enum EasterEggCustomID {
   Hi = "!hi",
@@ -34,6 +35,9 @@ const enum EasterEggCustomID {
   Coinflip = "!coinflip",
 }
 
+const chatHist: Array<ChatCompletionMessageParam> = [
+  { content: "Your name is Norm, and you're very funny.", role: "system" },
+];
 let eggs: boolean = false;
 let reset: boolean = false;
 const normIconURL = "https://raw.githubusercontent.com/N0ise9/UNCC-Six-Mans.js/main/media/norm_still.png";
@@ -115,8 +119,9 @@ export async function normCommand(chatChannel: TextChannel, message: Message, op
       }
 
       if (message.content.toLowerCase().match(EasterEggCustomID.Norm)) {
+        chatHist.push({ content: message.content, role: "user" });
         const completion = await openai.chat.completions.create({
-          messages: [{ content: message.content, role: "system" }],
+          messages: chatHist,
           model: "gpt-4-turbo-preview",
         });
 
@@ -126,8 +131,14 @@ export async function normCommand(chatChannel: TextChannel, message: Message, op
           console.info(reply.length);
           const newReply = reply.slice(0, 1900);
           chatChannel.send("<@" + message.author + "> " + newReply);
+          chatHist.push({ content: newReply, role: "assistant" });
         } else {
-          chatChannel.send("<@" + message.author + ">" + reply);
+          chatChannel.send("<@" + message.author + "> " + reply);
+          chatHist.push({ content: reply, role: "assistant" });
+        }
+
+        if (chatHist.length > 25) {
+          chatHist.shift();
         }
 
         const diff = new Date().getTime() - time;
