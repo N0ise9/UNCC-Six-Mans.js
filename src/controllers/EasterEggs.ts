@@ -141,8 +141,6 @@ export async function normCommand(chatChannel: TextChannel, message: Message, op
           chatHist.shift();
         }
 
-        console.info(chatHist);
-
         const diff = new Date().getTime() - time;
         console.info(
           `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !norm: ${
