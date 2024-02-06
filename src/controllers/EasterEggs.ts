@@ -122,7 +122,7 @@ export async function normCommand(chatChannel: TextChannel, message: Message, op
         chatHist.push({ content: message.content, role: "user" });
         const completion = await openai.chat.completions.create({
           messages: chatHist,
-          model: "gpt-4-turbo-preview",
+          model: "gpt-3.5-turbo",
         });
 
         console.info(completion.usage);
@@ -137,7 +137,7 @@ export async function normCommand(chatChannel: TextChannel, message: Message, op
           chatHist.push({ content: reply, role: "assistant" });
         }
 
-        if (chatHist.length > 25) {
+        if (chatHist.length > 300) {
           //Shift twice because two messages are added, user - then assistant
           chatHist.shift();
           chatHist.shift();
