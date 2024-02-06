@@ -138,6 +138,8 @@ export async function normCommand(chatChannel: TextChannel, message: Message, op
         }
 
         if (chatHist.length > 25) {
+          //Shift twice because two messages are added, user - then assistant
+          chatHist.shift();
           chatHist.shift();
         }
 
