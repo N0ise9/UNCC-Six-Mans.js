@@ -33,7 +33,10 @@ export default class MessageBuilder {
     const embeds = leaderboardInfo.map((content, index) => {
       const embedCtr = leaderboardInfo.length > 1 ? `(${index + 1}/${leaderboardInfo.length})` : "";
 
-      return EmbedBuilder.leaderboardEmbed("```" + content + "```", `Wichita 6 Mans | Leaderboard ${embedCtr}`.trim());
+      return EmbedBuilder.leaderboardEmbed(
+        "```" + content + "```",
+        `Dad Vibes Gaming 6 Mans | Leaderboard ${embedCtr}`.trim()
+      );
     });
 
     return {
