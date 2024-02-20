@@ -142,7 +142,7 @@ export async function normCommand(chatChannel: TextChannel, message: Message, op
           chatHist.push({ content: reply, role: "assistant" });
         }
 
-        if (chatHist.length > 300) {
+        if (chatHist.length > 50) {
           //Shift twice because two messages are added, user - then assistant
           chatHist.shift();
           chatHist.shift();
