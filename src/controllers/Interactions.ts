@@ -73,7 +73,7 @@ export async function handleInteraction(
             } - ${diff}ms`
           );
         } else if (queue.length === 0) {
-          const msg = await message.channel.send({ content: "<@1210049970967937024>" });
+          const msg = await message.channel.send({ content: "<@&1210049970967937024>" });
           msg;
           Promise.all([msg.delete(), message.edit(MessageBuilder.queueMessage(ballchasers))]);
           const diff = new Date().getTime() - time;
