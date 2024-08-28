@@ -29,6 +29,8 @@ export default class MessageBuilder {
     "https://raw.githubusercontent.com/N0ise9/UNCC-Six-Mans.js/main/media/norm_still.png";
   private static readonly isDev = getEnvVariable("ENVIRONMENT") === "dev";
 
+  private static fourQueue = 4;
+
   static leaderboardMessage(leaderboardInfo: string[]): MessageOptions {
     const embeds = leaderboardInfo.map((content, index) => {
       const embedCtr = leaderboardInfo.length > 1 ? `(${index + 1}/${leaderboardInfo.length})` : "";
@@ -60,8 +62,33 @@ export default class MessageBuilder {
       );
     }
 
+    const joinButton = new MessageButton({
+      customId: ButtonCustomID.JoinQueue,
+      label: "Join",
+      style: ButtonStyle.Success,
+    });
+
+    const leaveButton = new MessageButton({
+      customId: ButtonCustomID.LeaveQueue,
+      label: "Leave",
+      style: ButtonStyle.Danger,
+    });
+
+    const twosButton = new MessageButton({
+      customId: ButtonCustomID.Twos,
+      label: "Vote 2v2",
+      style: ButtonStyle.Primary,
+    });
+
     return {
-      components: [ButtonBuilder.queueButtons()],
+      components:
+        ballchasers.length == this.fourQueue
+          ? [
+              new ActionRowBuilder<ButtonBuilder>({
+                components: [joinButton, leaveButton, twosButton],
+              }),
+            ]
+          : [ButtonBuilder.queueButtons()],
       embeds: [embed],
     };
   }
