@@ -365,6 +365,69 @@ export default class MessageBuilder {
     };
   }
 
+  static vote2v2sMessage(
+    ballchasers: ReadonlyArray<Readonly<PlayerInQueue>>,
+    twosVotes: number,
+    voterList: PlayerInQueue[],
+    players: Map<string, string>
+  ): MessageOptions {
+    const twosCounterLabel = twosVotes;
+    const embed = new MessageEmbed({
+      color: ColorCodes.Green,
+      thumbnail: { url: this.normIconURL },
+    });
+    const joinButton = new MessageButton({
+      customId: ButtonCustomID.JoinQueue,
+      label: "Join",
+      style: ButtonStyle.Success,
+    });
+    const leaveButton = new MessageButton({
+      customId: ButtonCustomID.LeaveQueue,
+      label: "Leave",
+      style: ButtonStyle.Danger,
+    });
+    const vote2v2Button = new MessageButton({
+      customId: ButtonCustomID.Twos,
+      label: "Vote 2v2 (" + twosCounterLabel.toString() + "/4)",
+      style: ButtonStyle.Primary,
+    });
+    const removeAllButton = new MessageButton({
+      customId: ButtonCustomID.RemoveAll,
+      label: "DEV: Remove All",
+      style: ButtonStyle.Danger,
+    });
+
+    const two = "\u0032\u20E3";
+    const ballChaserList = ballchasers
+      .map((ballChaser) => {
+        // + 1 since it seems that joining the queue calculates to 59 instead of 60
+        const queueTime = ballChaser.queueTime?.diffNow().as("minutes") ?? 0;
+        const voter = voterList.find((p) => p.id == ballChaser.id);
+        const vote = players.get(ballChaser.id);
+        if (voter && vote == ButtonCustomID.Twos) {
+          return `${two} <@${ballChaser.id}> (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
+        } else {
+          return `<@${ballChaser.id}> (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
+        }
+      })
+      .join("\n");
+
+    embed
+      .setTitle("Voting For 2v2's Has Started")
+      .setDescription("All four players must vote for 2v2's in order to proceed with the match! \n\n" + ballChaserList);
+
+    return {
+      components: this.isDev
+        ? [
+            new ActionRowBuilder<ButtonBuilder>({
+              components: [joinButton, leaveButton, vote2v2Button, removeAllButton],
+            }),
+          ]
+        : [new ActionRowBuilder<ButtonBuilder>({ components: [joinButton, leaveButton, vote2v2Button] })],
+      embeds: [embed],
+    };
+  }
+
   static voteCaptainsOrRandomMessage(
     ballchasers: ReadonlyArray<Readonly<PlayerInQueue>>,
     captainsVotes: number,
