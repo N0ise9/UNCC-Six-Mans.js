@@ -18,6 +18,8 @@ export async function postCurrentQueue(queueChannel: TextChannel): Promise<Messa
   return await queueChannel.send(MessageBuilder.queueMessage(ballchasers));
 }
 
+export let twos = false;
+
 export async function handleInteraction(
   buttonInteraction: ButtonInteraction,
   NormClient: Client<boolean>
@@ -65,6 +67,7 @@ export async function handleInteraction(
             msg.delete(),
             await message.edit(MessageBuilder.fullQueueMessage(ballchasers)),
             QueueRepository.resetCaptainsRandomVoters(),
+            QueueRepository.resetTwosVoters(),
           ]);
           const diff = new Date().getTime() - time;
           console.info(
@@ -116,7 +119,7 @@ export async function handleInteraction(
     case ButtonCustomID.CreateRandomTeam: {
       const playerInQueue = await QueueRepository.getBallChaserInQueue(buttonInteraction.user.id);
       if (!playerInQueue) return;
-      await captainsRandomVote(buttonInteraction, message);
+      await captainsRandomVote(buttonInteraction, message, twos);
       const diff = new Date().getTime() - time;
       console.info(
         `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Random: ${
@@ -129,7 +132,7 @@ export async function handleInteraction(
     case ButtonCustomID.ChooseTeam: {
       const playerInQueue = await QueueRepository.getBallChaserInQueue(buttonInteraction.user.id);
       if (!playerInQueue) return;
-      await captainsRandomVote(buttonInteraction, message);
+      await captainsRandomVote(buttonInteraction, message, twos);
       const diff = new Date().getTime() - time;
       console.info(
         `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Captains: ${
@@ -171,21 +174,67 @@ export async function handleInteraction(
       );
       break;
     }
+
+    case ButtonCustomID.Twos: {
+      const playerInQueue = await QueueRepository.getBallChaserInQueue(buttonInteraction.user.id);
+      if (!playerInQueue) return;
+      await twosVoting(buttonInteraction, message);
+      const diff = new Date().getTime() - time;
+      console.info(
+        `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | 2v2 Vote: ${
+          buttonInteraction.user.username
+        } - ${diff}ms`
+      );
+    }
   }
 }
 
-async function captainsRandomVote(buttonInteraction: ButtonInteraction, message: Message) {
+async function twosVoting(buttonInteraction: ButtonInteraction, message: Message) {
+  const ballChasers = await QueueRepository.getAllBallChasersInQueue();
+  const vote = await QueueRepository.count2v2Votes(buttonInteraction);
+
+  if (vote.twos == 4) {
+    twos = true;
+    const list = ballChasers.map((ballChaser) => {
+      return `<@${ballChaser.id}> `;
+    });
+
+    const msg = await message.channel.send({ content: list.toString() });
+    msg;
+
+    Promise.all([
+      msg.delete(),
+      await message.edit(MessageBuilder.fullQueueMessage(ballChasers)),
+      QueueRepository.resetCaptainsRandomVoters(),
+      QueueRepository.resetTwosVoters(),
+    ]);
+  } else {
+    const players = await QueueRepository.getTwosVoters();
+    const twosVotes = vote.twos;
+    const voterList: PlayerInQueue[] = [];
+
+    for (const key of players.keys()) {
+      const player = await QueueRepository.getBallChaserInQueue(key);
+      if (player) {
+        voterList.push(player);
+      }
+    }
+    Promise.all([await message.edit(MessageBuilder.vote2v2sMessage(ballChasers, twosVotes, voterList, players))]);
+  }
+}
+
+async function captainsRandomVote(buttonInteraction: ButtonInteraction, message: Message, twos: boolean) {
   const playerInQueue = await QueueRepository.isPlayerInQueue(buttonInteraction.user.id);
   const queue = await QueueRepository.getAllBallChasersInQueue();
-  if (!playerInQueue || queue.length != 6) return;
+  if (!playerInQueue || (queue.length != 6 && !twos)) return;
   const ballChasers = await QueueRepository.getAllBallChasersInQueue();
 
   const vote = await QueueRepository.countCaptainsRandomVote(buttonInteraction);
 
-  if (vote.captains == 4) {
+  if ((!twos && vote.captains == 4) || (twos && vote.captains == 3)) {
     const players = await setCaptains(ballChasers);
-    await message.edit(MessageBuilder.captainChooseMessage(true, players));
-  } else if (vote.random == 4) {
+    await message.edit(MessageBuilder.captainChooseMessage(true, players, twos));
+  } else if ((!twos && vote.random == 4) || (twos && vote.random == 3)) {
     const currentMatch = await createRandomMatch();
     const emptyQueue: PlayerInQueue[] = [];
 
@@ -198,6 +247,7 @@ async function captainsRandomVote(buttonInteraction: ButtonInteraction, message:
     ]);
 
     QueueRepository.resetCaptainsRandomVoters();
+    QueueRepository.resetTwosVoters();
   } else if (vote.captains > 4 || vote.random > 4) return;
   else {
     const players = await QueueRepository.getCaptainsRandomVoters();
