@@ -6,6 +6,7 @@ import { bluePlayerChosen, orangePlayerChosen } from "../services/TeamAssignment
 import { Team } from "../types/common";
 import { getEnvVariable } from "../utils";
 import MessageBuilder, { MenuCustomID } from "../utils/MessageHelper/MessageBuilder";
+import { twos } from "./Interactions";
 
 export async function handleMenuInteraction(menuInteraction: StringSelectMenuInteraction): Promise<void> {
   const message = menuInteraction.message;
@@ -20,7 +21,18 @@ export async function handleMenuInteraction(menuInteraction: StringSelectMenuInt
       if (isCaptain || isDev) {
         const playersLeft = await bluePlayerChosen(menuInteraction.values[0]);
 
-        await message.edit(MessageBuilder.captainChooseMessage(false, playersLeft));
+        if (twos) {
+          const emptyQueue: PlayerInQueue[] = [];
+          const newActiveMatch = await createMatchFromChosenTeams();
+          Promise.all([
+            await message.channel.send(await MessageBuilder.activeMatchMessage(newActiveMatch)),
+            await message.edit(MessageBuilder.queueMessage(emptyQueue)),
+          ]);
+
+          QueueRepository.resetCaptainsRandomVoters();
+        } else {
+          await message.edit(MessageBuilder.captainChooseMessage(false, playersLeft, twos));
+        }
         break;
       }
 

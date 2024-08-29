@@ -127,7 +127,7 @@ export async function normCommand(chatChannel: TextChannel, message: Message, op
         chatHist.push({ content: message.content, role: "user" });
         const completion = await openai.chat.completions.create({
           messages: chatHist,
-          model: "gpt-3.5-turbo",
+          model: "gpt-4o-mini",
         });
 
         console.info(completion.usage);
