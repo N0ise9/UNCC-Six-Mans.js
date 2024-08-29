@@ -57,7 +57,7 @@ export class QueueRepository {
   }
 
   async resetTwosVoters(): Promise<void> {
-    playersMap.clear();
+    twosMap.clear();
   }
 
   async countCaptainsRandomVote(buttonInteraction: ButtonInteraction): Promise<CaptainsRandomVotes> {
@@ -139,6 +139,8 @@ export class QueueRepository {
       //   console.error(err);
       // }
     });
+    this.resetCaptainsRandomVoters();
+    this.resetTwosVoters();
   }
 
   /**

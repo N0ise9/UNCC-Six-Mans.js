@@ -18,7 +18,7 @@ export async function postCurrentQueue(queueChannel: TextChannel): Promise<Messa
   return await queueChannel.send(MessageBuilder.queueMessage(ballchasers));
 }
 
-let twos = false;
+export let twos = false;
 
 export async function handleInteraction(
   buttonInteraction: ButtonInteraction,
@@ -233,7 +233,7 @@ async function captainsRandomVote(buttonInteraction: ButtonInteraction, message:
 
   if ((!twos && vote.captains == 4) || (twos && vote.captains == 3)) {
     const players = await setCaptains(ballChasers);
-    await message.edit(MessageBuilder.captainChooseMessage(true, players));
+    await message.edit(MessageBuilder.captainChooseMessage(true, players, twos));
   } else if ((!twos && vote.random == 4) || (twos && vote.random == 3)) {
     const currentMatch = await createRandomMatch();
     const emptyQueue: PlayerInQueue[] = [];

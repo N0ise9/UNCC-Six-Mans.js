@@ -206,7 +206,11 @@ export default class MessageBuilder {
     };
   }
 
-  static captainChooseMessage(firstPick = true, ballChasers: ReadonlyArray<PlayerInQueue>): MessageOptions {
+  static captainChooseMessage(
+    firstPick = true,
+    ballChasers: ReadonlyArray<PlayerInQueue>,
+    twos: boolean
+  ): MessageOptions {
     //Get Available Players and Map players
     const availablePlayers: Array<StringSelectMenuOptionBuilder> = [];
     const orangeTeam: Array<string> = [];
@@ -244,11 +248,13 @@ export default class MessageBuilder {
     if (firstPick) {
       playerChoices.setCustomId(MenuCustomID.BlueSelect).setPlaceholder(playerName + " choose a player");
     } else {
-      playerChoices
-        .setCustomId(MenuCustomID.OrangeSelect)
-        .setPlaceholder(captain + " choose 2 players")
-        .setMinValues(2)
-        .setMaxValues(2);
+      if (!twos) {
+        playerChoices
+          .setCustomId(MenuCustomID.OrangeSelect)
+          .setPlaceholder(captain + " choose 2 players")
+          .setMinValues(2)
+          .setMaxValues(2);
+      }
     }
 
     playerChoices.addOptions(availablePlayers);
