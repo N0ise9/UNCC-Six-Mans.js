@@ -13,6 +13,11 @@ interface CaptainsRandomVotes {
   random: number;
 }
 
+const twosMap = new Map<string, string>();
+interface TwosVotes {
+  twos: number;
+}
+
 export class QueueRepository {
   #Queue: Prisma.QueueDelegate<Prisma.RejectPerOperation>;
   #BallChasers: Prisma.BallChaserDelegate<Prisma.RejectPerOperation>;
@@ -32,6 +37,27 @@ export class QueueRepository {
       queueTime: DateTime.fromJSDate(playerInQueue.queueTime),
       team: playerInQueue.team,
     };
+  }
+
+  async count2v2Votes(buttonInteraction: ButtonInteraction): Promise<TwosVotes> {
+    twosMap.set(buttonInteraction.user.id, buttonInteraction.customId);
+    let twosCounter = 0;
+    for (const value of twosMap.values()) {
+      if (value == ButtonCustomID.Twos) {
+        twosCounter += 1;
+      }
+    }
+    return {
+      twos: twosCounter,
+    };
+  }
+
+  async getTwosVoters(): Promise<Map<string, string>> {
+    return twosMap;
+  }
+
+  async resetTwosVoters(): Promise<void> {
+    twosMap.clear();
   }
 
   async countCaptainsRandomVote(buttonInteraction: ButtonInteraction): Promise<CaptainsRandomVotes> {
@@ -113,6 +139,8 @@ export class QueueRepository {
       //   console.error(err);
       // }
     });
+    this.resetCaptainsRandomVoters();
+    this.resetTwosVoters();
   }
 
   /**

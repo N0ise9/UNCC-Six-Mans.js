@@ -4,6 +4,7 @@ import QueueRepository from "../repositories/QueueRepository";
 import { NewActiveMatchInput, PlayerInActiveMatch } from "../repositories/ActiveMatchRepository/types";
 import { Team } from "../types/common";
 import { calculateMMR, calculateProbability, calculateProbabilityDecimal } from "./MatchReportService";
+import { twos } from "../controllers/Interactions";
 
 interface ActiveMatchTeamDetails {
   mmrStake: number;
@@ -79,7 +80,11 @@ export async function createMatchFromChosenTeams(): Promise<ActiveMatchCreated> 
     if (p.team !== null) {
       createdTeams.push({ id: p.id, team: p.team });
     } else {
-      createdTeams.push({ id: p.id, team: Team.Blue });
+      if (twos) {
+        createdTeams.push({ id: p.id, team: Team.Orange });
+      } else {
+        createdTeams.push({ id: p.id, team: Team.Blue });
+      }
     }
   }
 
