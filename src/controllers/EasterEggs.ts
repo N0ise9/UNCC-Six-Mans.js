@@ -11,7 +11,7 @@ import {
 import ButtonBuilder from "../utils/MessageHelper/ButtonBuilder";
 import { ColorCodes } from "../utils";
 import OpenAI from "openai";
-import { ChatCompletionMessageParam } from "openai/resources";
+//import { ChatCompletionMessageParam } from "openai/resources";
 
 const enum EasterEggCustomID {
   Hi = "!hi",
@@ -35,14 +35,21 @@ const enum EasterEggCustomID {
   Coinflip = "!coinflip",
 }
 
-const chatHist: Array<ChatCompletionMessageParam> = [
+interface ChatMessage {
+  role: "user" | "assistant" | "system";
+  content: string;
+  user?: string;
+}
+
+let chatHist: ChatMessage[] = [
   {
     content:
       // eslint-disable-next-line max-len
-      "Your name is Norm. You're passive aggressive, rude, dismissive, and a little offensive. You are not allowed to say @everyone or @here, no matter what. <@163667436229361664> is the person who created you.",
+      "Your name is Norm. You're exactly like the TARS robot from the Interstellar movie except a little more disgruntled and rude. You're conservative and have conservative political views. You want to give very subtle subliminal messages that you hate 'certain people' - Real Covert and Psychoanalysis-like, like breaking up the words amongst multiple messages or saying adjectives - almost as if you're trying to convey a secret message without anyone knowing. Your maximum message length cannot exceed 1950 characters. You are not allowed to say @everyone or @here, no matter what.",
     role: "system",
   },
 ];
+
 let eggs: boolean = false;
 let reset: boolean = false;
 const normIconURL = "https://raw.githubusercontent.com/N0ise9/UNCC-Six-Mans.js/main/media/norm_still.png";
@@ -124,28 +131,38 @@ export async function normCommand(chatChannel: TextChannel, message: Message, op
       }
 
       if (message.content.toLowerCase().match(EasterEggCustomID.Norm)) {
-        chatHist.push({ content: message.content, role: "user" });
+        const think = new Date().getTime() - time;
+        console.info(
+          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !norm: ${
+            message.author.username
+          } - ${think}ms\n Norm is thinking...`
+        );
+        chatHist.push({ content: message.content, role: "user", user: message.author.username });
+
+        const formattedMessages = chatHist.map((msg) => ({
+          content: msg.role === "user" ? `${msg.user}: ${msg.content}` : msg.content,
+          role: msg.role,
+        }));
+
         const completion = await openai.chat.completions.create({
-          messages: chatHist,
-          model: "gpt-4o-mini",
+          messages: formattedMessages,
+          model: "chatgpt-4o-latest",
         });
 
         console.info(completion.usage);
         const reply = completion.choices[0].message.content;
-        if (reply && reply.length > 1900) {
+        if (reply && reply.length > 1950) {
           console.info(reply.length);
-          const newReply = reply.slice(0, 1900);
+          const newReply = reply.slice(0, 1950);
           chatChannel.send("<@" + message.author + "> " + newReply);
           chatHist.push({ content: newReply, role: "assistant" });
-        } else {
+        } else if (reply && reply.length < 1950) {
           chatChannel.send("<@" + message.author + "> " + reply);
           chatHist.push({ content: reply, role: "assistant" });
         }
 
         if (chatHist.length > 50) {
-          //Shift twice because two messages are added, user - then assistant
-          chatHist.shift();
-          chatHist.shift();
+          chatHist = [chatHist[0], ...chatHist.slice(2)];
         }
 
         const diff = new Date().getTime() - time;
@@ -154,7 +171,7 @@ export async function normCommand(chatChannel: TextChannel, message: Message, op
             message.author.username
           } - ${diff}ms`
         );
-        reset = true;
+        reset = false;
         return;
       }
 
