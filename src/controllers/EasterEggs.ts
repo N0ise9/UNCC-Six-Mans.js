@@ -249,8 +249,8 @@ export async function normCommand(
           });
 
           pcmStream.on("end", async () => {
-            const inputPath = path.join(__dirname, `../../recordings/${username}.pcm`);
-            const outputPath = path.join(__dirname, `../../recordings/${username}.mp3`);
+            const inputPath = path.join(__dirname, `../recordings/${username}.pcm`);
+            const outputPath = path.join(__dirname, `../recordings/${username}.mp3`);
             const audioBuffer = Buffer.concat(audioChunks);
             fs.writeFileSync(inputPath, audioBuffer as unknown as Uint8Array);
 
@@ -286,7 +286,7 @@ export async function normCommand(
 
                 console.info("Total Chat Tokens: ", completion.usage?.total_tokens);
                 const reply = completion.choices[0].message.content;
-                const speechFile = path.join(__dirname, "../../recordings/norm.mp3");
+                const speechFile = path.join(__dirname, "../recordings/norm.mp3");
                 if (reply) {
                   const normReply = await openai.audio.speech.create({
                     input: reply,
