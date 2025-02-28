@@ -19,6 +19,7 @@ import {
   createAudioPlayer,
   NoSubscriberBehavior,
   createAudioResource,
+  AudioPlayerStatus,
 } from "@discordjs/voice";
 import ButtonBuilder from "../utils/MessageHelper/ButtonBuilder";
 import { ColorCodes } from "../utils";
@@ -224,14 +225,26 @@ export async function normCommand(
 
         receiver.speaking.on("start", async (userId) => {
           if (receiver.subscriptions.has(userId) || busy) return;
+
+          const playVoice = createAudioPlayer({
+            behaviors: {
+              noSubscriber: NoSubscriberBehavior.Stop,
+            },
+          });
+
+          playVoice.on(AudioPlayerStatus.Idle, (oldState, newState) => {
+            newState ? (busy = false) : (busy = true);
+          });
+
           busy = true;
+
           const user = NormClient.users.cache.get(userId);
           const username = user?.username;
           console.log(`Listening to ${username}`);
           const audioStream = receiver.subscribe(userId, {
             end: {
               behavior: EndBehaviorType.AfterSilence,
-              duration: 2000,
+              duration: 1000,
             },
           });
 
@@ -300,11 +313,6 @@ export async function normCommand(
                   await fs.promises.writeFile(speechFile, normBuffer as unknown as NodeJS.ArrayBufferView);
 
                   const normVoice = createAudioResource(speechFile);
-                  const playVoice = createAudioPlayer({
-                    behaviors: {
-                      noSubscriber: NoSubscriberBehavior.Stop,
-                    },
-                  });
 
                   playVoice.play(normVoice);
                   connection.subscribe(playVoice);
@@ -325,7 +333,6 @@ export async function normCommand(
               .run();
           });
         });
-        busy = false;
       }
 
       if (message.content.toLowerCase().match(EasterEggCustomID.LeaveVoice) && connected) {
