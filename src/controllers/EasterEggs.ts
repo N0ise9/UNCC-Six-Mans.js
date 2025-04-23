@@ -175,7 +175,7 @@ export async function normCommand(
 
         const completion = await openai.chat.completions.create({
           messages: formattedMessages,
-          model: "chatgpt-4o-latest",
+          model: "gpt-4.1-2025-04-14",
         });
 
         console.info(completion.usage?.total_tokens);
@@ -279,7 +279,7 @@ export async function normCommand(
 
                 const transcription = await openai.audio.transcriptions.create({
                   file: fs.createReadStream(outputPath),
-                  model: "whisper-1",
+                  model: "gpt-4o-transcribe",
                 });
                 const text = transcription.text;
 
@@ -294,17 +294,19 @@ export async function normCommand(
 
                 const completion = await openai.chat.completions.create({
                   messages: formattedMessages,
-                  model: "chatgpt-4o-latest",
+                  model: "gpt-4.1-2025-04-14",
                 });
 
                 console.info("Total Chat Tokens: ", completion.usage?.total_tokens);
                 const reply = completion.choices[0].message.content;
-                const speechFile = path.join(__dirname, "../recordings/norm.mp3");
+                const speechFile = path.join(__dirname, "../recordings/norm.flac");
                 if (reply) {
                   const normReply = await openai.audio.speech.create({
                     input: reply,
-                    model: "tts-1-hd",
-                    voice: "echo",
+                    model: "gpt-4o-mini-tts",
+                    response_format: "flac",
+                    speed: 1.5,
+                    voice: "onyx",
                   });
 
                   chatHist.push({ content: reply, role: "assistant" });
