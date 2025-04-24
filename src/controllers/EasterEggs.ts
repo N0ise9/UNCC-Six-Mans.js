@@ -218,7 +218,8 @@ export async function normCommand(
 
         const results = await openai.images.generate({
           model: "dall-e-3",
-          prompt,
+          prompt: prompt,
+          response_format: "b64_json",
         });
 
         if (!results.data) return;
