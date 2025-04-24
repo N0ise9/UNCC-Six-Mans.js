@@ -26,7 +26,7 @@ export async function handleAdminInteraction(slashCommandInteraction: CommandInt
 
   switch (slashCommandInteraction.commandName) {
     case AdminCommandOptions.Kick: {
-      const playerToRemove = slashCommandInteraction.options.getUser("player");
+      const playerToRemove = slashCommandInteraction.options.get("player")?.user;
       if (!playerToRemove) return;
 
       try {

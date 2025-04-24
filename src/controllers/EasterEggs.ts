@@ -35,6 +35,7 @@ ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 const enum EasterEggCustomID {
   Hi = "!hi",
   Norm = "!norm",
+  Image = "!image",
   JoinVoice = "!voice",
   LeaveVoice = "!leave",
   NormQ = "!normq",
@@ -60,6 +61,7 @@ interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   user?: string;
+  image?: URL;
 }
 
 let chatHist: ChatMessage[] = [
@@ -193,6 +195,39 @@ export async function normCommand(
         if (chatHist.length > 50) {
           chatHist = [chatHist[0], ...chatHist.slice(2)];
         }
+
+        const diff = new Date().getTime() - time;
+        console.info(
+          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !norm: ${
+            message.author.username
+          } - ${diff}ms`
+        );
+        reset = false;
+        return;
+      }
+
+      if (message.content.toLowerCase().match(EasterEggCustomID.Image)) {
+        const think = new Date().getTime() - time;
+        console.info(
+          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !norm: ${
+            message.author.username
+          } - ${think}ms\n Norm is thinking...`
+        );
+
+        const prompt = message.content;
+
+        const results = await openai.images.generate({
+          model: "gpt-image-1",
+          prompt,
+        });
+
+        if (!results.data) return;
+        const image_base64 = results.data[0].b64_json;
+        if (!image_base64) return;
+        const image_bytes = Buffer.from(image_base64, "base64");
+        const imageFile = path.join(__dirname, `../images/${message.author.username}.mp3`);
+        fs.writeFileSync(imageFile, image_bytes);
+        chatChannel.send("<@" + message.author + "> " + imageFile);
 
         const diff = new Date().getTime() - time;
         console.info(
