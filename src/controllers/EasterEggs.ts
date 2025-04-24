@@ -225,9 +225,9 @@ export async function normCommand(
         const image_base64 = results.data[0].b64_json;
         if (!image_base64) return;
         const image_bytes = Buffer.from(image_base64, "base64");
-        const imageFile = path.join(__dirname, `../images/${message.author.username}.mp3`);
+        const imageFile = path.join(__dirname, `../images/${message.author.username}.png`);
         fs.writeFileSync(imageFile, image_bytes);
-        chatChannel.send("<@" + message.author + "> " + imageFile);
+        chatChannel.send({ content: "<@" + message.author + ">\n", files: [{ attachment: imageFile }] });
 
         const diff = new Date().getTime() - time;
         console.info(
