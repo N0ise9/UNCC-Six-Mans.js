@@ -217,7 +217,7 @@ export async function normCommand(
         const prompt = message.content;
 
         const results = await openai.images.generate({
-          model: "gpt-image-1",
+          model: "dall-e-3",
           prompt,
         });
 
@@ -338,10 +338,12 @@ export async function normCommand(
                 if (reply) {
                   const normReply = await openai.audio.speech.create({
                     input: reply,
+                    instructions:
+                      "Interperet the best tone or attitude to have based on how the text appears to sound.",
                     model: "gpt-4o-mini-tts",
                     response_format: "flac",
                     speed: 1.5,
-                    voice: "onyx",
+                    voice: "ash",
                   });
 
                   chatHist.push({ content: reply, role: "assistant" });
