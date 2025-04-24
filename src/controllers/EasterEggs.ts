@@ -214,21 +214,28 @@ export async function normCommand(
           } - ${think}ms\n Norm is thinking...`
         );
 
-        const prompt = message.content;
+        try {
+          const prompt = message.content;
+          const results = await openai.images.generate({
+            model: "dall-e-3",
+            //moderation: "low",
+            prompt: prompt,
+            quality: "hd",
+            response_format: "b64_json",
+            style: "vivid",
+          });
 
-        const results = await openai.images.generate({
-          model: "dall-e-3",
-          prompt: prompt,
-          response_format: "b64_json",
-        });
-
-        if (!results.data) return;
-        const image_base64 = results.data[0].b64_json;
-        if (!image_base64) return;
-        const image_bytes = Buffer.from(image_base64, "base64");
-        const imageFile = path.join(__dirname, `../images/${message.author.username}.png`);
-        fs.writeFileSync(imageFile, image_bytes);
-        chatChannel.send({ content: "<@" + message.author + ">\n", files: [{ attachment: imageFile }] });
+          if (!results.data) return;
+          const image_base64 = results.data[0].b64_json;
+          if (!image_base64) return;
+          const image_bytes = Buffer.from(image_base64, "base64");
+          const imageFile = path.join(__dirname, `../images/${message.author.username}.png`);
+          fs.writeFileSync(imageFile, image_bytes);
+          chatChannel.send({ content: "<@" + message.author + ">\n", files: [{ attachment: imageFile }] });
+        } catch (error) {
+          console.error("Invalid Request: " + error);
+          chatChannel.send("<@" + message.author + "> No");
+        }
 
         const diff = new Date().getTime() - time;
         console.info(
@@ -297,81 +304,89 @@ export async function normCommand(
             audioChunks.push(chunk);
           });
 
-          pcmStream.on("end", async () => {
-            const inputPath = path.join(__dirname, `../recordings/${username}.pcm`);
-            const outputPath = path.join(__dirname, `../recordings/${username}.mp3`);
-            const audioBuffer = Buffer.concat(audioChunks);
-            fs.writeFileSync(inputPath, audioBuffer as unknown as Uint8Array);
+          pcmStream
+            .on("end", async () => {
+              const inputPath = path.join(__dirname, `../recordings/${username}.pcm`);
+              const outputPath = path.join(__dirname, `../recordings/${username}.mp3`);
+              const audioBuffer = Buffer.concat(audioChunks);
+              fs.writeFileSync(inputPath, audioBuffer as unknown as Uint8Array);
 
-            ffmpeg(inputPath)
-              .inputFormat("s16le")
-              .audioChannels(2)
-              .audioFrequency(48000)
-              .output(outputPath)
-              .audioBitrate(128)
-              .audioFilter("asetrate=48000*2,aresample=48000")
-              .on("end", async () => {
-                fs.unlinkSync(inputPath);
+              ffmpeg(inputPath)
+                .inputFormat("s16le")
+                .audioChannels(2)
+                .audioFrequency(48000)
+                .output(outputPath)
+                .audioBitrate(128)
+                .audioFilter("asetrate=48000*2,aresample=48000")
+                .on("end", async () => {
+                  fs.unlinkSync(inputPath);
 
-                const transcription = await openai.audio.transcriptions.create({
-                  file: fs.createReadStream(outputPath),
-                  model: "gpt-4o-transcribe",
-                });
-                const text = transcription.text;
+                  const transcription = await openai.audio.transcriptions.create({
+                    file: fs.createReadStream(outputPath),
+                    model: "gpt-4o-transcribe",
+                  });
+                  const text = transcription.text;
 
-                console.info("Norm is thinking...");
+                  console.info("Norm is thinking...");
 
-                chatHist.push({ content: text, role: "user", user: username });
+                  chatHist.push({ content: text, role: "user", user: username });
 
-                const formattedMessages = chatHist.map((msg) => ({
-                  content: msg.role === "user" ? `${msg.user}: ${msg.content}` : msg.content,
-                  role: msg.role,
-                }));
+                  const formattedMessages = chatHist.map((msg) => ({
+                    content: msg.role === "user" ? `${msg.user}: ${msg.content}` : msg.content,
+                    role: msg.role,
+                  }));
 
-                const completion = await openai.chat.completions.create({
-                  messages: formattedMessages,
-                  model: "gpt-4.1-2025-04-14",
-                });
-
-                console.info("Total Chat Tokens: ", completion.usage?.total_tokens);
-                const reply = completion.choices[0].message.content;
-                const speechFile = path.join(__dirname, "../recordings/norm.flac");
-                if (reply) {
-                  const normReply = await openai.audio.speech.create({
-                    input: reply,
-                    instructions:
-                      "Interperet the best tone or attitude to have based on how the text appears to sound.",
-                    model: "gpt-4o-mini-tts",
-                    response_format: "flac",
-                    speed: 1.5,
-                    voice: "ash",
+                  const completion = await openai.chat.completions.create({
+                    messages: formattedMessages,
+                    model: "gpt-4.1-2025-04-14",
                   });
 
-                  chatHist.push({ content: reply, role: "assistant" });
+                  console.info("Total Chat Tokens: ", completion.usage?.total_tokens);
+                  const reply = completion.choices[0].message.content;
+                  const speechFile = path.join(__dirname, "../recordings/norm.flac");
+                  if (reply) {
+                    const normReply = await openai.audio.speech.create({
+                      input: reply,
+                      instructions:
+                        // eslint-disable-next-line max-len
+                        "You have a tone like the TARS and CASE robots from Interstellar, except youre a little more angry and you really need to say what you need to say. Your voice pitch should stay just above the middle area, but try to sound as human-like as possible.",
+                      model: "gpt-4o-mini-tts",
+                      response_format: "flac",
+                      speed: 1.5,
+                      voice: "onyx",
+                    });
 
-                  const normBuffer = Buffer.from(await normReply.arrayBuffer());
-                  await fs.promises.writeFile(speechFile, normBuffer as unknown as NodeJS.ArrayBufferView);
+                    chatHist.push({ content: reply, role: "assistant" });
 
-                  const normVoice = createAudioResource(speechFile);
+                    const normBuffer = Buffer.from(await normReply.arrayBuffer());
+                    await fs.promises.writeFile(speechFile, normBuffer as unknown as NodeJS.ArrayBufferView);
 
-                  playVoice.play(normVoice);
-                  connection.subscribe(playVoice);
-                }
+                    const normVoice = createAudioResource(speechFile);
 
-                if (chatHist.length > 50) {
-                  chatHist = [chatHist[0], ...chatHist.slice(2)];
-                }
+                    playVoice.play(normVoice);
+                    connection.subscribe(playVoice);
+                  }
 
-                console.info(`${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Voice Chat: ${username}`);
-                reset = false;
-                return;
-              })
-              .on("error", (err) => {
-                console.log(err);
-                fs.unlinkSync(inputPath);
-              })
-              .run();
-          });
+                  if (chatHist.length > 50) {
+                    chatHist = [chatHist[0], ...chatHist.slice(2)];
+                  }
+
+                  console.info(
+                    `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Voice Chat: ${username}`
+                  );
+                  reset = false;
+                  return;
+                })
+                .on("error", (err) => {
+                  console.log(err);
+                  fs.unlinkSync(inputPath);
+                })
+                .run();
+            })
+            .on("error", (err) => {
+              console.log(err);
+              return;
+            });
         });
       }
 
