@@ -162,11 +162,10 @@ export async function normCommand(
       }
 
       if (message.content.toLowerCase().match(EasterEggCustomID.Norm)) {
-        const think = new Date().getTime() - time;
         console.info(
           `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !norm: ${
             message.author.username
-          } - ${think}ms\n Norm is thinking...`
+          }\nNorm is thinking...`
         );
         chatHist.push({ content: message.content, role: "user", user: message.author.username });
 
@@ -207,7 +206,13 @@ export async function normCommand(
       }
 
       if (message.content.toLowerCase().match(EasterEggCustomID.Image)) {
-        console.info("Norm is thinking...");
+        console.info(
+          // eslint-disable-next-line max-len
+          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !image: ${message.author.username}\nNorm is thinking...`
+        );
+
+        chatChannel.send("<@" + message.author + "> Thinking...");
+        chatChannel.sendTyping();
 
         try {
           const prompt = message.content;
@@ -243,7 +248,13 @@ export async function normCommand(
       }
 
       if (message.content.toLowerCase().match(EasterEggCustomID.Reason)) {
-        console.info("Norm is thinking...");
+        console.info(
+          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !reason: ${
+            message.author.username
+          }\nNorm is thinking...`
+        );
+        chatChannel.send("<@" + message.author + "> Thinking...");
+        chatChannel.sendTyping();
 
         chatHist.push({ content: message.content, role: "user", user: message.author.username });
 
