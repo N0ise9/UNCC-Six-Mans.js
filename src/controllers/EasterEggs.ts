@@ -36,6 +36,7 @@ const enum EasterEggCustomID {
   Hi = "!hi",
   Norm = "!norm",
   Image = "!image",
+  Reason = "!reason",
   JoinVoice = "!voice",
   LeaveVoice = "!leave",
   NormQ = "!normq",
@@ -61,7 +62,6 @@ interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   user?: string;
-  image?: URL;
 }
 
 let chatHist: ChatMessage[] = [
@@ -207,12 +207,7 @@ export async function normCommand(
       }
 
       if (message.content.toLowerCase().match(EasterEggCustomID.Image)) {
-        const think = new Date().getTime() - time;
-        console.info(
-          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !norm: ${
-            message.author.username
-          } - ${think}ms\n Norm is thinking...`
-        );
+        console.info("Norm is thinking...");
 
         try {
           const prompt = message.content;
@@ -239,7 +234,49 @@ export async function normCommand(
 
         const diff = new Date().getTime() - time;
         console.info(
-          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !norm: ${
+          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !image: ${
+            message.author.username
+          } - ${diff}ms`
+        );
+        reset = false;
+        return;
+      }
+
+      if (message.content.toLowerCase().match(EasterEggCustomID.Reason)) {
+        console.info("Norm is thinking...");
+
+        chatHist.push({ content: message.content, role: "user", user: message.author.username });
+
+        const formattedMessages = chatHist.map((msg) => ({
+          content: msg.role === "user" ? `${msg.user}: ${msg.content}` : msg.content,
+          role: msg.role,
+        }));
+
+        const reason = await openai.responses.create({
+          input: formattedMessages,
+          model: "o4-mini-2025-04-16",
+        });
+
+        if (!reason._request_id) return;
+        console.info(reason.usage?.total_tokens);
+        const reply = reason.output_text;
+        if (reply && reply.length > 1950) {
+          console.info(reply.length);
+          const newReply = reply.slice(0, 1950);
+          chatChannel.send("<@" + message.author + "> " + newReply);
+          chatHist.push({ content: newReply, role: "assistant" });
+        } else if (reply && reply.length < 1950) {
+          chatChannel.send("<@" + message.author + "> " + reply);
+          chatHist.push({ content: reply, role: "assistant" });
+        }
+
+        if (chatHist.length > 50) {
+          chatHist = [chatHist[0], ...chatHist.slice(2)];
+        }
+
+        const diff = new Date().getTime() - time;
+        console.info(
+          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !reason: ${
             message.author.username
           } - ${diff}ms`
         );
