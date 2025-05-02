@@ -267,7 +267,6 @@ export async function normCommand(
         const reason = await openai.responses.create({
           input: formattedMessages,
           model: "o4-mini-2025-04-16",
-          tools: [{ type: "web_search_preview" }],
         });
 
         if (!reason._request_id) return;
