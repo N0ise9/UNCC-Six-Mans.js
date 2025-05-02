@@ -174,13 +174,14 @@ export async function normCommand(
           role: msg.role,
         }));
 
-        const completion = await openai.chat.completions.create({
-          messages: formattedMessages,
+        const completion = await openai.responses.create({
+          input: formattedMessages,
           model: "gpt-4.1-2025-04-14",
+          tools: [{ type: "web_search_preview" }],
         });
 
         console.info(completion.usage?.total_tokens);
-        const reply = completion.choices[0].message.content;
+        const reply = completion.output_text;
         if (reply && reply.length > 1950) {
           console.info(reply.length);
           const newReply = reply.slice(0, 1950);
