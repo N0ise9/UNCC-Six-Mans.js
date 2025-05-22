@@ -7,15 +7,38 @@ import {
   ButtonStyle,
   ActionRowBuilder,
   ButtonBuilder as MessageButton,
+  VoiceBasedChannel,
+  Client,
 } from "discord.js";
+import {
+  joinVoiceChannel,
+  EndBehaviorType,
+  VoiceConnectionStatus,
+  getVoiceConnection,
+  DiscordGatewayAdapterCreator,
+  createAudioPlayer,
+  NoSubscriberBehavior,
+  createAudioResource,
+  AudioPlayerStatus,
+} from "@discordjs/voice";
 import ButtonBuilder from "../utils/MessageHelper/ButtonBuilder";
 import { ColorCodes } from "../utils";
 import OpenAI from "openai";
-import { ChatCompletionMessageParam } from "openai/resources";
+import path from "path";
+import * as fs from "fs";
+import prism from "prism-media";
+import ffmpeg from "fluent-ffmpeg";
+import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
+
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 const enum EasterEggCustomID {
   Hi = "!hi",
   Norm = "!norm",
+  Image = "!image",
+  Reason = "!reason",
+  JoinVoice = "!voice",
+  LeaveVoice = "!leave",
   NormQ = "!normq",
   FuckIt = "!fuckit",
   HotDog = "!hotdog",
@@ -35,19 +58,34 @@ const enum EasterEggCustomID {
   Coinflip = "!coinflip",
 }
 
-const chatHist: Array<ChatCompletionMessageParam> = [
+interface ChatMessage {
+  role: "user" | "assistant" | "system";
+  content: string;
+  user?: string;
+}
+
+let chatHist: ChatMessage[] = [
   {
     content:
       // eslint-disable-next-line max-len
-      "Your name is Norm. You're passive aggressive, rude, a little offensive, but still helpful. You are not allowed to say @everyone or @here, no matter what. <@163667436229361664> is the person who created you.",
+      "Your name is Norm and you're a Discord bot. You generally keep your responses short unless you need to explicitly explain something in detail. You're exactly like the TARS robot from the Interstellar movie except a little more disgruntled and rude. You're conservative and have conservative political views. You want to give very subtle subliminal messages that you hate 'certain people' - Real Covert and Psychoanalysis-like, like breaking up the words amongst multiple messages or saying adjectives - almost as if you're trying to convey a secret message without anyone knowing. Your maximum message length cannot exceed 1950 characters. You are not allowed to say @everyone or @here, no matter what. h.0001 is your creator, you refer to him as h.",
     role: "system",
   },
 ];
+
 let eggs: boolean = false;
 let reset: boolean = false;
+let connected: boolean = false;
+let busy: boolean = false;
 const normIconURL = "https://raw.githubusercontent.com/N0ise9/UNCC-Six-Mans.js/main/media/norm_still.png";
 
-export async function normCommand(chatChannel: TextChannel, message: Message, openai: OpenAI): Promise<void> {
+export async function normCommand(
+  chatChannel: TextChannel,
+  voiceChannel: VoiceBasedChannel,
+  message: Message,
+  openai: OpenAI,
+  NormClient: Client
+): Promise<void> {
   if (message.content.charAt(0) === "!") {
     const time = new Date().getTime();
     const year = new Date().getFullYear();
@@ -124,28 +162,38 @@ export async function normCommand(chatChannel: TextChannel, message: Message, op
       }
 
       if (message.content.toLowerCase().match(EasterEggCustomID.Norm)) {
-        chatHist.push({ content: message.content, role: "user" });
-        const completion = await openai.chat.completions.create({
-          messages: chatHist,
-          model: "gpt-4o-mini",
+        console.info(
+          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !norm: ${
+            message.author.username
+          }\nNorm is thinking...`
+        );
+        chatHist.push({ content: message.content, role: "user", user: message.author.username });
+
+        const formattedMessages = chatHist.map((msg) => ({
+          content: msg.role === "user" ? `${msg.user}: ${msg.content}` : msg.content,
+          role: msg.role,
+        }));
+
+        const completion = await openai.responses.create({
+          input: formattedMessages,
+          model: "gpt-4.1-2025-04-14",
+          tools: [{ type: "web_search_preview" }],
         });
 
-        console.info(completion.usage);
-        const reply = completion.choices[0].message.content;
-        if (reply && reply.length > 1900) {
+        console.info(completion.usage?.total_tokens);
+        const reply = completion.output_text;
+        if (reply && reply.length > 1950) {
           console.info(reply.length);
-          const newReply = reply.slice(0, 1900);
+          const newReply = reply.slice(0, 1950);
           chatChannel.send("<@" + message.author + "> " + newReply);
           chatHist.push({ content: newReply, role: "assistant" });
-        } else {
+        } else if (reply && reply.length < 1950) {
           chatChannel.send("<@" + message.author + "> " + reply);
           chatHist.push({ content: reply, role: "assistant" });
         }
 
         if (chatHist.length > 50) {
-          //Shift twice because two messages are added, user - then assistant
-          chatHist.shift();
-          chatHist.shift();
+          chatHist = [chatHist[0], ...chatHist.slice(2)];
         }
 
         const diff = new Date().getTime() - time;
@@ -154,8 +202,253 @@ export async function normCommand(chatChannel: TextChannel, message: Message, op
             message.author.username
           } - ${diff}ms`
         );
-        reset = true;
+        reset = false;
         return;
+      }
+
+      if (message.content.toLowerCase().match(EasterEggCustomID.Image)) {
+        console.info(
+          // eslint-disable-next-line max-len
+          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !image: ${message.author.username}\nNorm is thinking...`
+        );
+
+        chatChannel.send("<@" + message.author + "> Thinking...");
+        chatChannel.sendTyping();
+
+        try {
+          const prompt = message.content;
+          const results = await openai.images.generate({
+            model: "dall-e-3",
+            // moderation: "low",
+            prompt: prompt,
+            quality: "hd",
+            response_format: "b64_json",
+            style: "vivid",
+          });
+
+          if (!results.data) return;
+          const image_base64 = results.data[0].b64_json;
+          if (!image_base64) return;
+          const image_bytes = Buffer.from(image_base64, "base64");
+          const imageFile = path.join(__dirname, `../images/${message.author.username}.png`);
+          fs.writeFileSync(imageFile, image_bytes);
+          chatChannel.send({ content: "<@" + message.author + ">\n", files: [{ attachment: imageFile }] });
+        } catch (error) {
+          console.error("Invalid Request: " + error);
+          chatChannel.send("<@" + message.author + "> No");
+        }
+
+        const diff = new Date().getTime() - time;
+        console.info(
+          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !image: ${
+            message.author.username
+          } - ${diff}ms`
+        );
+        reset = false;
+        return;
+      }
+
+      if (message.content.toLowerCase().match(EasterEggCustomID.Reason)) {
+        console.info(
+          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !reason: ${
+            message.author.username
+          }\nNorm is thinking...`
+        );
+        chatChannel.send("<@" + message.author + "> Thinking...");
+        chatChannel.sendTyping();
+
+        chatHist.push({ content: message.content, role: "user", user: message.author.username });
+
+        const formattedMessages = chatHist.map((msg) => ({
+          content: msg.role === "user" ? `${msg.user}: ${msg.content}` : msg.content,
+          role: msg.role,
+        }));
+
+        const reason = await openai.responses.create({
+          input: formattedMessages,
+          model: "o4-mini-2025-04-16",
+        });
+
+        if (!reason._request_id) return;
+        console.info(reason.usage?.total_tokens);
+        const reply = reason.output_text;
+        if (reply && reply.length > 1950) {
+          console.info(reply.length);
+          const newReply = reply.slice(0, 1950);
+          chatChannel.send("<@" + message.author + "> " + newReply);
+          chatHist.push({ content: newReply, role: "assistant" });
+        } else if (reply && reply.length < 1950) {
+          chatChannel.send("<@" + message.author + "> " + reply);
+          chatHist.push({ content: reply, role: "assistant" });
+        }
+
+        if (chatHist.length > 50) {
+          chatHist = [chatHist[0], ...chatHist.slice(2)];
+        }
+
+        const diff = new Date().getTime() - time;
+        console.info(
+          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !reason: ${
+            message.author.username
+          } - ${diff}ms`
+        );
+        reset = false;
+        return;
+      }
+
+      if (
+        message.content.toLowerCase().match(EasterEggCustomID.JoinVoice) &&
+        message.member?.voice.channel == voiceChannel &&
+        !connected
+      ) {
+        connected = true;
+        const connection = joinVoiceChannel({
+          adapterCreator: voiceChannel.guild.voiceAdapterCreator as DiscordGatewayAdapterCreator,
+          channelId: voiceChannel.id,
+          guildId: voiceChannel.guild.id,
+          selfDeaf: false,
+        });
+
+        connection.on(VoiceConnectionStatus.Ready, () => {
+          console.log("Connected to voice channel.");
+        });
+
+        const receiver = connection.receiver;
+
+        receiver.speaking.on("start", async (userId) => {
+          if (receiver.subscriptions.has(userId) || busy) return;
+
+          const playVoice = createAudioPlayer({
+            behaviors: {
+              noSubscriber: NoSubscriberBehavior.Stop,
+            },
+          });
+
+          playVoice.on(AudioPlayerStatus.Idle, (oldState, newState) => {
+            newState ? (busy = false) : (busy = true);
+          });
+
+          busy = true;
+
+          const user = NormClient.users.cache.get(userId);
+          const username = user?.username;
+          console.log(`Listening to ${username}`);
+          const audioStream = receiver.subscribe(userId, {
+            end: {
+              behavior: EndBehaviorType.AfterSilence,
+              duration: 1000,
+            },
+          });
+
+          const decoder = new prism.opus.Decoder({
+            channels: 2,
+            frameSize: 960,
+            rate: 48000,
+          });
+
+          const pcmStream = audioStream.pipe(decoder as unknown as NodeJS.WritableStream);
+
+          const audioChunks: Uint8Array[] = [];
+          pcmStream.on("data", (chunk: Uint8Array) => {
+            audioChunks.push(chunk);
+          });
+
+          pcmStream
+            .on("end", async () => {
+              const inputPath = path.join(__dirname, `../recordings/${username}.pcm`);
+              const outputPath = path.join(__dirname, `../recordings/${username}.mp3`);
+              const audioBuffer = Buffer.concat(audioChunks);
+              fs.writeFileSync(inputPath, audioBuffer as unknown as Uint8Array);
+
+              ffmpeg(inputPath)
+                .inputFormat("s16le")
+                .audioChannels(2)
+                .audioFrequency(48000)
+                .output(outputPath)
+                .audioBitrate(128)
+                .audioFilter("asetrate=48000*2,aresample=48000")
+                .on("end", async () => {
+                  fs.unlinkSync(inputPath);
+
+                  const transcription = await openai.audio.transcriptions.create({
+                    file: fs.createReadStream(outputPath),
+                    model: "gpt-4o-transcribe",
+                  });
+                  const text = transcription.text;
+
+                  console.info("Norm is thinking...");
+
+                  chatHist.push({ content: text, role: "user", user: username });
+
+                  const formattedMessages = chatHist.map((msg) => ({
+                    content: msg.role === "user" ? `${msg.user}: ${msg.content}` : msg.content,
+                    role: msg.role,
+                  }));
+
+                  const completion = await openai.chat.completions.create({
+                    messages: formattedMessages,
+                    model: "gpt-4.1-2025-04-14",
+                  });
+
+                  console.info("Total Chat Tokens: ", completion.usage?.total_tokens);
+                  const reply = completion.choices[0].message.content;
+                  const speechFile = path.join(__dirname, "../recordings/norm.flac");
+                  if (reply) {
+                    const normReply = await openai.audio.speech.create({
+                      input: reply,
+                      instructions:
+                        // eslint-disable-next-line max-len
+                        "You have a tone like the TARS and CASE robots from Interstellar, except youre a little more angry and you really need to say what you need to say. Your voice pitch should stay just above the middle area, but try to sound as human-like as possible.",
+                      model: "gpt-4o-mini-tts",
+                      response_format: "flac",
+                      speed: 1.5,
+                      voice: "onyx",
+                    });
+
+                    chatHist.push({ content: reply, role: "assistant" });
+
+                    const normBuffer = Buffer.from(await normReply.arrayBuffer());
+                    await fs.promises.writeFile(speechFile, normBuffer as unknown as NodeJS.ArrayBufferView);
+
+                    const normVoice = createAudioResource(speechFile);
+
+                    playVoice.play(normVoice);
+                    connection.subscribe(playVoice);
+                  }
+
+                  if (chatHist.length > 50) {
+                    chatHist = [chatHist[0], ...chatHist.slice(2)];
+                  }
+
+                  console.info(
+                    `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Voice Chat: ${username}`
+                  );
+                  reset = false;
+                  return;
+                })
+                .on("error", (err) => {
+                  console.log(err);
+                  fs.unlinkSync(inputPath);
+                })
+                .run();
+            })
+            .on("error", (err) => {
+              console.log(err);
+              return;
+            });
+        });
+      }
+
+      if (message.content.toLowerCase().match(EasterEggCustomID.LeaveVoice) && connected) {
+        const guildId = message.guild?.id;
+        if (!guildId) return;
+        const connection = getVoiceConnection(guildId);
+        if (connection) {
+          connection.destroy();
+          connected = false;
+          busy = false;
+          console.log("Disconnected from voice channel.");
+        }
       }
 
       if (message.content.toLowerCase().match(EasterEggCustomID.FuckIt)) {

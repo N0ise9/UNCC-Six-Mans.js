@@ -25,7 +25,7 @@ export async function handleMenuInteraction(menuInteraction: StringSelectMenuInt
           const emptyQueue: PlayerInQueue[] = [];
           const newActiveMatch = await createMatchFromChosenTeams();
           Promise.all([
-            await message.channel.send(await MessageBuilder.activeMatchMessage(newActiveMatch)),
+            await message.reply(await MessageBuilder.activeMatchMessage(newActiveMatch)),
             await message.edit(MessageBuilder.queueMessage(emptyQueue)),
           ]);
 
@@ -48,7 +48,7 @@ export async function handleMenuInteraction(menuInteraction: StringSelectMenuInt
         const newActiveMatch = await createMatchFromChosenTeams();
 
         Promise.all([
-          await message.channel.send(await MessageBuilder.activeMatchMessage(newActiveMatch)),
+          await message.reply(await MessageBuilder.activeMatchMessage(newActiveMatch)),
           await message.edit(MessageBuilder.queueMessage(emptyQueue)),
         ]);
 

@@ -60,7 +60,7 @@ export async function handleInteraction(
             return `<@${ballChaser.id}> `;
           });
 
-          const msg = await message.channel.send({ content: list.toString() });
+          const msg = await message.reply({ content: list.toString() });
           msg;
 
           Promise.all([
@@ -76,7 +76,7 @@ export async function handleInteraction(
             } - ${diff}ms`
           );
         } else if (queue.length === 0) {
-          const msg = await message.channel.send({ content: "@here" });
+          const msg = await message.reply({ content: "@here" });
           msg;
           Promise.all([msg.delete(), message.edit(MessageBuilder.queueMessage(ballchasers))]);
           const diff = new Date().getTime() - time;
@@ -199,7 +199,7 @@ async function twosVoting(buttonInteraction: ButtonInteraction, message: Message
       return `<@${ballChaser.id}> `;
     });
 
-    const msg = await message.channel.send({ content: list.toString() });
+    const msg = await message.reply({ content: list.toString() });
     msg;
 
     Promise.all([
@@ -240,7 +240,7 @@ async function captainsRandomVote(buttonInteraction: ButtonInteraction, message:
 
     await Promise.all([
       //Create new reply to start a match
-      await message.channel.send(await MessageBuilder.activeMatchMessage(currentMatch)),
+      await message.reply(await MessageBuilder.activeMatchMessage(currentMatch)),
 
       //Update the embed with an empty queue message
       await message.edit(MessageBuilder.queueMessage(emptyQueue)),

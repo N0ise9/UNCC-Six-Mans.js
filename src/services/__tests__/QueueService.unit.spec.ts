@@ -7,7 +7,7 @@ import QueueRepository from "../../repositories/QueueRepository";
 jest.mock("../../repositories/ActiveMatchRepository");
 jest.mock("../../repositories/QueueRepository");
 
-DateTime.now = jest.fn(() => DateTime.fromISO("2022-03-08T20:28:27.885Z"));
+//DateTime.now = jest.fn(() => DateTime.fromISO("2022-03-08T20:28:27.885Z"));
 const DateTimeSixtyMinutesFromNow = DateTime.fromISO("2022-03-08T16:28:00.000-05:00");
 
 beforeEach(() => {

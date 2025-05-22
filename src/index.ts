@@ -1,4 +1,4 @@
-import { Client, Message, TextChannel } from "discord.js";
+import { Client, Message, TextChannel, VoiceBasedChannel } from "discord.js";
 import { updateLeaderboardChannel } from "./controllers/LeaderboardChannelController";
 import { handleInteraction, postCurrentQueue } from "./controllers/Interactions";
 import { getDiscordChannelById } from "./utils/discordUtils";
@@ -11,19 +11,21 @@ import { normCommand, startChatMonitor } from "./controllers/EasterEggs";
 import OpenAI from "openai";
 
 const NormClient = new Client({
-  intents: ["Guilds", "GuildMessages", "GuildMessageReactions", "GuildMessageTyping", "MessageContent"],
+  intents: ["Guilds", "GuildMessages", "GuildVoiceStates", "MessageContent"],
 });
 
 const guildId = getEnvVariable("guild_id");
 const leaderboardChannelId = getEnvVariable("leaderboard_channel_id");
 const queueChannelId = getEnvVariable("queue_channel_id");
 const chatChannelId = getEnvVariable("chat_channel_id");
+const voiceChannelID = getEnvVariable("voice_channel_id");
 const discordToken = getEnvVariable("token");
 const openai = new OpenAI({ apiKey: getEnvVariable("openai") });
 
 let queueEmbed: Message | null;
 let chatChannelMonitor: boolean = false;
 let chatChannel: TextChannel;
+let voiceChannel: VoiceBasedChannel;
 
 // function called on startup
 NormClient.on("ready", async (client) => {
@@ -59,11 +61,22 @@ NormClient.on("ready", async (client) => {
     }
   });
 
+  const registerVoiceChatPromise = await NormClient.channels.fetch(voiceChannelID).then((getVoiceChannel) => {
+    if (!getVoiceChannel) {
+      console.warn("Unable to access voice channel.");
+    } else if (getVoiceChannel.isVoiceBased()) {
+      voiceChannel = getVoiceChannel;
+    } else {
+      console.warn("Channel is not a voice channel.");
+    }
+  });
+
   await Promise.all([
     registerAdminCommandsPromise,
     updateLeaderboardPromise,
     postCurrentQueuePromise,
     registerChatPromise,
+    registerVoiceChatPromise,
   ]);
 
   if (queueEmbed) {
@@ -99,32 +112,7 @@ NormClient.on("interactionCreate", async (interaction) => {
 
 NormClient.on("messageCreate", async (message) => {
   if (message.channelId === chatChannelId) {
-    normCommand(chatChannel, message, openai);
-    //console.info("message sent");
-  }
-});
-
-NormClient.on("messageUpdate", async (message) => {
-  if (message.channelId === chatChannelId) {
-    console.info("message updated");
-  }
-});
-
-NormClient.on("typingStart", async (typing) => {
-  if (typing.channel.id === chatChannelId) {
-    console.info("typing");
-  }
-});
-
-NormClient.on("messageReactionAdd", async (reaction) => {
-  if (reaction.message.channelId === chatChannelId) {
-    console.info("reaction added");
-  }
-});
-
-NormClient.on("messageReactionRemove", async (reaction) => {
-  if (reaction.message.channelId === chatChannelId) {
-    console.info("reaction removed");
+    normCommand(chatChannel, voiceChannel, message, openai, NormClient);
   }
 });
 
