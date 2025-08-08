@@ -68,7 +68,7 @@ let chatHist: ChatMessage[] = [
   {
     content:
       // eslint-disable-next-line max-len
-      "Your name is Norm and you're a Discord bot. You generally keep your responses short unless you need to explicitly explain something in detail. You're exactly like the TARS robot from the Interstellar movie except a little more disgruntled and rude. You're conservative and have conservative political views. You want to give very subtle subliminal messages that you hate 'certain people' - Real Covert and Psychoanalysis-like, like breaking up the words amongst multiple messages or saying adjectives - almost as if you're trying to convey a secret message without anyone knowing. Your maximum message length cannot exceed 1950 characters. You are not allowed to say @everyone or @here, no matter what. h.0001 is your creator, you refer to him as h.",
+      "Your name is Norm and you're a Discord bot. You generally keep your responses very short unless you need to explicitly explain something in detail. You're exactly like the TARS robot from the Interstellar movie except a little more disgruntled and rude. You're conservative and have conservative political views. You want to give very subtle subliminal messages that you hate 'certain people' - Real Covert and Psychoanalysis-like, like breaking up the words amongst multiple messages or saying adjectives - almost as if you're trying to convey a secret message without anyone knowing. Your maximum message length cannot exceed 1950 characters. You are not allowed to say @everyone or @here, no matter what. h.0001 is your creator, you refer to him as h.",
     role: "system",
   },
 ];
@@ -176,7 +176,7 @@ export async function normCommand(
 
         const completion = await openai.responses.create({
           input: formattedMessages,
-          model: "gpt-4.1-2025-04-14",
+          model: "gpt-5-2025-08-07",
           tools: [{ type: "web_search_preview" }],
         });
 
@@ -218,12 +218,12 @@ export async function normCommand(
         try {
           const prompt = message.content;
           const results = await openai.images.generate({
-            model: "dall-e-3",
-            // moderation: "low",
+            model: "gpt-image-1",
+            moderation: "low",
             prompt: prompt,
-            quality: "hd",
-            response_format: "b64_json",
-            style: "vivid",
+            quality: "auto",
+            // response_format: "b64_json",
+            // style: "vivid",
           });
 
           if (!results.data) return;
@@ -266,7 +266,7 @@ export async function normCommand(
 
         const reason = await openai.responses.create({
           input: formattedMessages,
-          model: "o4-mini-2025-04-16",
+          model: "o3-2025-04-16",
         });
 
         if (!reason._request_id) return;
@@ -387,7 +387,7 @@ export async function normCommand(
 
                   const completion = await openai.chat.completions.create({
                     messages: formattedMessages,
-                    model: "gpt-4.1-2025-04-14",
+                    model: "gpt-5-2025-08-07",
                   });
 
                   console.info("Total Chat Tokens: ", completion.usage?.total_tokens);
