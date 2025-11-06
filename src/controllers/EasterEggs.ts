@@ -33,16 +33,6 @@ import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
-const conversationStatePath = path.resolve(__dirname, "../conversations/conversation_state.json");
-let conversationID: string | null = null;
-try {
-  if (fs.existsSync(conversationStatePath)) {
-    conversationID = JSON.parse(fs.readFileSync(conversationStatePath, "utf-8")).conversation_id;
-  }
-} catch (err) {
-  console.error("Error reading conversation state:", err);
-}
-
 const enum EasterEggCustomID {
   Hi = "!hi",
   Norm = "!norm",
@@ -97,6 +87,7 @@ export async function normCommand(
   chatChannel: TextChannel,
   voiceChannel: VoiceBasedChannel,
   message: Message,
+  conversationID: string,
   openai: OpenAI,
   NormClient: Client
 ): Promise<void> {
@@ -202,7 +193,7 @@ export async function normCommand(
               ],
             });
             conversationID = convo.id;
-            fs.writeFileSync(conversationStatePath, JSON.stringify({ conversation_id: conversationID }));
+            throw new Error("Put conversation ID in .env file: \n" + conversationID);
           }
         } else {
           convo = await openai.conversations.create({
@@ -215,7 +206,7 @@ export async function normCommand(
             ],
           });
           conversationID = convo.id;
-          fs.writeFileSync(conversationStatePath, JSON.stringify({ conversation_id: conversationID }));
+          throw new Error("Put conversation ID in .env file: \n" + conversationID);
         }
 
         let completion;

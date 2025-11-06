@@ -21,6 +21,7 @@ const chatChannelId = getEnvVariable("chat_channel_id");
 const voiceChannelID = getEnvVariable("voice_channel_id");
 const discordToken = getEnvVariable("token");
 const openai = new OpenAI({ apiKey: getEnvVariable("openai") });
+const conversationID = getEnvVariable("conversation_id");
 
 let queueEmbed: Message | null;
 let chatChannelMonitor: boolean = false;
@@ -112,7 +113,7 @@ NormClient.on("interactionCreate", async (interaction) => {
 
 NormClient.on("messageCreate", async (message) => {
   if (message.channelId === chatChannelId) {
-    normCommand(chatChannel, voiceChannel, message, openai, NormClient);
+    normCommand(chatChannel, voiceChannel, message, conversationID, openai, NormClient);
   }
 });
 
