@@ -165,8 +165,12 @@ export async function normCommand(
       //   reset = true;
       //   return;
       // }
-
-      if (message.content.toLowerCase().match(EasterEggCustomID.Norm)) {
+      if (busy) {
+        await chatChannel.send(`<@${message.author.id}> Busy...`);
+        return;
+      }
+      if (message.content.toLowerCase().match(EasterEggCustomID.Norm) && !busy) {
+        busy = true;
         console.info(
           `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !norm: ${
             message.author.username
@@ -293,7 +297,7 @@ export async function normCommand(
               message.author.username
             } - ${diff}ms`
         );
-        reset = false;
+        busy = false;
         return;
       }
 
@@ -531,7 +535,6 @@ export async function normCommand(
                   console.info(
                     `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Voice Chat: ${username}`
                   );
-                  reset = false;
                   return;
                 })
                 .on("error", (err) => {
