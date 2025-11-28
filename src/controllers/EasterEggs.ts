@@ -1230,7 +1230,7 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
           const diff = Date.now() - started;
           console.info(
             `Tools: ${toolsUsed}\n` +
-              `Tokens: ${totalTokens} / ${tokenLimitNumber}\n || ${Math.round((totalTokens / tokenLimitNumber) * 100)}%\n` +
+              `Tokens: ${totalTokens} / ${tokenLimitNumber} || ${Math.round((totalTokens / tokenLimitNumber) * 100)}%\n` +
               `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Slash /norm: ${
                 interaction.user.username
               } - ${diff}ms`
