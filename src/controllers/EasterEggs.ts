@@ -10,6 +10,11 @@ import {
   // ButtonBuilder as MessageButton,
   VoiceBasedChannel,
   Client,
+  CommandInteraction,
+  REST,
+  RESTPostAPIApplicationCommandsJSONBody,
+  Routes,
+  SlashCommandBuilder,
 } from "discord.js";
 import {
   joinVoiceChannel,
@@ -59,6 +64,11 @@ const enum EasterEggCustomID {
   NormSucks = "!normsucks",
   Coinflip = "!coinflip",
   Sora = "!sora",
+}
+
+const enum EasterEggSlashCommands {
+  Norm = "norm",
+  Sora = "sora",
 }
 
 interface ChatMessage {
@@ -196,323 +206,325 @@ export async function normCommand(
     //   reset = true;
     //   return;
     // }
-    if (message.content.toLowerCase().startsWith(EasterEggCustomID.Norm)) {
-      await chatChannel.sendTyping();
-      await enqueueNormTask(async () => {
-        const started = Date.now();
-        try {
-          console.info(
-            `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !norm: ${
-              message.author.username
-            }\nNorm is thinking...`
-          );
 
-          // Collect up to 3 image attachments to include as inputs
-          const imageUrls = Array.from(message.attachments.values())
-            .filter((a) => a.contentType?.startsWith("image/"))
-            .map((a) => a.url)
-            .slice(0, 3);
+    // Commenting out Legacy OpenAI Interaction
+    // if (message.content.toLowerCase().startsWith(EasterEggCustomID.Norm)) {
+    //   await chatChannel.sendTyping();
+    //   await enqueueNormTask(async () => {
+    //     const started = Date.now();
+    //     try {
+    //       console.info(
+    //         `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !norm: ${
+    //           message.author.username
+    //         }\nNorm is thinking...`
+    //       );
 
-          const tokenLimit = process.env["conversation_token_limit"];
-          let convo;
-          let conversationIDLocal = loadConversationId();
-          if (conversationIDLocal) {
-            try {
-              convo = await openai.conversations.retrieve(conversationIDLocal);
-            } catch (e) {
-              console.info("\nConversation not found - Creating a new conversation.");
-              convo = await openai.conversations.create({
-                items: [
-                  {
-                    content: systemMessage,
-                    role: "system",
-                    type: "message",
-                  },
-                ],
-              });
-              conversationIDLocal = convo.id;
-              saveConversationId(conversationIDLocal);
-              console.warn("Created new OpenAI conversation and saved to .conversation_id.");
-            }
-          } else {
-            convo = await openai.conversations.create({
-              items: [
-                {
-                  content: systemMessage,
-                  role: "system",
-                  type: "message",
-                },
-              ],
-            });
-            conversationIDLocal = convo.id;
-            saveConversationId(conversationIDLocal);
-            console.warn("Created new OpenAI conversation and saved to .conversation_id.");
-          }
+    //       // Collect up to 3 image attachments to include as inputs
+    //       const imageUrls = Array.from(message.attachments.values())
+    //         .filter((a) => a.contentType?.startsWith("image/"))
+    //         .map((a) => a.url)
+    //         .slice(0, 3);
 
-          let completion;
-          try {
-            if (imageUrls.length > 0) {
-              completion = await openai.responses.create({
-                conversation: convo.id,
-                input: [
-                  {
-                    content: [
-                      {
-                        text: `${message.author.id} ${message.author.username}: ${message.content}`,
-                        type: "input_text",
-                      },
-                      ...imageUrls.map((u) => ({
-                        detail: "auto" as const,
-                        image_url: u,
-                        type: "input_image" as const,
-                      })),
-                    ],
-                    role: "user",
-                  },
-                ],
-                model: "gpt-5",
-                parallel_tool_calls: true,
-                tool_choice: "auto",
-                tools: [
-                  { type: "web_search" },
-                  {
-                    input_fidelity: "high",
-                    model: "gpt-image-1",
-                    moderation: "low",
-                    output_format: "png",
-                    type: "image_generation",
-                  },
-                ],
-              });
-            } else {
-              completion = await openai.responses.create({
-                conversation: convo.id,
-                input: `${message.author.id} ${message.author.username}: ${message.content}`,
-                model: "gpt-5",
-                parallel_tool_calls: true,
-                tool_choice: "auto",
-                tools: [
-                  { type: "web_search" },
-                  {
-                    input_fidelity: "high",
-                    model: "gpt-image-1",
-                    moderation: "low",
-                    output_format: "png",
-                    type: "image_generation",
-                  },
-                ],
-              });
-            }
-          } catch (err: unknown) {
-            const e = err as {
-              status?: number;
-              code?: string;
-              message?: string;
-              response?: { status?: number; data?: { error?: { code?: string; message?: string } } };
-            };
-            const status = e?.status ?? e?.response?.status;
-            const code = e?.code ?? e?.response?.data?.error?.code;
-            const msg = e?.message ?? e?.response?.data?.error?.message ?? "Unknown error";
-            console.error(`OpenAI responses.create failed (${status || "no-status"} ${code || ""}): ${msg}`);
-            await chatChannel.send(
-              `<@${message.author.id}> I couldn't reach OpenAI right now. Please try again in a bit.`
-            );
-            return;
-          }
+    //       const tokenLimit = process.env["conversation_token_limit"];
+    //       let convo;
+    //       let conversationIDLocal = loadConversationId();
+    //       if (conversationIDLocal) {
+    //         try {
+    //           convo = await openai.conversations.retrieve(conversationIDLocal);
+    //         } catch (e) {
+    //           console.info("\nConversation not found - Creating a new conversation.");
+    //           convo = await openai.conversations.create({
+    //             items: [
+    //               {
+    //                 content: systemMessage,
+    //                 role: "system",
+    //                 type: "message",
+    //               },
+    //             ],
+    //           });
+    //           conversationIDLocal = convo.id;
+    //           saveConversationId(conversationIDLocal);
+    //           console.warn("Created new OpenAI conversation and saved to .conversation_id.");
+    //         }
+    //       } else {
+    //         convo = await openai.conversations.create({
+    //           items: [
+    //             {
+    //               content: systemMessage,
+    //               role: "system",
+    //               type: "message",
+    //             },
+    //           ],
+    //         });
+    //         conversationIDLocal = convo.id;
+    //         saveConversationId(conversationIDLocal);
+    //         console.warn("Created new OpenAI conversation and saved to .conversation_id.");
+    //       }
 
-          console.info("Tokens: " + completion?.usage?.total_tokens + "/" + tokenLimit);
-          const imageOutputs = Array.isArray(completion?.output)
-            ? completion.output.filter((o) => o.type == "image_generation_call")
-            : [];
+    //       let completion;
+    //       try {
+    //         if (imageUrls.length > 0) {
+    //           completion = await openai.responses.create({
+    //             conversation: convo.id,
+    //             input: [
+    //               {
+    //                 content: [
+    //                   {
+    //                     text: `${message.author.id} ${message.author.username}: ${message.content}`,
+    //                     type: "input_text",
+    //                   },
+    //                   ...imageUrls.map((u) => ({
+    //                     detail: "auto" as const,
+    //                     image_url: u,
+    //                     type: "input_image" as const,
+    //                   })),
+    //                 ],
+    //                 role: "user",
+    //               },
+    //             ],
+    //             model: "gpt-5",
+    //             parallel_tool_calls: true,
+    //             tool_choice: "auto",
+    //             tools: [
+    //               { type: "web_search" },
+    //               {
+    //                 input_fidelity: "high",
+    //                 model: "gpt-image-1",
+    //                 moderation: "low",
+    //                 output_format: "png",
+    //                 type: "image_generation",
+    //               },
+    //             ],
+    //           });
+    //         } else {
+    //           completion = await openai.responses.create({
+    //             conversation: convo.id,
+    //             input: `${message.author.id} ${message.author.username}: ${message.content}`,
+    //             model: "gpt-5",
+    //             parallel_tool_calls: true,
+    //             tool_choice: "auto",
+    //             tools: [
+    //               { type: "web_search" },
+    //               {
+    //                 input_fidelity: "high",
+    //                 model: "gpt-image-1",
+    //                 moderation: "low",
+    //                 output_format: "png",
+    //                 type: "image_generation",
+    //               },
+    //             ],
+    //           });
+    //         }
+    //       } catch (err: unknown) {
+    //         const e = err as {
+    //           status?: number;
+    //           code?: string;
+    //           message?: string;
+    //           response?: { status?: number; data?: { error?: { code?: string; message?: string } } };
+    //         };
+    //         const status = e?.status ?? e?.response?.status;
+    //         const code = e?.code ?? e?.response?.data?.error?.code;
+    //         const msg = e?.message ?? e?.response?.data?.error?.message ?? "Unknown error";
+    //         console.error(`OpenAI responses.create failed (${status || "no-status"} ${code || ""}): ${msg}`);
+    //         await chatChannel.send(
+    //           `<@${message.author.id}> I couldn't reach OpenAI right now. Please try again in a bit.`
+    //         );
+    //         return;
+    //       }
 
-          if (imageOutputs && imageOutputs.length > 0) {
-            const files: { attachment: string }[] = [];
-            let count = 0;
-            for (const image of imageOutputs) {
-              if (count >= 4) break;
-              const image_base64 = image?.result;
-              if (image_base64 && image_base64.length > 0) {
-                const imageFile = path.join(
-                  __dirname,
-                  `../images/${message.author.username}-${Date.now()}-${count}.png`
-                );
-                fs.writeFileSync(imageFile, Buffer.from(image_base64, "base64"));
-                files.push({ attachment: imageFile });
-                count++;
-              }
-            }
-            const text = (completion?.output_text || "").trim();
-            const chunks = text ? chunkMessage(text) : [];
-            if (files.length > 0 || chunks.length > 0) {
-              await chatChannel.send({ content: chunks.shift() ?? undefined, files });
-              for (const part of chunks) await chatChannel.send(part);
-            }
-          }
+    //       console.info("Tokens: " + completion?.usage?.total_tokens + "/" + tokenLimit);
+    //       const imageOutputs = Array.isArray(completion?.output)
+    //         ? completion.output.filter((o) => o.type == "image_generation_call")
+    //         : [];
 
-          const reply = (completion?.output_text || "").trim();
-          if (reply) {
-            for (const part of chunkMessage(reply)) {
-              await chatChannel.send(part);
-            }
-          }
+    //       if (imageOutputs && imageOutputs.length > 0) {
+    //         const files: { attachment: string }[] = [];
+    //         let count = 0;
+    //         for (const image of imageOutputs) {
+    //           if (count >= 4) break;
+    //           const image_base64 = image?.result;
+    //           if (image_base64 && image_base64.length > 0) {
+    //             const imageFile = path.join(
+    //               __dirname,
+    //               `../images/${message.author.username}-${Date.now()}-${count}.png`
+    //             );
+    //             fs.writeFileSync(imageFile, Buffer.from(image_base64, "base64"));
+    //             files.push({ attachment: imageFile });
+    //             count++;
+    //           }
+    //         }
+    //         const text = (completion?.output_text || "").trim();
+    //         const chunks = text ? chunkMessage(text) : [];
+    //         if (files.length > 0 || chunks.length > 0) {
+    //           await chatChannel.send({ content: chunks.shift() ?? undefined, files });
+    //           for (const part of chunks) await chatChannel.send(part);
+    //         }
+    //       }
 
-          // Rotate conversation if input token budget is reached
-          try {
-            const tokenLimitNumber = Number(tokenLimit ?? 0);
-            const totalTokens = completion?.usage?.total_tokens ?? 0;
-            if (completion && tokenLimitNumber > 0 && totalTokens >= tokenLimitNumber) {
-              const newConvo = await openai.conversations.create({
-                items: [
-                  {
-                    content: systemMessage,
-                    role: "system",
-                    type: "message",
-                  },
-                ],
-              });
-              saveConversationId(newConvo.id);
-              console.warn(
-                `Input tokens (${totalTokens}) reached limit (${tokenLimitNumber}). Started new conversation and saved to .conversation_id.`
-              );
-              await chatChannel.send("I've wiped my memory to limit contextual input, in order to keep costs lower.");
-            }
-          } catch (rotErr) {
-            console.error("Failed to rotate conversation after token check:", rotErr);
-          }
+    //       const reply = (completion?.output_text || "").trim();
+    //       if (reply) {
+    //         for (const part of chunkMessage(reply)) {
+    //           await chatChannel.send(part);
+    //         }
+    //       }
 
-          const toolsUsed = Array.isArray(completion?.output)
-            ? completion.output
-                .filter((o) => typeof o?.type === "string" && o.type.endsWith("_call"))
-                .map((o) => o.type.replace("_call", ""))
-                .join(", ") || "None"
-            : "None";
-          const diff = Date.now() - started;
-          console.info(
-            `Tools: ${toolsUsed}\n` +
-              `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !norm: ${
-                message.author.username
-              } - ${diff}ms`
-          );
-        } catch (err: unknown) {
-          // Catch-all to prevent process crashes on unexpected errors
-          const e = err as {
-            status?: number;
-            message?: string;
-            response?: { status?: number; data?: { error?: { message?: string } } };
-          };
-          const status = e?.status ?? e?.response?.status;
-          const msg = e?.message ?? e?.response?.data?.error?.message ?? String(err);
-          console.error(`!norm handler error (${status || "no-status"}):`, msg);
-          try {
-            await chatChannel.send(
-              `<@${message.author.id}> Something went wrong handling your request. Please try again later.`
-            );
-          } catch (notifyErr) {
-            console.error("Failed to notify channel about error:", notifyErr);
-          }
-        }
-      });
-      return;
-    }
+    //       // Rotate conversation if input token budget is reached
+    //       try {
+    //         const tokenLimitNumber = Number(tokenLimit ?? 0);
+    //         const totalTokens = completion?.usage?.total_tokens ?? 0;
+    //         if (completion && tokenLimitNumber > 0 && totalTokens >= tokenLimitNumber) {
+    //           const newConvo = await openai.conversations.create({
+    //             items: [
+    //               {
+    //                 content: systemMessage,
+    //                 role: "system",
+    //                 type: "message",
+    //               },
+    //             ],
+    //           });
+    //           saveConversationId(newConvo.id);
+    //           console.warn(
+    //             `Input tokens (${totalTokens}) reached limit (${tokenLimitNumber}). Started new conversation and saved to .conversation_id.`
+    //           );
+    //           await chatChannel.send("I've wiped my memory to limit contextual input, in order to keep costs lower.");
+    //         }
+    //       } catch (rotErr) {
+    //         console.error("Failed to rotate conversation after token check:", rotErr);
+    //       }
 
-    // New: !sora video generation using Sora via OpenAI
-    if (message.content.toLowerCase().startsWith(EasterEggCustomID.Sora)) {
-      await chatChannel.sendTyping();
-      const started = Date.now();
-      try {
-        console.info(
-          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !sora: ${
-            message.author.username
-          }\nNorm is thinking...`
-        );
-        const content = message.content.trim();
-        const args = content.split(/\s+/).slice(1);
-        let duration = 10; // default seconds
-        let prompt = args.join(" ").trim();
-        if (args.length > 0 && /^\d+$/.test(args[0])) {
-          duration = Math.max(1, Math.min(60, parseInt(args[0], 10)));
-          prompt = args.slice(1).join(" ").trim();
-        }
-        if (!prompt) {
-          prompt = "Create a short cinematic video based on the server context.";
-        }
+    //       const toolsUsed = Array.isArray(completion?.output)
+    //         ? completion.output
+    //             .filter((o) => typeof o?.type === "string" && o.type.endsWith("_call"))
+    //             .map((o) => o.type.replace("_call", ""))
+    //             .join(", ") || "None"
+    //         : "None";
+    //       const diff = Date.now() - started;
+    //       console.info(
+    //         `Tools: ${toolsUsed}\n` +
+    //           `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !norm: ${
+    //             message.author.username
+    //           } - ${diff}ms`
+    //       );
+    //     } catch (err: unknown) {
+    //       // Catch-all to prevent process crashes on unexpected errors
+    //       const e = err as {
+    //         status?: number;
+    //         message?: string;
+    //         response?: { status?: number; data?: { error?: { message?: string } } };
+    //       };
+    //       const status = e?.status ?? e?.response?.status;
+    //       const msg = e?.message ?? e?.response?.data?.error?.message ?? String(err);
+    //       console.error(`!norm handler error (${status || "no-status"}):`, msg);
+    //       try {
+    //         await chatChannel.send(
+    //           `<@${message.author.id}> Something went wrong handling your request. Please try again later.`
+    //         );
+    //       } catch (notifyErr) {
+    //         console.error("Failed to notify channel about error:", notifyErr);
+    //       }
+    //     }
+    //   });
+    //   return;
+    // }
 
-        let convo;
-        let conversationIDLocal = loadConversationId();
-        if (conversationIDLocal) {
-          try {
-            convo = await openai.conversations.retrieve(conversationIDLocal);
-          } catch {
-            convo = await openai.conversations.create({
-              items: [
-                {
-                  content: systemMessage,
-                  role: "system",
-                  type: "message",
-                },
-              ],
-            });
-            conversationIDLocal = convo.id;
-            saveConversationId(conversationIDLocal);
-          }
-        } else {
-          convo = await openai.conversations.create({
-            items: [
-              {
-                content: systemMessage,
-                role: "system",
-                type: "message",
-              },
-            ],
-          });
-          conversationIDLocal = convo.id;
-          saveConversationId(conversationIDLocal);
-        }
+    // // New: !sora video generation using Sora via OpenAI
+    // if (message.content.toLowerCase().startsWith(EasterEggCustomID.Sora)) {
+    //   await chatChannel.sendTyping();
+    //   const started = Date.now();
+    //   try {
+    //     console.info(
+    //       `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !sora: ${
+    //         message.author.username
+    //       }\nNorm is thinking...`
+    //     );
+    //     const content = message.content.trim();
+    //     const args = content.split(/\s+/).slice(1);
+    //     let duration = 10; // default seconds
+    //     let prompt = args.join(" ").trim();
+    //     if (args.length > 0 && /^\d+$/.test(args[0])) {
+    //       duration = Math.max(1, Math.min(60, parseInt(args[0], 10)));
+    //       prompt = args.slice(1).join(" ").trim();
+    //     }
+    //     if (!prompt) {
+    //       prompt = "Create a short cinematic video based on the server context.";
+    //     }
 
-        let completion = await openai.videos.create({
-          model: "sora-2",
-          prompt: content,
-        });
+    //     let convo;
+    //     let conversationIDLocal = loadConversationId();
+    //     if (conversationIDLocal) {
+    //       try {
+    //         convo = await openai.conversations.retrieve(conversationIDLocal);
+    //       } catch {
+    //         convo = await openai.conversations.create({
+    //           items: [
+    //             {
+    //               content: systemMessage,
+    //               role: "system",
+    //               type: "message",
+    //             },
+    //           ],
+    //         });
+    //         conversationIDLocal = convo.id;
+    //         saveConversationId(conversationIDLocal);
+    //       }
+    //     } else {
+    //       convo = await openai.conversations.create({
+    //         items: [
+    //           {
+    //             content: systemMessage,
+    //             role: "system",
+    //             type: "message",
+    //           },
+    //         ],
+    //       });
+    //       conversationIDLocal = convo.id;
+    //       saveConversationId(conversationIDLocal);
+    //     }
 
-        while (completion.status === "in_progress" || completion.status === "queued") {
-          completion = await openai.videos.retrieve(completion.id);
-          await new Promise((resolve) => setTimeout(resolve, 2000));
-        }
+    //     let completion = await openai.videos.create({
+    //       model: "sora-2",
+    //       prompt: content,
+    //     });
 
-        if (completion.status === "failed") {
-          await chatChannel.send(`<@${message.author.id}> I couldn't create a video right now.`);
-        }
+    //     while (completion.status === "in_progress" || completion.status === "queued") {
+    //       completion = await openai.videos.retrieve(completion.id);
+    //       await new Promise((resolve) => setTimeout(resolve, 2000));
+    //     }
 
-        const vid = await openai.videos.downloadContent(completion.id);
+    //     if (completion.status === "failed") {
+    //       await chatChannel.send(`<@${message.author.id}> I couldn't create a video right now.`);
+    //     }
 
-        if (!vid) {
-          await chatChannel.send(`<@${message.author.id}> I couldn't create a video right now.`);
-          return;
-        }
+    //     const vid = await openai.videos.downloadContent(completion.id);
 
-        const body = await vid.arrayBuffer();
-        const buffer = Buffer.from(body);
-        const filePath = path.join(__dirname, `../recordings/${message.author.username}-${Date.now()}-sora.mp4`);
-        fs.writeFileSync(filePath, buffer);
+    //     if (!vid) {
+    //       await chatChannel.send(`<@${message.author.id}> I couldn't create a video right now.`);
+    //       return;
+    //     }
 
-        const cost = (duration * 0.1).toFixed(2);
-        await chatChannel.send({
-          content: `<@${message.author.id}> Estimated cost: $${cost}.`,
-          files: [{ attachment: filePath }],
-        });
+    //     const body = await vid.arrayBuffer();
+    //     const buffer = Buffer.from(body);
+    //     const filePath = path.join(__dirname, `../recordings/${message.author.username}-${Date.now()}-sora.mp4`);
+    //     fs.writeFileSync(filePath, buffer);
 
-        const diff = Date.now() - started;
-        console.info(
-          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !sora: ${
-            message.author.username
-          } - ${diff}ms`
-        );
-      } catch (err) {
-        console.error("!sora error:", err);
-        await chatChannel.send(`<@${message.author.id}> I couldn't generate the video. Please try again later.`);
-      }
-      return;
-    }
+    //     const cost = (duration * 0.1).toFixed(2);
+    //     await chatChannel.send({
+    //       content: `<@${message.author.id}> Estimated cost: $${cost}.`,
+    //       files: [{ attachment: filePath }],
+    //     });
+
+    //     const diff = Date.now() - started;
+    //     console.info(
+    //       `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Easter Egg !sora: ${
+    //         message.author.username
+    //       } - ${diff}ms`
+    //     );
+    //   } catch (err) {
+    //     console.error("!sora error:", err);
+    //     await chatChannel.send(`<@${message.author.id}> I couldn't generate the video. Please try again later.`);
+    //   }
+    //   return;
+    // }
 
     //Commented portion is pre - conversation API code
 
@@ -980,5 +992,336 @@ export async function normCommand(
     //   reset = true;
     //   return;
     // }
+  }
+}
+
+export async function registerEasterEggsSlashCommands(clientId: string, guildId: string, token: string) {
+  const rest = new REST({ version: "9" }).setToken(token);
+
+  const norm = new SlashCommandBuilder()
+    .setName(EasterEggSlashCommands.Norm)
+    .setDescription("Ask Norm anything.")
+    .addStringOption((opt) => opt.setName("prompt").setDescription("What do you want to say?").setRequired(true))
+    .addAttachmentOption((opt) => opt.setName("image1").setDescription("Optional image 1"))
+    .addAttachmentOption((opt) => opt.setName("image2").setDescription("Optional image 2"))
+    .addAttachmentOption((opt) => opt.setName("image3").setDescription("Optional image 3"))
+    .toJSON();
+
+  const sora = new SlashCommandBuilder()
+    .setName(EasterEggSlashCommands.Sora)
+    .setDescription("Generate a short video with Sora.")
+    .addIntegerOption((opt) =>
+      opt
+        .setName("duration")
+        .setDescription("Duration in seconds (1-10)")
+        .setRequired(false)
+        .setMinValue(1)
+        .setMaxValue(10)
+    )
+    .addStringOption((opt) => opt.setName("prompt").setDescription("Video prompt").setRequired(false))
+    .toJSON();
+
+  const commands: Array<RESTPostAPIApplicationCommandsJSONBody> = [norm, sora];
+  await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
+}
+
+export async function handleEasterEggsInteraction(interaction: CommandInteraction, openai: OpenAI): Promise<void> {
+  if (!interaction.isChatInputCommand()) return;
+
+  switch (interaction.commandName) {
+    case EasterEggSlashCommands.Norm: {
+      const started = Date.now();
+      await interaction.deferReply();
+
+      const prompt = interaction.options.get("prompt")?.value as string;
+      const attachments = [
+        interaction.options.getAttachment("image1"),
+        interaction.options.getAttachment("image2"),
+        interaction.options.getAttachment("image3"),
+      ].filter(Boolean) as Array<NonNullable<ReturnType<typeof interaction.options.getAttachment>>>;
+
+      await enqueueNormTask(async () => {
+        try {
+          const now = new Date();
+          const year = now.getFullYear();
+          const month = now.getMonth();
+          const day = now.getDate();
+          const hour = now.getHours();
+          const min = now.getMinutes();
+          const sec = now.getSeconds();
+          const mil = now.getMilliseconds();
+
+          const imageUrls = attachments
+            .filter((a) => a.contentType?.startsWith("image/"))
+            .map((a) => a.url)
+            .slice(0, 3);
+
+          const tokenLimit = process.env["conversation_token_limit"];
+          let convo;
+          let conversationIDLocal = loadConversationId();
+          if (conversationIDLocal) {
+            try {
+              convo = await openai.conversations.retrieve(conversationIDLocal);
+            } catch (e) {
+              console.info("\nConversation not found - Creating a new conversation.");
+              convo = await openai.conversations.create({
+                items: [
+                  {
+                    content: systemMessage,
+                    role: "system",
+                    type: "message",
+                  },
+                ],
+              });
+              conversationIDLocal = convo.id;
+              saveConversationId(conversationIDLocal);
+              console.warn("Created new OpenAI conversation and saved to .conversation_id.");
+            }
+          } else {
+            convo = await openai.conversations.create({
+              items: [
+                {
+                  content: systemMessage,
+                  role: "system",
+                  type: "message",
+                },
+              ],
+            });
+            conversationIDLocal = convo.id;
+            saveConversationId(conversationIDLocal);
+            console.warn("Created new OpenAI conversation and saved to .conversation_id.");
+          }
+
+          let completion;
+          try {
+            if (imageUrls.length > 0) {
+              completion = await openai.responses.create({
+                conversation: convo.id,
+                input: [
+                  {
+                    content: [
+                      { text: `${interaction.user.id} ${interaction.user.username}: ${prompt}`, type: "input_text" },
+                      ...imageUrls.map((u) => ({
+                        detail: "auto" as const,
+                        image_url: u,
+                        type: "input_image" as const,
+                      })),
+                    ],
+                    role: "user",
+                  },
+                ],
+                model: "gpt-5",
+                parallel_tool_calls: true,
+                tool_choice: "auto",
+                tools: [
+                  { type: "web_search" },
+                  {
+                    input_fidelity: "high",
+                    model: "gpt-image-1",
+                    moderation: "low",
+                    output_format: "png",
+                    type: "image_generation",
+                  },
+                ],
+              });
+            } else {
+              completion = await openai.responses.create({
+                conversation: convo.id,
+                input: `${interaction.user.id} ${interaction.user.username}: ${prompt}`,
+                model: "gpt-5",
+                parallel_tool_calls: true,
+                tool_choice: "auto",
+                tools: [
+                  { type: "web_search" },
+                  {
+                    input_fidelity: "high",
+                    model: "gpt-image-1",
+                    moderation: "low",
+                    output_format: "png",
+                    type: "image_generation",
+                  },
+                ],
+              });
+            }
+          } catch (err: unknown) {
+            const e = err as {
+              status?: number;
+              code?: string;
+              message?: string;
+              response?: { status?: number; data?: { error?: { code?: string; message?: string } } };
+            };
+            const status = e?.status ?? e?.response?.status;
+            const code = e?.code ?? e?.response?.data?.error?.code;
+            const msg = e?.message ?? e?.response?.data?.error?.message ?? "Unknown error";
+            console.error(`OpenAI responses.create failed (${status || "no-status"} ${code || ""}): ${msg}`);
+            await interaction.editReply(
+              `<@${interaction.user.id}> I couldn't reach OpenAI right now. Please try again in a bit.`
+            );
+            return;
+          }
+
+          const imageOutputs = Array.isArray(completion?.output)
+            ? completion.output.filter((o) => o.type == "image_generation_call")
+            : [];
+
+          if (imageOutputs && imageOutputs.length > 0) {
+            const files: { attachment: string }[] = [];
+            let count = 0;
+            for (const image of imageOutputs) {
+              if (count >= 4) break;
+              const image_base64 = image?.result;
+              if (image_base64 && image_base64.length > 0) {
+                const imageFile = path.join(
+                  __dirname,
+                  `../images/${interaction.user.username}-${Date.now()}-${count}.png`
+                );
+                fs.writeFileSync(imageFile, Buffer.from(image_base64, "base64"));
+                files.push({ attachment: imageFile });
+                count++;
+              }
+            }
+            const text = (completion?.output_text || "").trim();
+            const chunks = text ? chunkMessage(text) : [];
+            if (files.length > 0 || chunks.length > 0) {
+              await interaction.editReply({ content: chunks.shift() ?? undefined, files });
+              for (const part of chunks) await interaction.followUp(part);
+            }
+          }
+
+          const reply = (completion?.output_text || "").trim();
+          if (reply) {
+            const parts = chunkMessage(reply);
+            if (parts.length > 0) {
+              await interaction.editReply(parts.shift() as string);
+              for (const p of parts) await interaction.followUp(p);
+            }
+          }
+
+          try {
+            const tokenLimitNumber = Number(tokenLimit ?? 0);
+            const totalTokens = completion?.usage?.total_tokens ?? 0;
+            if (completion && tokenLimitNumber > 0 && totalTokens >= tokenLimitNumber) {
+              const newConvo = await openai.conversations.create({
+                items: [{ content: systemMessage, role: "system", type: "message" }],
+              });
+              saveConversationId(newConvo.id);
+              console.warn(
+                `Input tokens (${totalTokens}) reached limit (${tokenLimitNumber}). Started new conversation and saved to .conversation_id.`
+              );
+              await interaction.followUp(
+                "I've wiped my memory to limit contextual input, in order to keep costs lower."
+              );
+            }
+          } catch (rotErr) {
+            console.error("Failed to rotate conversation after token check:", rotErr);
+          }
+
+          const toolsUsed = Array.isArray(completion?.output)
+            ? completion.output
+                .filter((o) => typeof o?.type === "string" && o.type.endsWith("_call"))
+                .map((o) => o.type.replace("_call", ""))
+                .join(", ") || "None"
+            : "None";
+          const diff = Date.now() - started;
+          console.info(
+            `Tools: ${toolsUsed}\n${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Slash /norm: ${
+              interaction.user.username
+            } - ${diff}ms`
+          );
+        } catch (err: unknown) {
+          const e = err as {
+            status?: number;
+            message?: string;
+            response?: { status?: number; data?: { error?: { message?: string } } };
+          };
+          const status = e?.status ?? e?.response?.status;
+          const msg = e?.message ?? e?.response?.data?.error?.message ?? String(err);
+          console.error(`/norm handler error (${status || "no-status"}):`, msg);
+          try {
+            await interaction.editReply(
+              `<@${interaction.user.id}> Something went wrong handling your request. Please try again later.`
+            );
+          } catch (notifyErr) {
+            console.error("Failed to notify about error:", notifyErr);
+          }
+        }
+      });
+
+      break;
+    }
+    case EasterEggSlashCommands.Sora: {
+      await interaction.deferReply();
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = now.getMonth();
+      const day = now.getDate();
+      const hour = now.getHours();
+      const min = now.getMinutes();
+      const sec = now.getSeconds();
+      const mil = now.getMilliseconds();
+
+      try {
+        const durationOpt = interaction.options.getInteger("duration") ?? 10;
+        const duration = Math.max(1, Math.min(10, durationOpt));
+        const prompt =
+          interaction.options.getString("prompt") ?? "Create a short cinematic video based on the server context.";
+
+        let convo;
+        let conversationIDLocal = loadConversationId();
+        if (conversationIDLocal) {
+          try {
+            convo = await openai.conversations.retrieve(conversationIDLocal);
+          } catch {
+            convo = await openai.conversations.create({
+              items: [{ content: systemMessage, role: "system", type: "message" }],
+            });
+            conversationIDLocal = convo.id;
+            saveConversationId(conversationIDLocal);
+          }
+        } else {
+          convo = await openai.conversations.create({
+            items: [{ content: systemMessage, role: "system", type: "message" }],
+          });
+          conversationIDLocal = convo.id;
+          saveConversationId(conversationIDLocal);
+        }
+
+        let completion = await openai.videos.create({ model: "sora-2", prompt });
+        while (completion.status === "in_progress" || completion.status === "queued") {
+          completion = await openai.videos.retrieve(completion.id);
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+
+        if (completion.status === "failed") {
+          await interaction.editReply(`<@${interaction.user.id}> I couldn't create a video right now.`);
+          return;
+        }
+
+        const vid = await openai.videos.downloadContent(completion.id);
+        if (!vid) {
+          await interaction.editReply(`<@${interaction.user.id}> I couldn't create a video right now.`);
+          return;
+        }
+        const body = await vid.arrayBuffer();
+        const buffer = Buffer.from(body);
+        const filePath = path.join(__dirname, `../recordings/${interaction.user.username}-${Date.now()}-sora.mp4`);
+        fs.writeFileSync(filePath, buffer);
+
+        const cost = (duration * 0.1).toFixed(2);
+        await interaction.editReply({
+          content: `<@${interaction.user.id}> Estimated cost: $${cost}.`,
+          files: [{ attachment: filePath }],
+        });
+
+        const diff = Date.now() - now.getTime();
+        console.info(
+          `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Slash /sora: ${interaction.user.username} - ${diff}ms`
+        );
+      } catch (err) {
+        console.error("/sora error:", err);
+        await interaction.editReply(`<@${interaction.user.id}> I couldn't generate the video. Please try again later.`);
+      }
+      break;
+    }
   }
 }

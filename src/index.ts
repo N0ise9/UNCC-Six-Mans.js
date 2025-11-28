@@ -5,9 +5,10 @@ import { getDiscordChannelById } from "./utils/discordUtils";
 import { getEnvVariable } from "./utils";
 import { handleDevInteraction } from "./controllers/DevInteractions";
 import { handleAdminInteraction, registerAdminSlashCommands } from "./controllers/AdminController";
+import { handleEasterEggsInteraction, registerEasterEggsSlashCommands, normCommand } from "./controllers/EasterEggs";
 import { handleMenuInteraction } from "./controllers/MenuInteractions";
 import { startQueueTimer } from "./controllers/QueueController";
-import { normCommand } from "./controllers/EasterEggs";
+
 import OpenAI from "openai";
 
 const NormClient = new Client({
@@ -33,6 +34,7 @@ NormClient.on("clientReady", async (client) => {
 
   if (!client.user) throw new Error("No client id");
   const registerAdminCommandsPromise = registerAdminSlashCommands(client.user.id, guildId, discordToken);
+  const registerEasterEggsCommandsPromise = registerEasterEggsSlashCommands(client.user.id, guildId, discordToken);
 
   const updateLeaderboardPromise = getDiscordChannelById(NormClient, leaderboardChannelId).then(
     (leaderboardChannel) => {
@@ -73,6 +75,7 @@ NormClient.on("clientReady", async (client) => {
 
   await Promise.all([
     registerAdminCommandsPromise,
+    registerEasterEggsCommandsPromise,
     updateLeaderboardPromise,
     postCurrentQueuePromise,
     registerChatPromise,
@@ -101,10 +104,14 @@ NormClient.on("interactionCreate", async (interaction) => {
 
     await handleMenuInteraction(interaction);
   } else if (interaction.isCommand()) {
-    if (!queueEmbed) throw new Error("No queue embed set.");
-
-    await interaction.deferReply({ ephemeral: true });
-    await handleAdminInteraction(interaction, queueEmbed);
+    // Route commands explicitly so each handler can manage deferReply appropriately
+    if (["kick", "clear"].includes(interaction.commandName)) {
+      if (!queueEmbed) throw new Error("No queue embed set.");
+      await interaction.deferReply({ ephemeral: true });
+      await handleAdminInteraction(interaction, queueEmbed);
+    } else if (["norm", "sora"].includes(interaction.commandName)) {
+      await handleEasterEggsInteraction(interaction, openai);
+    }
   }
 });
 
