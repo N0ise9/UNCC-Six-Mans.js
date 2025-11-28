@@ -1010,6 +1010,7 @@ export async function registerEasterEggsSlashCommands(clientId: string, guildId:
   const sora = new SlashCommandBuilder()
     .setName(EasterEggSlashCommands.Sora)
     .setDescription("Generate a short video with Sora.")
+    .addStringOption((opt) => opt.setName("prompt").setDescription("Video Prompt").setRequired(true))
     .addIntegerOption((opt) =>
       opt
         .setName("duration")
@@ -1018,7 +1019,6 @@ export async function registerEasterEggsSlashCommands(clientId: string, guildId:
         .setMinValue(1)
         .setMaxValue(10)
     )
-    .addStringOption((opt) => opt.setName("prompt").setDescription("Video Prompt").setRequired(true))
     .toJSON();
 
   const commands: Array<RESTPostAPIApplicationCommandsJSONBody> = [norm, sora];
@@ -1272,9 +1272,9 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
       );
 
       try {
+        const prompt = interaction.options.getString("prompt");
         const durationOpt = interaction.options.getInteger("duration") ?? 10;
         const duration = Math.max(1, Math.min(10, durationOpt));
-        const prompt = interaction.options.getString("prompt");
 
         if (!prompt) {
           await interaction.editReply(`<@${interaction.user.id}> prompt was empty.`);
