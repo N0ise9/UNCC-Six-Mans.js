@@ -7,7 +7,7 @@ import { handleDevInteraction } from "./controllers/DevInteractions";
 import { handleAdminInteraction, registerAdminSlashCommands } from "./controllers/AdminController";
 import { handleMenuInteraction } from "./controllers/MenuInteractions";
 import { startQueueTimer } from "./controllers/QueueController";
-import { normCommand, startChatMonitor } from "./controllers/EasterEggs";
+import { normCommand } from "./controllers/EasterEggs";
 import OpenAI from "openai";
 
 const NormClient = new Client({
@@ -21,7 +21,6 @@ const chatChannelId = getEnvVariable("chat_channel_id");
 const voiceChannelID = getEnvVariable("voice_channel_id");
 const discordToken = getEnvVariable("token");
 const openai = new OpenAI({ apiKey: getEnvVariable("openai") });
-const conversationID = getEnvVariable("conversation_id");
 
 let queueEmbed: Message | null;
 let chatChannelMonitor: boolean = false;
@@ -29,7 +28,7 @@ let chatChannel: TextChannel;
 let voiceChannel: VoiceBasedChannel;
 
 // function called on startup
-NormClient.on("ready", async (client) => {
+NormClient.on("clientReady", async (client) => {
   console.info("NormJS is running.");
 
   if (!client.user) throw new Error("No client id");
@@ -86,9 +85,7 @@ NormClient.on("ready", async (client) => {
     console.warn("Unable to start queue timers since queue embed is null.");
   }
 
-  if (chatChannelMonitor) {
-    startChatMonitor();
-  } else {
+  if (!chatChannelMonitor) {
     console.warn("Unable to start chat monitoring timer on a channel that doesn't exist.");
   }
 });
@@ -113,7 +110,7 @@ NormClient.on("interactionCreate", async (interaction) => {
 
 NormClient.on("messageCreate", async (message) => {
   if (message.channelId === chatChannelId) {
-    normCommand(chatChannel, voiceChannel, message, conversationID, openai, NormClient);
+    normCommand(chatChannel, voiceChannel, message, openai, NormClient);
   }
 });
 

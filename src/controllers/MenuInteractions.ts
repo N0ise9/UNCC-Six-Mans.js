@@ -9,7 +9,7 @@ import MessageBuilder, { MenuCustomID } from "../utils/MessageHelper/MessageBuil
 import { twos } from "./Interactions";
 
 export async function handleMenuInteraction(menuInteraction: StringSelectMenuInteraction): Promise<void> {
-  const message = menuInteraction.message;
+  const { message } = menuInteraction;
   if (!(message instanceof Message)) return;
 
   const isDev = getEnvVariable("ENVIRONMENT") === "dev";

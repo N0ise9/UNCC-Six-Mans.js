@@ -24,7 +24,7 @@ export async function handleInteraction(
   buttonInteraction: ButtonInteraction,
   NormClient: Client<boolean>
 ): Promise<void> {
-  const message = buttonInteraction.message;
+  const { message } = buttonInteraction;
   if (!(message instanceof Message)) return;
   const time = new Date().getTime();
   const year = new Date().getFullYear();

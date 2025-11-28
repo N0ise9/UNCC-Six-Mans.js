@@ -6,7 +6,7 @@ import { fillTeams } from "../utils/devFillTeams";
 import { ButtonCustomID } from "../utils/MessageHelper/CustomButtons";
 
 export async function handleDevInteraction(buttonInteraction: ButtonInteraction): Promise<void> {
-  const message = buttonInteraction.message;
+  const { message } = buttonInteraction;
   if (!(message instanceof Message)) return;
 
   switch (buttonInteraction.customId) {

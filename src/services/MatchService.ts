@@ -79,12 +79,10 @@ export async function createMatchFromChosenTeams(): Promise<ActiveMatchCreated> 
   for (const p of sortedBallChasers) {
     if (p.team !== null) {
       createdTeams.push({ id: p.id, team: p.team });
+    } else if (twos) {
+      createdTeams.push({ id: p.id, team: Team.Orange });
     } else {
-      if (twos) {
-        createdTeams.push({ id: p.id, team: Team.Orange });
-      } else {
-        createdTeams.push({ id: p.id, team: Team.Blue });
-      }
+      createdTeams.push({ id: p.id, team: Team.Blue });
     }
   }
 

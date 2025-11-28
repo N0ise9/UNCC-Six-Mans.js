@@ -11,9 +11,7 @@ export async function fillTeams(): Promise<ReadonlyArray<PlayerInQueue>> {
     await QueueRepository.addBallChaserToQueue(player);
   }
 
-  const updatedQueue = await QueueRepository.getAllBallChasersInQueue();
-
-  return updatedQueue;
+  return await QueueRepository.getAllBallChasersInQueue();
 }
 
 const testPlayers: AddBallChaserToQueueInput[] = [
