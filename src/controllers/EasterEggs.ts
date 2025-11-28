@@ -1197,9 +1197,10 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
             }
           }
 
+          const tokenLimitNumber = Number(tokenLimit ?? 0);
+          const totalTokens = completion?.usage?.total_tokens ?? 0;
+
           try {
-            const tokenLimitNumber = Number(tokenLimit ?? 0);
-            const totalTokens = completion?.usage?.total_tokens ?? 0;
             if (completion && tokenLimitNumber > 0 && totalTokens >= tokenLimitNumber) {
               const newConvo = await openai.conversations.create({
                 items: [{ content: systemMessage, role: "system", type: "message" }],
@@ -1224,9 +1225,11 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
             : "None";
           const diff = Date.now() - started;
           console.info(
-            `Tools: ${toolsUsed}\n${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Slash /norm: ${
-              interaction.user.username
-            } - ${diff}ms`
+            `Tools: ${toolsUsed}\n` +
+              `Tokens: ${totalTokens} / ${tokenLimitNumber}\n || ${(totalTokens / tokenLimitNumber) * 100}%` +
+              `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Slash /norm: ${
+                interaction.user.username
+              } - ${diff}ms`
           );
         } catch (err: unknown) {
           const e = err as {
@@ -1263,8 +1266,7 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
       try {
         const durationOpt = interaction.options.getInteger("duration") ?? 10;
         const duration = Math.max(1, Math.min(10, durationOpt));
-        const prompt =
-          interaction.options.getString("prompt") ?? "Create a short cinematic video based on the server context.";
+        const prompt = interaction.options.getString("prompt") ?? "Create a short video based on the server context.";
 
         let convo;
         let conversationIDLocal = loadConversationId();
