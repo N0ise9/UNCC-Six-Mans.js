@@ -1018,7 +1018,7 @@ export async function registerEasterEggsSlashCommands(clientId: string, guildId:
         .setMinValue(1)
         .setMaxValue(10)
     )
-    .addStringOption((opt) => opt.setName("prompt").setDescription("Video prompt").setRequired(false))
+    .addStringOption((opt) => opt.setName("prompt").setDescription("Video Prompt").setRequired(true))
     .toJSON();
 
   const commands: Array<RESTPostAPIApplicationCommandsJSONBody> = [norm, sora];
@@ -1050,6 +1050,10 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
           const min = now.getMinutes();
           const sec = now.getSeconds();
           const mil = now.getMilliseconds();
+
+          console.info(
+            `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Slash /norm: ${interaction.user.username}`
+          );
 
           const imageUrls = attachments
             .filter((a) => a.contentType?.startsWith("image/"))
@@ -1226,7 +1230,7 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
           const diff = Date.now() - started;
           console.info(
             `Tools: ${toolsUsed}\n` +
-              `Tokens: ${totalTokens} / ${tokenLimitNumber}\n || ${(totalTokens / tokenLimitNumber) * 100}%` +
+              `Tokens: ${totalTokens} / ${tokenLimitNumber}\n || ${Math.round((totalTokens / tokenLimitNumber) * 100)}%\n` +
               `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Slash /norm: ${
                 interaction.user.username
               } - ${diff}ms`
@@ -1263,29 +1267,18 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
       const sec = now.getSeconds();
       const mil = now.getMilliseconds();
 
+      console.info(
+        `${month + 1}/${day}/${year} - ${hour}:${min}:${sec}:::${mil} | Slash /sora: ${interaction.user.username}`
+      );
+
       try {
         const durationOpt = interaction.options.getInteger("duration") ?? 10;
         const duration = Math.max(1, Math.min(10, durationOpt));
-        const prompt = interaction.options.getString("prompt") ?? "Create a short video based on the server context.";
+        const prompt = interaction.options.getString("prompt");
 
-        let convo;
-        let conversationIDLocal = loadConversationId();
-        if (conversationIDLocal) {
-          try {
-            convo = await openai.conversations.retrieve(conversationIDLocal);
-          } catch {
-            convo = await openai.conversations.create({
-              items: [{ content: systemMessage, role: "system", type: "message" }],
-            });
-            conversationIDLocal = convo.id;
-            saveConversationId(conversationIDLocal);
-          }
-        } else {
-          convo = await openai.conversations.create({
-            items: [{ content: systemMessage, role: "system", type: "message" }],
-          });
-          conversationIDLocal = convo.id;
-          saveConversationId(conversationIDLocal);
+        if (!prompt) {
+          await interaction.editReply(`<@${interaction.user.id}> prompt was empty.`);
+          return;
         }
 
         let completion = await openai.videos.create({ model: "sora-2", prompt });
