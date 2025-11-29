@@ -1288,7 +1288,7 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
 
         let completion = await openai.videos.create({
           model: "sora-2",
-          prompt,
+          prompt: prompt,
           // @ts-expect-error OpenAI SDK uses a branded type; valid values are "4" | "8" | "12"
           seconds: secondsStr,
         });
