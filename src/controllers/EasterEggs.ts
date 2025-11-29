@@ -1011,13 +1011,16 @@ export async function registerEasterEggsSlashCommands(clientId: string, guildId:
     .setName(EasterEggSlashCommands.Sora)
     .setDescription("Generate a short video with Sora.")
     .addStringOption((opt) => opt.setName("prompt").setDescription("Video Prompt").setRequired(true))
-    .addIntegerOption((opt) =>
+    .addStringOption((opt) =>
       opt
         .setName("duration")
-        .setDescription("Duration in seconds (1-10)")
+        .setDescription("Duration in seconds (4, 8, 12)")
         .setRequired(false)
-        .setMinValue(1)
-        .setMaxValue(10)
+        .addChoices(
+          { name: "4 seconds", value: "4" },
+          { name: "8 seconds", value: "8" },
+          { name: "12 seconds", value: "12" }
+        )
     )
     .toJSON();
 
@@ -1273,15 +1276,22 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
 
       try {
         const prompt = interaction.options.getString("prompt");
-        const durationOpt = interaction.options.getInteger("duration") ?? 10;
-        const duration = Math.max(1, Math.min(10, durationOpt));
+        const durationStr = interaction.options.getString("duration") ?? "8"; // default to 8s
+        const validDurations = new Set(["4", "8", "12"]);
+        const secondsStr = validDurations.has(durationStr) ? durationStr : "8";
+        const duration = Number(secondsStr);
 
         if (!prompt) {
           await interaction.editReply(`<@${interaction.user.id}> prompt was empty.`);
           return;
         }
 
-        let completion = await openai.videos.create({ model: "sora-2", prompt });
+        let completion = await openai.videos.create({
+          model: "sora-2",
+          prompt,
+          // @ts-expect-error OpenAI SDK uses a branded type; valid values are "4" | "8" | "12"
+          seconds: secondsStr,
+        });
         while (completion.status === "in_progress" || completion.status === "queued") {
           completion = await openai.videos.retrieve(completion.id);
           await new Promise((resolve) => setTimeout(resolve, 2000));
