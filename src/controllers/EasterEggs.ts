@@ -1205,7 +1205,7 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
           }
 
           const tokenLimitNumber = Number(tokenLimit ?? 0);
-          const totalTokens = completion?.usage?.total_tokens ?? 0;
+          const totalTokens = completion?.usage?.input_tokens ?? 0;
 
           try {
             if (completion && tokenLimitNumber > 0 && totalTokens >= tokenLimitNumber) {
@@ -1224,12 +1224,19 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
             console.error("Failed to rotate conversation after token check:", rotErr);
           }
 
-          const toolsUsed = Array.isArray(completion?.output)
-            ? completion.output
-                .filter((o) => typeof o?.type === "string" && o.type.endsWith("_call"))
-                .map((o) => o.type.replace("_call", ""))
-                .join(", ") || "None"
-            : "None";
+          // Dedupe tool names so each appears at most once
+          let toolsUsed = "None";
+          if (Array.isArray(completion?.output)) {
+            const outputs = (completion.output ?? []) as Array<{ type?: string }>;
+            const seen = new Set<string>();
+            for (const o of outputs) {
+              if (typeof o?.type === "string" && o.type.endsWith("_call")) {
+                const t = o.type.replace("_call", "");
+                if (!seen.has(t)) seen.add(t);
+              }
+            }
+            if (seen.size > 0) toolsUsed = Array.from(seen).join(", ");
+          }
           const diff = Date.now() - started;
           console.info(
             `Tools: ${toolsUsed}\n` +
