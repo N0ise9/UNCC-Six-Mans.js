@@ -1204,11 +1204,20 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
             }
           }
 
+          // Determine whether any tools were used in this completion (e.g., web_search, image_generation)
+          let hasToolCalls = false;
+          if (Array.isArray(completion?.output)) {
+            hasToolCalls = (completion.output as Array<{ type?: string }>).some(
+              (o) => typeof o?.type === "string" && o.type.endsWith("_call")
+            );
+          }
+
           const tokenLimitNumber = Number(tokenLimit ?? 0);
           const totalTokens = completion?.usage?.input_tokens ?? 0;
 
           try {
-            if (completion && tokenLimitNumber > 0 && totalTokens >= tokenLimitNumber) {
+            // Ignore token-limit rotation if any tools were used in this turn
+            if (completion && tokenLimitNumber > 0 && totalTokens >= tokenLimitNumber && !hasToolCalls) {
               const newConvo = await openai.conversations.create({
                 items: [{ content: systemMessage, role: "system", type: "message" }],
               });
@@ -1218,6 +1227,10 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
               );
               await interaction.followUp(
                 "I've wiped my memory to limit contextual input, in order to keep costs lower."
+              );
+            } else if (completion && tokenLimitNumber > 0 && totalTokens >= tokenLimitNumber && hasToolCalls) {
+              console.info(
+                `Input tokens (${totalTokens}) reached limit (${tokenLimitNumber}) but rotation skipped due to tool usage.`
               );
             }
           } catch (rotErr) {
