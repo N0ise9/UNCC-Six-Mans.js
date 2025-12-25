@@ -8,6 +8,7 @@ import { handleAdminInteraction, registerAdminSlashCommands } from "./controller
 import { handleEasterEggsInteraction, registerEasterEggsSlashCommands, normCommand } from "./controllers/EasterEggs";
 import { handleMenuInteraction } from "./controllers/MenuInteractions";
 import { startQueueTimer } from "./controllers/QueueController";
+import { startApiStatusReporting } from "./controllers/ApiStatusController";
 
 import OpenAI from "openai";
 
@@ -20,6 +21,7 @@ const leaderboardChannelId = getEnvVariable("leaderboard_channel_id");
 const queueChannelId = getEnvVariable("queue_channel_id");
 const chatChannelId = getEnvVariable("chat_channel_id");
 const voiceChannelID = getEnvVariable("voice_channel_id");
+const apiStatusChannelId = getEnvVariable("api_status_channel_id");
 const discordToken = getEnvVariable("token");
 const openai = new OpenAI({ apiKey: getEnvVariable("openai") });
 
@@ -63,7 +65,7 @@ NormClient.on("clientReady", async (client) => {
     }
   });
 
-  const registerVoiceChatPromise = await NormClient.channels.fetch(voiceChannelID).then((getVoiceChannel) => {
+  const registerVoiceChatPromise = NormClient.channels.fetch(voiceChannelID).then((getVoiceChannel) => {
     if (!getVoiceChannel) {
       console.warn("Unable to access voice channel.");
     } else if (getVoiceChannel.isVoiceBased()) {
@@ -73,19 +75,31 @@ NormClient.on("clientReady", async (client) => {
     }
   });
 
-  await Promise.all([
-    registerAdminCommandsPromise,
-    registerEasterEggsCommandsPromise,
-    updateLeaderboardPromise,
-    postCurrentQueuePromise,
-    registerChatPromise,
-    registerVoiceChatPromise,
-  ]);
+  try {
+    await Promise.all([
+      registerAdminCommandsPromise,
+      registerEasterEggsCommandsPromise,
+      updateLeaderboardPromise,
+      postCurrentQueuePromise,
+      registerChatPromise,
+      registerVoiceChatPromise,
+    ]);
+  } catch (e) {
+    console.warn("One or more startup tasks failed:", (e as Error).message);
+  }
 
   if (queueEmbed) {
     startQueueTimer(queueEmbed);
   } else {
     console.warn("Unable to start queue timers since queue embed is null.");
+  }
+
+  // Start API/Service status reporting
+  const apiStatusChannel = await getDiscordChannelById(NormClient, apiStatusChannelId);
+  if (apiStatusChannel) {
+    startApiStatusReporting(apiStatusChannel);
+  } else {
+    console.warn("API status channel not found or inaccessible.");
   }
 
   if (!chatChannelMonitor) {
