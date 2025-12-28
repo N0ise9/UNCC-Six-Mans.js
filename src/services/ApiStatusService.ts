@@ -1221,6 +1221,11 @@ async function checkService(service: ServiceConfig): Promise<ServiceStatus> {
   return await fetchGeneric(service);
 }
 
+// Public single-service checker for staggered polling
+export async function checkSingleService(service: ServiceConfig): Promise<ServiceStatus> {
+  return await checkService(service);
+}
+
 export const Categories: CategoryConfig[] = [
   {
     name: "Cloud Platforms",

@@ -3,7 +3,15 @@
 import { TextChannel, EmbedBuilder as MessageEmbed, Message } from "discord.js";
 import { deleteAllMessagesInTextChannel } from "../utils/discordUtils";
 import { ColorCodes } from "../utils/utils";
-import { fetchAllStatuses, summarizeIssues, ServiceStatus, IncidentInfo } from "../services/ApiStatusService";
+import {
+  fetchAllStatuses,
+  summarizeIssues,
+  ServiceStatus,
+  IncidentInfo,
+  Categories,
+  checkSingleService,
+  ServiceConfig,
+} from "../services/ApiStatusService";
 
 type IncidentMessage = {
   messageId: string;
@@ -290,6 +298,165 @@ async function upsertMainStatusEmbeds(channel: TextChannel, embeds: MessageEmbed
 }
 
 export async function startApiStatusReporting(channel: TextChannel) {
+  // State for adaptive, staggered polling
+  let lastHadIssues = false;
+  const statusCache = new Map<string, ServiceStatus>(); // serviceId -> last known status
+  const issueIntervals = new Map<string, ReturnType<typeof setInterval>>(); // serviceId -> interval handle
+  let nonIssueTimeouts: Array<ReturnType<typeof setTimeout>> = []; // scheduled one-offs over 15 minutes
+  let nonIssueSweepTimer: ReturnType<typeof setTimeout> | null = null; // timer to start next 15-min sweep
+
+  const serviceIndex: Map<string, ServiceConfig> = new Map(Categories.flatMap((c) => c.services).map((s) => [s.id, s]));
+
+  const getServiceConfig = (id: string): ServiceConfig | undefined => serviceIndex.get(id);
+
+  const getCachedOrDefault = (cfg: ServiceConfig): ServiceStatus => {
+    const existing = statusCache.get(cfg.id);
+    if (existing) return existing;
+    return {
+      id: cfg.id,
+      name: cfg.name,
+      pageUrl: cfg.pageUrl,
+      status: "unknown",
+      description: "",
+      lastChecked: new Date(0),
+      incidents: [],
+    };
+  };
+
+  const categoriesFromCache = (): { name: string; services: ServiceStatus[] }[] => {
+    return Categories.map((cat) => ({
+      name: cat.name,
+      services: cat.services.map((svc) => getCachedOrDefault(svc)),
+    }));
+  };
+
+  const statusChanged = (a?: ServiceStatus, b?: ServiceStatus): boolean => {
+    if (!a || !b) return true;
+    if (a.status !== b.status) return true;
+    if ((a.description || "") !== (b.description || "")) return true;
+    const alen = a.incidents?.length || 0;
+    const blen = b.incidents?.length || 0;
+    if (alen !== blen) return true;
+    if (alen > 0 && blen > 0) {
+      const aTop = a.incidents![0];
+      const bTop = b.incidents![0];
+      if ((aTop.id || "") !== (bTop.id || "")) return true;
+      if ((aTop.status || "") !== (bTop.status || "")) return true;
+      if ((aTop.created_at || "") !== (bTop.created_at || "")) return true;
+      const au = aTop.incident_updates?.[0]?.created_at || "";
+      const bu = bTop.incident_updates?.[0]?.created_at || "";
+      if (au !== bu) return true;
+    }
+    return false;
+  };
+
+  const updateEmbedsIfNeeded = async (force: boolean = false) => {
+    const cats = categoriesFromCache();
+    const { issues } = summarizeIssues(cats);
+    const hasIssuesNow = issues > 0;
+    const shouldUpdate = force || hasIssuesNow || lastHadIssues;
+    if (shouldUpdate) {
+      const embeds = buildMainEmbeds(cats);
+      await upsertMainStatusEmbeds(channel, embeds);
+      try {
+        await upsertIncidentEmbeds(channel, cats);
+      } catch (err) {
+        console.warn("Incident embed update failed:", (err as Error).message);
+      }
+    }
+    lastHadIssues = hasIssuesNow;
+  };
+
+  const onServiceUpdated = async (newStatus: ServiceStatus, prev?: ServiceStatus) => {
+    const cfg = getServiceConfig(newStatus.id);
+    if (!cfg) return; // unknown service id
+    const old = prev ?? statusCache.get(newStatus.id);
+    statusCache.set(newStatus.id, newStatus);
+    const changed = statusChanged(old, newStatus);
+
+    // Manage per-service polling strategy transitions
+    const isIssue = newStatus.status !== "operational" && newStatus.status !== "unknown";
+    const wasIssue = old ? old.status !== "operational" && old.status !== "unknown" : false;
+
+    if (isIssue && !issueIntervals.has(cfg.id)) {
+      // start 5-min polling for this service
+      const handle = setInterval(
+        async () => {
+          try {
+            const updated = await checkSingleService(cfg);
+            const before = statusCache.get(cfg.id);
+            await onServiceUpdated(updated, before);
+            // If resolved, stop interval
+            if (updated.status === "operational" || updated.status === "unknown") {
+              const h = issueIntervals.get(cfg.id);
+              if (h) clearInterval(h);
+              issueIntervals.delete(cfg.id);
+            }
+          } catch (e) {
+            console.warn(`Polling failed for ${cfg.id}:`, (e as Error).message);
+          }
+        },
+        5 * 60 * 1000
+      );
+      issueIntervals.set(cfg.id, handle);
+    }
+    if (!isIssue && wasIssue) {
+      const h = issueIntervals.get(cfg.id);
+      if (h) clearInterval(h);
+      issueIntervals.delete(cfg.id);
+    }
+
+    // Update embeds only when there are issues or resolving previous ones, or when this service changed significantly
+    if (changed) {
+      await updateEmbedsIfNeeded(false);
+    }
+  };
+
+  const clearNonIssueTimeouts = () => {
+    for (const t of nonIssueTimeouts) clearTimeout(t);
+    nonIssueTimeouts = [];
+  };
+
+  const scheduleNonIssueSweep = () => {
+    clearNonIssueTimeouts();
+    // Build list of services to check that are not currently under issue polling
+    const candidates: ServiceConfig[] = Categories.flatMap((c) => c.services).filter((svc) => {
+      if (issueIntervals.has(svc.id)) return false; // handled by 5-min polling
+      const st = statusCache.get(svc.id);
+      // include if unknown or operational (or not yet checked)
+      return !st || st.status === "operational" || st.status === "unknown";
+    });
+    const count = candidates.length;
+    if (count === 0) return;
+    const windowMs = 15 * 60 * 1000;
+    const spacing = Math.max(1000, Math.floor(windowMs / count));
+    candidates.forEach((cfg, idx) => {
+      const t = setTimeout(async () => {
+        // Skip if this service moved to issue polling since scheduled
+        if (issueIntervals.has(cfg.id)) return;
+        try {
+          const updated = await checkSingleService(cfg);
+          const before = statusCache.get(cfg.id);
+          await onServiceUpdated(updated, before);
+        } catch (e) {
+          console.warn(`Sweep check failed for ${cfg.id}:`, (e as Error).message);
+        }
+      }, idx * spacing);
+      nonIssueTimeouts.push(t);
+    });
+  };
+
+  const planNextNonIssueSweep = () => {
+    if (nonIssueSweepTimer) clearTimeout(nonIssueSweepTimer);
+    nonIssueSweepTimer = setTimeout(
+      () => {
+        scheduleNonIssueSweep();
+        planNextNonIssueSweep();
+      },
+      15 * 60 * 1000
+    );
+  };
+
   // Initial run
   try {
     // Clear channel at startup per requirement
@@ -300,6 +467,12 @@ export async function startApiStatusReporting(channel: TextChannel) {
     }
 
     const { categories } = await fetchAllStatuses();
+    // Seed cache from initial run
+    for (const cat of categories) {
+      for (const svc of cat.services) {
+        statusCache.set(svc.id, svc);
+      }
+    }
     const embeds = buildMainEmbeds(categories);
     await upsertMainStatusEmbeds(channel, embeds);
     try {
@@ -308,35 +481,50 @@ export async function startApiStatusReporting(channel: TextChannel) {
       console.warn("Incident embed update failed:", (err as Error).message);
     }
     console.info(`Status posted successfully (pages: ${embeds.length}).`);
+
+    // Initialize lastHadIssues state and start per-service schedulers
+    try {
+      const { issues } = summarizeIssues(categories);
+      lastHadIssues = issues > 0;
+    } catch {
+      lastHadIssues = false;
+    }
+
+    // Start 5-min polling for any services already having issues
+    for (const cat of categories) {
+      for (const svc of cat.services) {
+        if (svc.status !== "operational" && svc.status !== "unknown") {
+          const cfg = getServiceConfig(svc.id);
+          if (cfg && !issueIntervals.has(cfg.id)) {
+            const handle = setInterval(
+              async () => {
+                try {
+                  const updated = await checkSingleService(cfg);
+                  const before = statusCache.get(cfg.id);
+                  await onServiceUpdated(updated, before);
+                  if (updated.status === "operational" || updated.status === "unknown") {
+                    const h = issueIntervals.get(cfg.id);
+                    if (h) clearInterval(h);
+                    issueIntervals.delete(cfg.id);
+                  }
+                } catch (e) {
+                  console.warn(`Polling failed for ${cfg.id}:`, (e as Error).message);
+                }
+              },
+              5 * 60 * 1000
+            );
+            issueIntervals.set(cfg.id, handle);
+          }
+        }
+      }
+    }
+
+    // Stagger checks for non-issue services over 15 minutes
+    scheduleNonIssueSweep();
+    planNextNonIssueSweep();
   } catch (e) {
     console.warn("API status initial run failed:", (e as Error).message);
   }
 
-  // 5-minute main embed refresher: delete prior and post new
-  let refreshing = false;
-  setInterval(
-    async () => {
-      if (refreshing) return; // skip if previous cycle still running
-      refreshing = true;
-      try {
-        const { categories } = await fetchAllStatuses();
-        const embeds = buildMainEmbeds(categories);
-        await upsertMainStatusEmbeds(channel, embeds);
-        try {
-          await upsertIncidentEmbeds(channel, categories);
-        } catch (err) {
-          console.warn("Incident embed update failed:", (err as Error).message);
-        }
-        // refresh success: remain silent to avoid noisy logs
-      } catch (e) {
-        console.warn("API status refresh failed:", (e as Error).message);
-      } finally {
-        refreshing = false;
-      }
-      // every 5 minutes
-    },
-    5 * 60 * 1000
-  );
-
-  // Incident updates are refreshed with the 5-minute main cycle
+  // All further checks are handled by staggered sweep timers and per-issue intervals
 }
