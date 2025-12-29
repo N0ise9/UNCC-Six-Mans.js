@@ -864,7 +864,16 @@ async function fetchAuth0Status(service: ServiceConfig): Promise<ServiceStatus> 
         : [];
 
       for (const inc of list) {
-        const incStatus = mapAuth0ImpactToStatus(inc?.impact, inc?.status);
+        // Start with Auth0-provided impact/status mapping
+        let incStatus = mapAuth0ImpactToStatus(inc?.impact, inc?.status);
+        const rawStatus = (inc?.status || "").toString();
+        const nameText = (inc?.name || "").toString();
+        const isMaintenanceByText = /mainten|upgrade|patch/i.test(nameText);
+        const isMaintenanceBySchedule = !!inc?.scheduled_for;
+        // If the incident text or presence of a schedule indicates maintenance, override to maintenance
+        if (incStatus !== "under_maintenance" && (isMaintenanceByText || isMaintenanceBySchedule)) {
+          incStatus = "under_maintenance";
+        }
         // Skip clear operational placeholders
         const name = (inc?.name || "").toString();
         const isAllOps = /all\s+systems\s+operational/i.test(name) || incStatus === "operational";
@@ -897,21 +906,18 @@ async function fetchAuth0Status(service: ServiceConfig): Promise<ServiceStatus> 
           incident_updates: updates,
           name: name || `${service.name} – ${region}`,
           shortlink: service.pageUrl,
-          status: incStatus,
+          // Preserve the raw status from Auth0 (e.g., scheduled, in_progress) for downstream logic
+          status: rawStatus,
         });
       }
     }
 
-    // Do not flip to maintenance based solely on scheduled banners; rely on in-progress items
-
-    // Keep maintenance embeds only if any item is actively in progress
-    if (overall === "under_maintenance") {
-      const hasInProgress = incidents.some((i) => /in_progress/i.test(i.status || ""));
-      if (!hasInProgress) {
-        // No active maintenance; treat as operational
-        incidents.length = 0;
-        overall = "operational";
-      }
+    // Ensure maintenance is portrayed as such: if any incident is maintenance-like, keep overall as maintenance
+    const hasMaintenance =
+      overall === "under_maintenance" ||
+      incidents.some((i) => i.impact === "under_maintenance" || /mainten|upgrade|patch/i.test(i.name || ""));
+    if (hasMaintenance) {
+      overall = "under_maintenance";
     }
     // Concise description only for notable outages
     let description = "";
