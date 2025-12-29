@@ -150,7 +150,7 @@ async function fetchStatuspage(service: ServiceConfig): Promise<ServiceStatus> {
       lastChecked: new Date(),
       name: service.name,
       pageUrl: service.pageUrl,
-      status,
+      status: status,
     };
   } catch (e) {
     return {
@@ -160,7 +160,7 @@ async function fetchStatuspage(service: ServiceConfig): Promise<ServiceStatus> {
       lastChecked: new Date(),
       name: service.name,
       pageUrl: service.pageUrl,
-      status: "major_outage",
+      status: "unknown",
     };
   }
 }
@@ -186,7 +186,7 @@ async function fetchGeneric(service: ServiceConfig): Promise<ServiceStatus> {
       lastChecked: new Date(),
       name: service.name,
       pageUrl: service.pageUrl,
-      status: "major_outage",
+      status: "unknown",
     };
   }
 }
@@ -624,7 +624,7 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
       lastChecked: new Date(),
       name: service.name,
       pageUrl: service.pageUrl,
-      status: "major_outage",
+      status: "unknown",
     };
   }
 }
@@ -1185,7 +1185,8 @@ async function checkService(service: ServiceConfig): Promise<ServiceStatus> {
   // For Statuspage-backed services, the JSON summary is most accurate for "current" state.
   if (service.type === "statuspage") {
     const sp = await fetchStatuspage(service);
-    if (!(sp.status === "major_outage" && sp.description === "Unreachable")) {
+    const spUnreachable = sp.status === "unknown" && sp.description === "Unreachable";
+    if (!spUnreachable) {
       // If non-operational and RSS is available, consult RSS for richer details or more severe state
       const hasRss = !!service.rssUrl || (service.rssUrls && service.rssUrls.length > 0);
       if (hasRss && sp.status !== "operational" && sp.status !== "unknown") {
@@ -1210,7 +1211,7 @@ async function checkService(service: ServiceConfig): Promise<ServiceStatus> {
     // If statuspage summary unreachable, fall back to RSS, then generic
     if (service.rssUrl || (service.rssUrls && service.rssUrls.length)) {
       const rss = await fetchRSS(service);
-      if (rss.status !== "unknown" && !(rss.status === "major_outage" && rss.description === "Unreachable")) {
+      if (rss.status !== "unknown") {
         return rss;
       }
     }
@@ -1220,7 +1221,7 @@ async function checkService(service: ServiceConfig): Promise<ServiceStatus> {
   // For generic services, prefer RSS if provided; else simple reachability
   if (service.rssUrl || (service.rssUrls && service.rssUrls.length)) {
     const rss = await fetchRSS(service);
-    if (rss.status !== "unknown" && !(rss.status === "major_outage" && rss.description === "Unreachable")) {
+    if (rss.status !== "unknown") {
       return rss;
     }
   }

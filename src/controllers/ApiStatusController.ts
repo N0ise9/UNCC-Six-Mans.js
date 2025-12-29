@@ -20,6 +20,8 @@ type IncidentMessage = {
 
 let mainStatusMessages: Message[] = [];
 const incidentMessages = new Map<string, IncidentMessage>(); // key: serviceId
+// Track last time a service's status page was successfully seen (any non-unknown status)
+const lastSeenTimestamps = new Map<string, number>(); // serviceId -> epoch ms
 
 // Small helper to space out Discord API calls and avoid burst rate limits
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -89,6 +91,12 @@ function buildMainEmbeds(categories: { name: string; services: ServiceStatus[] }
   const TOTAL_CHAR_LIMIT = 6000; // per-embed total char cap
 
   const safeLine = (s: ServiceStatus) => {
+    // For unknown (unreachable) show last-seen timestamp when available
+    if (s.status === "unknown") {
+      const ts = lastSeenTimestamps.get(s.id);
+      const seen = ts ? ` — last seen <t:${Math.floor(ts / 1000)}:R>` : "";
+      return `${statusEmoji(s.status)} ${s.name}${seen}`;
+    }
     const desc = (s.description || "").toString().trim();
     const maxLine = 90;
     const truncated = desc.length > maxLine ? desc.slice(0, maxLine - 1) + "…" : desc;
@@ -372,6 +380,14 @@ export async function startApiStatusReporting(channel: TextChannel) {
     if (!cfg) return; // unknown service id
     const old = prev ?? statusCache.get(newStatus.id);
     statusCache.set(newStatus.id, newStatus);
+    // Update last-seen timestamp when status is known (not unknown)
+    try {
+      if (newStatus.status !== "unknown" && newStatus.lastChecked) {
+        lastSeenTimestamps.set(newStatus.id, new Date(newStatus.lastChecked).getTime());
+      }
+    } catch {
+      /* ignore */
+    }
     const changed = statusChanged(old, newStatus);
 
     // Manage per-service polling strategy transitions
@@ -471,6 +487,14 @@ export async function startApiStatusReporting(channel: TextChannel) {
     for (const cat of categories) {
       for (const svc of cat.services) {
         statusCache.set(svc.id, svc);
+        // seed last-seen if we have a non-unknown status
+        try {
+          if (svc.status !== "unknown" && svc.lastChecked) {
+            lastSeenTimestamps.set(svc.id, new Date(svc.lastChecked).getTime());
+          }
+        } catch {
+          /* ignore */
+        }
       }
     }
     const embeds = buildMainEmbeds(categories);
