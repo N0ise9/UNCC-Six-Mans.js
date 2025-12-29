@@ -159,7 +159,7 @@ function buildIncidentEmbed(service: ServiceStatus) {
     color: ColorCodes.DarkRed,
     title: `Incident — ${service.name}`,
     url: service.pageUrl,
-    description: `${statusEmoji(service.status)} ${service.description ?? service.status}`,
+    description: `${statusEmoji(service.status)} ${service.description ?? service.status}\nLast updated: <t:${Math.floor(Date.now() / 1000)}:R>`,
   });
 
   const incidents: IncidentInfo[] = service.incidents || [];
