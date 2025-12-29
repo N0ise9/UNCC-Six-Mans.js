@@ -4,8 +4,9 @@ import { handleInteraction, postCurrentQueue } from "./controllers/Interactions"
 import { getDiscordChannelById } from "./utils/discordUtils";
 import { getEnvVariable } from "./utils";
 import { handleDevInteraction } from "./controllers/DevInteractions";
-import { handleAdminInteraction, registerAdminSlashCommands } from "./controllers/AdminController";
-import { handleEasterEggsInteraction, registerEasterEggsSlashCommands, normCommand } from "./controllers/EasterEggs";
+import { handleAdminInteraction } from "./controllers/AdminController";
+import { handleEasterEggsInteraction, normCommand } from "./controllers/EasterEggs";
+import { registerAllSlashCommands } from "./controllers/CommandRegistry";
 import { handleMenuInteraction } from "./controllers/MenuInteractions";
 import { startQueueTimer } from "./controllers/QueueController";
 import { startApiStatusReporting } from "./controllers/ApiStatusController";
@@ -35,8 +36,7 @@ NormClient.on("clientReady", async (client) => {
   console.info("NormJS is running.");
 
   if (!client.user) throw new Error("No client id");
-  const registerAdminCommandsPromise = registerAdminSlashCommands(client.user.id, guildId, discordToken);
-  const registerEasterEggsCommandsPromise = registerEasterEggsSlashCommands(client.user.id, guildId, discordToken);
+  const registerAllCommandsPromise = registerAllSlashCommands(client.user.id, guildId, discordToken);
 
   const updateLeaderboardPromise = getDiscordChannelById(NormClient, leaderboardChannelId).then(
     (leaderboardChannel) => {
@@ -77,8 +77,7 @@ NormClient.on("clientReady", async (client) => {
 
   try {
     await Promise.all([
-      registerAdminCommandsPromise,
-      registerEasterEggsCommandsPromise,
+      registerAllCommandsPromise,
       updateLeaderboardPromise,
       postCurrentQueuePromise,
       registerChatPromise,

@@ -11,10 +11,10 @@ import {
   VoiceBasedChannel,
   Client,
   CommandInteraction,
-  REST,
-  RESTPostAPIApplicationCommandsJSONBody,
-  Routes,
-  SlashCommandBuilder,
+  // REST,
+  // RESTPostAPIApplicationCommandsJSONBody,
+  // Routes,
+  // SlashCommandBuilder,
 } from "discord.js";
 import {
   joinVoiceChannel,
@@ -995,38 +995,38 @@ export async function normCommand(
   }
 }
 
-export async function registerEasterEggsSlashCommands(clientId: string, guildId: string, token: string) {
-  const rest = new REST({ version: "9" }).setToken(token);
+// export async function registerEasterEggsSlashCommands(clientId: string, guildId: string, token: string) {
+//   const rest = new REST({ version: "9" }).setToken(token);
 
-  const norm = new SlashCommandBuilder()
-    .setName(EasterEggSlashCommands.Norm)
-    .setDescription("Ask Norm anything.")
-    .addStringOption((opt) => opt.setName("prompt").setDescription("What do you want to say?").setRequired(true))
-    .addAttachmentOption((opt) => opt.setName("image1").setDescription("Optional image 1"))
-    .addAttachmentOption((opt) => opt.setName("image2").setDescription("Optional image 2"))
-    .addAttachmentOption((opt) => opt.setName("image3").setDescription("Optional image 3"))
-    .toJSON();
+//   const norm = new SlashCommandBuilder()
+//     .setName(EasterEggSlashCommands.Norm)
+//     .setDescription("Ask Norm anything.")
+//     .addStringOption((opt) => opt.setName("prompt").setDescription("What do you want to say?").setRequired(true))
+//     .addAttachmentOption((opt) => opt.setName("image1").setDescription("Optional image 1"))
+//     .addAttachmentOption((opt) => opt.setName("image2").setDescription("Optional image 2"))
+//     .addAttachmentOption((opt) => opt.setName("image3").setDescription("Optional image 3"))
+//     .toJSON();
 
-  const sora = new SlashCommandBuilder()
-    .setName(EasterEggSlashCommands.Sora)
-    .setDescription("Generate a short video with Sora.")
-    .addStringOption((opt) => opt.setName("prompt").setDescription("Video Prompt").setRequired(true))
-    .addStringOption((opt) =>
-      opt
-        .setName("duration")
-        .setDescription("Duration in seconds (4, 8, 12)")
-        .setRequired(false)
-        .addChoices(
-          { name: "4 seconds", value: "4" },
-          { name: "8 seconds", value: "8" },
-          { name: "12 seconds", value: "12" }
-        )
-    )
-    .toJSON();
+//   const sora = new SlashCommandBuilder()
+//     .setName(EasterEggSlashCommands.Sora)
+//     .setDescription("Generate a short video with Sora.")
+//     .addStringOption((opt) => opt.setName("prompt").setDescription("Video Prompt").setRequired(true))
+//     .addStringOption((opt) =>
+//       opt
+//         .setName("duration")
+//         .setDescription("Duration in seconds (4, 8, 12)")
+//         .setRequired(false)
+//         .addChoices(
+//           { name: "4 seconds", value: "4" },
+//           { name: "8 seconds", value: "8" },
+//           { name: "12 seconds", value: "12" }
+//         )
+//     )
+//     .toJSON();
 
-  const commands: Array<RESTPostAPIApplicationCommandsJSONBody> = [norm, sora];
-  await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
-}
+//   const commands: Array<RESTPostAPIApplicationCommandsJSONBody> = [norm, sora];
+//   await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
+// }
 
 export async function handleEasterEggsInteraction(interaction: CommandInteraction, openai: OpenAI): Promise<void> {
   if (!interaction.isChatInputCommand()) return;

@@ -1,5 +1,5 @@
-import { CommandInteraction, GuildMemberRoleManager, Message, Routes } from "discord.js";
-import { RESTPostAPIApplicationCommandsJSONBody, SlashCommandBuilder, REST } from "discord.js";
+import { CommandInteraction, GuildMemberRoleManager, Message } from "discord.js";
+//import { RESTPostAPIApplicationCommandsJSONBody, SlashCommandBuilder, REST } from "discord.js";
 import QueueRepository from "../repositories/QueueRepository";
 import { kickPlayerFromQueue } from "../services/AdminService";
 import { InvalidCommand } from "../utils/InvalidCommand";
@@ -58,27 +58,27 @@ export async function handleAdminInteraction(slashCommandInteraction: CommandInt
   }
 }
 
-export async function registerAdminSlashCommands(clientId: string, guildId: string, token: string) {
-  const rest = new REST({ version: "9" }).setToken(token);
+// export async function registerAdminSlashCommands(clientId: string, guildId: string, token: string) {
+//   const rest = new REST({ version: "9" }).setToken(token);
 
-  const kickCommand = new SlashCommandBuilder()
-    .setName(AdminCommandOptions.Kick)
-    .setDescription("Removes a player from the queue.")
-    .addUserOption((option) => {
-      return option.setName("player").setDescription("The player you want to remove.").setRequired(true);
-    })
-    .toJSON();
+//   const kickCommand = new SlashCommandBuilder()
+//     .setName(AdminCommandOptions.Kick)
+//     .setDescription("Removes a player from the queue.")
+//     .addUserOption((option) => {
+//       return option.setName("player").setDescription("The player you want to remove.").setRequired(true);
+//     })
+//     .toJSON();
 
-  const clearCommand = new SlashCommandBuilder()
-    .setName(AdminCommandOptions.Clear)
-    .setDescription("Clears the queue.")
-    .toJSON();
+//   const clearCommand = new SlashCommandBuilder()
+//     .setName(AdminCommandOptions.Clear)
+//     .setDescription("Clears the queue.")
+//     .toJSON();
 
-  try {
-    const commands: Array<RESTPostAPIApplicationCommandsJSONBody> = [kickCommand, clearCommand];
+//   try {
+//     const commands: Array<RESTPostAPIApplicationCommandsJSONBody> = [kickCommand, clearCommand];
 
-    await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
-  } catch (error) {
-    console.error(error);
-  }
-}
+//     await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
+//   } catch (error) {
+//     console.error(error);
+//   }
+// }
