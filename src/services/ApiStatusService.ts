@@ -16,6 +16,8 @@ export interface ServiceConfig {
   apiUrl?: string; // For statuspage or custom JSON endpoints
   rssUrl?: string; // Optional RSS/Atom feed
   rssUrls?: string[]; // Optional multiple RSS/Atom feeds to aggregate
+  groupId?: string; // If set, this service is a child of groupId (e.g. "aws")
+  isGroupRoot?: boolean; // If true, this is the aggregate/root (e.g. the visible "AWS" row)
 }
 
 export interface IncidentUpdateInfo {
@@ -342,6 +344,26 @@ function getAwsRssUrls(): string[] {
     "https://status.aws.amazon.com/rss/globalaccelerator.rss"
   );
   return urls;
+}
+
+function buildAwsChildServices(): ServiceConfig[] {
+  const pageUrl = "https://health.aws.amazon.com/health/status";
+  const urls = getAwsRssUrls();
+
+  return urls.map((url, idx) => {
+    // derive a stable key from the URL path, e.g. "apigateway-us-east-1"
+    const m = url.match(/\/rss\/([^/]+)\.rss$/);
+    const slug = m ? m[1] : `feed-${idx}`;
+
+    return {
+      groupId: "aws", // roll up into the "aws" root
+      id: `aws-${slug}`, // e.g. "aws-apigateway-us-east-1"
+      name: `AWS ${slug}`, // internal name; UI will see only the root
+      pageUrl,
+      rssUrl: url, // single feed per child
+      type: "generic",
+    } satisfies ServiceConfig;
+  });
 }
 
 type FeedEntry = {
@@ -1237,13 +1259,16 @@ export const Categories: CategoryConfig[] = [
   {
     name: "Cloud Platforms",
     services: [
+      // Aggregate/root AWS row (what you see in Discord)
       {
         id: "aws",
+        isGroupRoot: true,
         name: "AWS",
         pageUrl: "https://health.aws.amazon.com/health/status",
-        rssUrls: getAwsRssUrls(),
         type: "generic",
       },
+      // AWS child services: each RSS feed is its own independently scheduled service
+      ...buildAwsChildServices(),
       {
         id: "gcp",
         name: "Google Cloud",

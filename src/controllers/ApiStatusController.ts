@@ -11,6 +11,7 @@ import {
   Categories,
   checkSingleService,
   ServiceConfig,
+  StatusLevel,
 } from "../services/ApiStatusService";
 
 type IncidentMessage = {
@@ -22,6 +23,9 @@ let mainStatusMessages: Message[] = [];
 const incidentMessages = new Map<string, IncidentMessage>(); // key: serviceId
 // Track last time a service's status page was successfully seen (any non-unknown status)
 const lastSeenTimestamps = new Map<string, number>(); // serviceId -> epoch ms
+// Track Discord connectivity around embed operations
+let discordHadErrorSinceLastReset = false;
+let discordHadSuccessSinceLastError = false;
 
 // Small helper to space out Discord API calls and avoid burst rate limits
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -216,7 +220,12 @@ function buildIncidentEmbed(service: ServiceStatus) {
   return embed;
 }
 
-async function upsertIncidentEmbeds(channel: TextChannel, categories: { name: string; services: ServiceStatus[] }[]) {
+// Returns true if all discord operations succeeded; false if any failed
+async function upsertIncidentEmbeds(
+  channel: TextChannel,
+  categories: { name: string; services: ServiceStatus[] }[]
+): Promise<boolean> {
+  let allOk = true;
   for (const cat of categories) {
     for (const s of cat.services) {
       // Only create incident embeds when we have concrete incident details to show
@@ -231,14 +240,30 @@ async function upsertIncidentEmbeds(channel: TextChannel, categories: { name: st
             const cached = channel.messages.cache.get(existing.messageId);
             const msg = cached ?? (await channel.messages.fetch(existing.messageId));
             await msg.edit({ embeds: [buildIncidentEmbed(s)] });
-          } catch {
-            // recreate if missing
-            const newMsg = await channel.send({ embeds: [buildIncidentEmbed(s)] });
-            incidentMessages.set(s.id, { messageId: newMsg.id, serviceId: s.id });
+            discordHadSuccessSinceLastError = true;
+          } catch (e) {
+            discordHadErrorSinceLastReset = true;
+            // recreate if missing or edit failed
+            try {
+              const newMsg = await channel.send({ embeds: [buildIncidentEmbed(s)] });
+              incidentMessages.set(s.id, { messageId: newMsg.id, serviceId: s.id });
+              discordHadSuccessSinceLastError = true;
+            } catch (err) {
+              allOk = false;
+              discordHadErrorSinceLastReset = true;
+              console.warn("Failed to recreate incident message:", (err as Error).message);
+            }
           }
         } else {
-          const newMsg = await channel.send({ embeds: [buildIncidentEmbed(s)] });
-          incidentMessages.set(s.id, { messageId: newMsg.id, serviceId: s.id });
+          try {
+            const newMsg = await channel.send({ embeds: [buildIncidentEmbed(s)] });
+            incidentMessages.set(s.id, { messageId: newMsg.id, serviceId: s.id });
+            discordHadSuccessSinceLastError = true;
+          } catch (e) {
+            allOk = false;
+            discordHadErrorSinceLastReset = true;
+            console.warn("Failed to send incident message:", (e as Error).message);
+          }
         }
         // throttle between message mutations
         await sleep(300);
@@ -248,31 +273,42 @@ async function upsertIncidentEmbeds(channel: TextChannel, categories: { name: st
           const cached = channel.messages.cache.get(existing.messageId);
           const msg = cached ?? (await channel.messages.fetch(existing.messageId));
           await msg.delete();
+          discordHadSuccessSinceLastError = true;
         } catch (e) {
+          discordHadErrorSinceLastReset = true;
           console.warn("Failed to delete incident message:", (e as Error).message);
+          allOk = false;
         }
         incidentMessages.delete(s.id);
         await sleep(200);
       }
     }
   }
+  return allOk;
 }
 
 // Edit existing page messages when possible; only delete/create when count changes
-async function upsertMainStatusEmbeds(channel: TextChannel, embeds: MessageEmbed[]) {
+// Returns true if all discord operations succeeded; false if any failed
+async function upsertMainStatusEmbeds(channel: TextChannel, embeds: MessageEmbed[]): Promise<boolean> {
   const current = mainStatusMessages;
   const minCount = Math.min(current.length, embeds.length);
+  let allOk = true;
 
   // Edit in place for shared range
   for (let i = 0; i < minCount; i++) {
     try {
       await current[i].edit({ embeds: [embeds[i]] });
+      discordHadSuccessSinceLastError = true;
     } catch (err) {
+      discordHadErrorSinceLastReset = true;
       try {
         const sent = await channel.send({ embeds: [embeds[i]] });
         current[i] = sent;
+        discordHadSuccessSinceLastError = true;
       } catch (e) {
+        discordHadErrorSinceLastReset = true;
         console.warn("Failed to update status page:", (e as Error).message);
+        allOk = false;
       }
     }
     await sleep(300);
@@ -283,8 +319,11 @@ async function upsertMainStatusEmbeds(channel: TextChannel, embeds: MessageEmbed
     for (let i = embeds.length; i < current.length; i++) {
       try {
         await current[i].delete();
+        discordHadSuccessSinceLastError = true;
       } catch (e) {
+        discordHadErrorSinceLastReset = true;
         console.warn("Failed to delete extra status page:", (e as Error).message);
+        allOk = false;
       }
       await sleep(300);
     }
@@ -297,12 +336,16 @@ async function upsertMainStatusEmbeds(channel: TextChannel, embeds: MessageEmbed
       try {
         const sent = await channel.send({ embeds: [embeds[i]] });
         mainStatusMessages.push(sent);
+        discordHadSuccessSinceLastError = true;
       } catch (e) {
+        discordHadErrorSinceLastReset = true;
         console.warn("Failed to send a status page:", (e as Error).message);
+        allOk = false;
       }
       await sleep(300);
     }
   }
+  return allOk;
 }
 
 export async function startApiStatusReporting(channel: TextChannel) {
@@ -312,6 +355,34 @@ export async function startApiStatusReporting(channel: TextChannel) {
   const issueIntervals = new Map<string, ReturnType<typeof setInterval>>(); // serviceId -> interval handle
   let nonIssueTimeouts: Array<ReturnType<typeof setTimeout>> = []; // scheduled one-offs over 15 minutes
   let nonIssueSweepTimer: ReturnType<typeof setTimeout> | null = null; // timer to start next 15-min sweep
+  // Discord availability & desired state buffering
+  let discordUnavailable = false;
+  let desiredMainEmbeds: MessageEmbed[] = [];
+  let desiredIncidentCategories: { name: string; services: ServiceStatus[] }[] = [];
+  let reconnectInterval: ReturnType<typeof setInterval> | null = null;
+
+  const setDiscordUnavailable = (v: boolean) => {
+    if (discordUnavailable === v) return;
+    discordUnavailable = v;
+    if (discordUnavailable) {
+      if (!reconnectInterval) {
+        reconnectInterval = setInterval(
+          async () => {
+            try {
+              // Attempt to flush desired state periodically while offline
+              await flushDiscordIfPossible();
+            } catch {
+              // ignore
+            }
+          },
+          2 * 60 * 1000
+        ); // try every 2 minutes
+      }
+    } else if (reconnectInterval) {
+      clearInterval(reconnectInterval);
+      reconnectInterval = null;
+    }
+  };
 
   const serviceIndex: Map<string, ServiceConfig> = new Map(Categories.flatMap((c) => c.services).map((s) => [s.id, s]));
 
@@ -331,11 +402,147 @@ export async function startApiStatusReporting(channel: TextChannel) {
     };
   };
 
+  const aggregateGroupStatus = (
+    rootCfg: ServiceConfig,
+    rootStatus: ServiceStatus,
+    children: ServiceStatus[]
+  ): ServiceStatus => {
+    if (!children.length) return rootStatus;
+
+    const rank: Record<StatusLevel, number> = {
+      operational: 0,
+      under_maintenance: 1,
+      degraded_performance: 2,
+      partial_outage: 3,
+      major_outage: 4,
+      unknown: -1,
+    };
+
+    let topStatus: StatusLevel = "operational";
+    let latestChecked = rootStatus.lastChecked ?? new Date(0);
+    const incidents: IncidentInfo[] = [];
+
+    for (const child of children) {
+      // pick worst status among children
+      if (rank[child.status] > rank[topStatus]) {
+        topStatus = child.status;
+      }
+      if (child.lastChecked && child.lastChecked > latestChecked) {
+        latestChecked = child.lastChecked;
+      }
+      if (child.incidents && child.incidents.length) {
+        incidents.push(...child.incidents);
+      }
+    }
+
+    // newest first; guard against undefined or malformed timestamps
+    incidents.sort((a, b) => {
+      const ta = a.created_at ? new Date(a.created_at).getTime() || 0 : 0;
+      const tb = b.created_at ? new Date(b.created_at).getTime() || 0 : 0;
+      return tb - ta;
+    });
+
+    const description =
+      incidents.length && topStatus !== "operational"
+        ? topStatus === "under_maintenance"
+          ? "Maintenance in progress"
+          : "Issues detected"
+        : "";
+
+    return {
+      id: rootCfg.id,
+      name: rootCfg.name,
+      pageUrl: rootCfg.pageUrl,
+      status: topStatus,
+      description,
+      lastChecked: latestChecked || new Date(),
+      incidents,
+    };
+  };
+
   const categoriesFromCache = (): { name: string; services: ServiceStatus[] }[] => {
-    return Categories.map((cat) => ({
-      name: cat.name,
-      services: cat.services.map((svc) => getCachedOrDefault(svc)),
-    }));
+    return Categories.map((cat) => {
+      const allStatuses = cat.services.map((svc) => getCachedOrDefault(svc));
+
+      const statusById = new Map<string, ServiceStatus>();
+      const cfgById = new Map<string, ServiceConfig>();
+
+      cat.services.forEach((cfg, idx) => {
+        cfgById.set(cfg.id, cfg);
+        statusById.set(cfg.id, allStatuses[idx]);
+      });
+
+      // Bucket children by groupId
+      const childrenByGroup = new Map<string, ServiceStatus[]>();
+      for (const cfg of cat.services) {
+        if (cfg.groupId) {
+          const childStatus = statusById.get(cfg.id);
+          if (!childStatus) continue;
+          const list = childrenByGroup.get(cfg.groupId) ?? [];
+          list.push(childStatus);
+          childrenByGroup.set(cfg.groupId, list);
+        }
+      }
+
+      const output: ServiceStatus[] = [];
+
+      for (const cfg of cat.services) {
+        // Hide child services from the UI
+        if (cfg.groupId) continue;
+
+        const baseStatus = statusById.get(cfg.id)!;
+        const children = childrenByGroup.get(cfg.id);
+
+        if (children && children.length) {
+          // root of a group (e.g. "aws")
+          output.push(aggregateGroupStatus(cfg, baseStatus, children));
+        } else {
+          // normal service
+          output.push(baseStatus);
+        }
+      }
+
+      return { name: cat.name, services: output };
+    });
+  };
+
+  const resetDiscordFlags = () => {
+    discordHadErrorSinceLastReset = false;
+    discordHadSuccessSinceLastError = false;
+  };
+
+  const performFullChannelResync = async () => {
+    console.warn("Discord appears to have recovered; performing full channel resync for API status.");
+
+    // Try to clear all messages in the status channel
+    try {
+      await deleteAllMessagesInTextChannel(channel);
+    } catch (e) {
+      // If we can't clear the channel, don't get stuck in a loop;
+      // just log and clear flags so we fall back to incremental updates.
+      console.warn("Failed to clear API status channel on resync:", (e as Error).message);
+      resetDiscordFlags();
+      return;
+    }
+
+    // Reset local tracking; we're starting fresh from cache
+    mainStatusMessages = [];
+    incidentMessages.clear();
+
+    const cats = categoriesFromCache();
+    const embeds = buildMainEmbeds(cats);
+
+    // Rebuild main status embeds
+    await upsertMainStatusEmbeds(channel, embeds);
+
+    // Rebuild incident embeds (if any)
+    try {
+      await upsertIncidentEmbeds(channel, cats);
+    } catch (err) {
+      console.warn("Incident embed update failed during resync:", (err as Error).message);
+    }
+
+    resetDiscordFlags();
   };
 
   const statusChanged = (a?: ServiceStatus, b?: ServiceStatus): boolean => {
@@ -358,10 +565,34 @@ export async function startApiStatusReporting(channel: TextChannel) {
     return false;
   };
 
+  const flushDiscordIfPossible = async () => {
+    if (!discordUnavailable) return;
+    if (desiredMainEmbeds.length === 0 && desiredIncidentCategories.length === 0) return;
+    const okMain = desiredMainEmbeds.length ? await upsertMainStatusEmbeds(channel, desiredMainEmbeds) : true;
+    const okInc = desiredIncidentCategories.length
+      ? await upsertIncidentEmbeds(channel, desiredIncidentCategories)
+      : true;
+    if (okMain && okInc) {
+      setDiscordUnavailable(false);
+      console.info("Reconnected to Discord — flushed pending status updates.");
+    }
+  };
+
   const updateEmbedsIfNeeded = async (force: boolean = false) => {
     const cats = categoriesFromCache();
     const { issues } = summarizeIssues(cats);
     const hasIssuesNow = issues > 0;
+
+    // If we previously saw Discord errors AND have now observed at least one
+    // successful Discord operation, do a one-shot full resync instead of incremental updates.
+    if (discordHadErrorSinceLastReset && discordHadSuccessSinceLastError) {
+      await performFullChannelResync();
+      // Recompute from cache after resync in case it changed while we were updating
+      const { issues: postIssues } = summarizeIssues(categoriesFromCache());
+      lastHadIssues = postIssues > 0;
+      return;
+    }
+
     const shouldUpdate = force || hasIssuesNow || lastHadIssues;
     if (shouldUpdate) {
       const embeds = buildMainEmbeds(cats);
@@ -437,6 +668,9 @@ export async function startApiStatusReporting(channel: TextChannel) {
     clearNonIssueTimeouts();
     // Build list of services to check that are not currently under issue polling
     const candidates: ServiceConfig[] = Categories.flatMap((c) => c.services).filter((svc) => {
+      // Never directly poll group roots like "aws"; they are aggregates only
+      if (svc.isGroupRoot) return false;
+
       if (issueIntervals.has(svc.id)) return false; // handled by 5-min polling
       const st = statusCache.get(svc.id);
       // include if unknown or operational (or not yet checked)
@@ -480,6 +714,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
       await deleteAllMessagesInTextChannel(channel);
     } catch (e) {
       console.warn("Failed to clear API status channel on startup:", (e as Error).message);
+      setDiscordUnavailable(true);
     }
 
     const { categories } = await fetchAllStatuses();
@@ -497,18 +732,31 @@ export async function startApiStatusReporting(channel: TextChannel) {
         }
       }
     }
-    const embeds = buildMainEmbeds(categories);
-    await upsertMainStatusEmbeds(channel, embeds);
-    try {
-      await upsertIncidentEmbeds(channel, categories);
-    } catch (err) {
-      console.warn("Incident embed update failed:", (err as Error).message);
+    // Build display categories from cache (collapsing groups like AWS)
+    const displayCategories = categoriesFromCache();
+
+    const embeds = buildMainEmbeds(displayCategories);
+    if (discordUnavailable) {
+      desiredMainEmbeds = embeds;
+      desiredIncidentCategories = displayCategories;
+      await flushDiscordIfPossible();
+    } else {
+      const okMain = await upsertMainStatusEmbeds(channel, embeds);
+      const okInc = await upsertIncidentEmbeds(channel, displayCategories).catch((err) => {
+        console.warn("Incident embed update failed:", (err as Error).message);
+        return false;
+      });
+      if (!okMain || !okInc) {
+        desiredMainEmbeds = embeds;
+        desiredIncidentCategories = displayCategories;
+        setDiscordUnavailable(true);
+      }
     }
     console.info(`Status posted successfully (pages: ${embeds.length}).`);
 
     // Initialize lastHadIssues state and start per-service schedulers
     try {
-      const { issues } = summarizeIssues(categories);
+      const { issues } = summarizeIssues(displayCategories);
       lastHadIssues = issues > 0;
     } catch {
       lastHadIssues = false;
@@ -519,7 +767,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
       for (const svc of cat.services) {
         if (svc.status !== "operational" && svc.status !== "unknown") {
           const cfg = getServiceConfig(svc.id);
-          if (cfg && !issueIntervals.has(cfg.id)) {
+          if (cfg && !cfg.isGroupRoot && !issueIntervals.has(cfg.id)) {
             const handle = setInterval(
               async () => {
                 try {
