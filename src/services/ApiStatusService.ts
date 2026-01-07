@@ -139,6 +139,36 @@ async function fetchStatuspage(service: ServiceConfig): Promise<ServiceStatus> {
       status = "operational";
     }
 
+    // Escalate overall status based on active incidents. Some Statuspage sites keep the indicator at "none"
+    // while incidents are in progress; in that case, ensure we reflect a non-operational state.
+    if (incidents.length > 0) {
+      const mapImpact = (imp?: string, st?: string): StatusLevel => {
+        const impact = (imp || "").toLowerCase();
+        const s = (st || "").toLowerCase();
+        if (/scheduled|in_progress/.test(s)) return "under_maintenance";
+        switch (impact) {
+          case "critical":
+            return "major_outage";
+          case "major":
+            return "partial_outage";
+          case "minor":
+            return "degraded_performance";
+          case "none":
+          default:
+            // Unknown impact but active states like investigating/identified should show degradation
+            return /(investigating|identified|monitoring|verifying|postmortem)/.test(s)
+              ? "degraded_performance"
+              : "operational";
+        }
+      };
+      let incWorst: StatusLevel = "operational";
+      for (const inc of incidents) {
+        const m = mapImpact(inc.impact, inc.status);
+        incWorst = escalateStatus(incWorst, m);
+      }
+      status = escalateStatus(status, incWorst);
+    }
+
     return {
       // Append short text for live maintenance, otherwise keep concise
       description:
@@ -658,7 +688,8 @@ function escalateStatus(a: StatusLevel, b: StatusLevel): StatusLevel {
     operational: 0,
     partial_outage: 3,
     under_maintenance: 1,
-    unknown: 5,
+    // Treat unknown as the lowest severity so it never overrides a known non-operational status
+    unknown: -1,
   };
   return rank[b] > rank[a] ? b : a;
 }
@@ -794,6 +825,20 @@ async function fetchSteamStatus(service: ServiceConfig): Promise<ServiceStatus> 
         shortlink: service.pageUrl,
         status: "major_outage",
       });
+    }
+
+    // If we discovered incidents but overall is still operational/unknown, escalate based on incident impacts
+    if (incidents.length > 0 && (overall === "operational" || overall === "unknown")) {
+      const mapImpact = (imp?: string): StatusLevel => {
+        const s = (imp || "").toLowerCase();
+        if (s === "critical") return "major_outage";
+        if (s === "major") return "partial_outage";
+        if (s === "minor") return "degraded_performance";
+        return "degraded_performance"; // default to degraded when incident exists without clear impact
+      };
+      let worst: StatusLevel = "operational";
+      for (const inc of incidents) worst = escalateStatus(worst, mapImpact(inc.impact));
+      overall = escalateStatus(overall, worst);
     }
 
     // Keep concise; only append text for noteworthy states
