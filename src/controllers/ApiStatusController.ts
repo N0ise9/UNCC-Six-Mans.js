@@ -568,13 +568,21 @@ export async function startApiStatusReporting(channel: TextChannel) {
   const flushDiscordIfPossible = async () => {
     if (!discordUnavailable) return;
     if (desiredMainEmbeds.length === 0 && desiredIncidentCategories.length === 0) return;
+
     const okMain = desiredMainEmbeds.length ? await upsertMainStatusEmbeds(channel, desiredMainEmbeds) : true;
     const okInc = desiredIncidentCategories.length
       ? await upsertIncidentEmbeds(channel, desiredIncidentCategories)
       : true;
+
     if (okMain && okInc) {
+      // We’ve just proven that Discord is reachable again.
+      console.info("Reconnected to Discord — performing full channel resync for API status…");
+
+      // Do the “fresh startup” behavior: wipe channel and rebuild from cache.
+      await performFullChannelResync();
+
+      // Now that resync is done, mark Discord as available again so we stop reconnect polling.
       setDiscordUnavailable(false);
-      console.info("Reconnected to Discord — flushed pending status updates.");
     }
   };
 
