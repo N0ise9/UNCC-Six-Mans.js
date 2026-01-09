@@ -23,9 +23,47 @@ let mainStatusMessages: Message[] = [];
 const incidentMessages = new Map<string, IncidentMessage>(); // key: serviceId
 // Track last time a service's status page was successfully seen (any non-unknown status)
 const lastSeenTimestamps = new Map<string, number>(); // serviceId -> epoch ms
-// Track Discord connectivity around embed operations
-let discordHadErrorSinceLastReset = false;
-let discordHadSuccessSinceLastError = false;
+// Track Discord connectivity around embed operations (removed detailed flag usage; retry is selective now)
+
+// Retry queues for failed operations (processed every 2 minutes)
+const mainRetryUpsert = new Map<number, MessageEmbed>(); // pageIndex -> embed
+const mainRetryDelete = new Set<string>(); // messageId
+const incidentRetry = new Set<string>(); // serviceId (for create/edit failures)
+const incidentRetryDelete = new Map<string, string>(); // serviceId -> messageId (for delete failures)
+
+// Global Discord task queue to ensure we only post/edit/delete one embed per second
+type DiscordTask<T = unknown> = () => Promise<T>;
+const discordTaskQueue: DiscordTask[] = [];
+let discordQueueProcessing = false;
+const processDiscordQueue = async () => {
+  if (discordQueueProcessing) return;
+  discordQueueProcessing = true;
+  while (discordTaskQueue.length) {
+    const job = discordTaskQueue.shift();
+    if (!job) break;
+    try {
+      await job();
+    } catch {
+      // ignore job error here; callers handle via their own try/catch
+    }
+    // Enforce one embed operation per second
+    await sleep(1000);
+  }
+  discordQueueProcessing = false;
+};
+function enqueueDiscord<T>(fn: DiscordTask<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    discordTaskQueue.push(async () => {
+      try {
+        const res = await fn();
+        resolve(res as T);
+      } catch (e) {
+        reject(e as Error);
+      }
+    });
+    void processDiscordQueue();
+  });
+}
 
 // Small helper to space out Discord API calls and avoid burst rate limits
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -286,17 +324,33 @@ function buildIncidentEmbed(service: ServiceStatus) {
   const MAX_UPDATE_FIELDS = 10;
   const usedChunks = chunks.slice(0, MAX_UPDATE_FIELDS);
 
-  embed.addFields({
-    name: active.name,
-    value: active.shortlink ? `[Status Page](${active.shortlink})` : service.pageUrl,
-  });
+  const incidentTitle = (active.name || "").toString().trim() || "Incident";
+  const linkValue = (active.shortlink ? `[Status Page](${active.shortlink})` : service.pageUrl) || service.pageUrl;
+  embed.addFields({ name: incidentTitle, value: linkValue });
 
+  // Respect embed total character limit (~6000)
+  const TOTAL_LIMIT = 6000;
+  const baseUsed =
+    (embed.data.title?.length || 0) + (embed.data.description?.length || 0) + incidentTitle.length + linkValue.length;
+  let remaining = TOTAL_LIMIT - baseUsed;
   if (usedChunks.length === 0) {
-    embed.addFields({ name: "Updates", value: "No updates yet." });
+    const v = "No updates yet.";
+    if (remaining > "Updates".length + v.length) embed.addFields({ name: "Updates", value: v });
   } else if (usedChunks.length === 1) {
-    embed.addFields({ name: "Updates", value: usedChunks[0] });
+    const v = usedChunks[0];
+    if (remaining > "Updates".length + v.length) embed.addFields({ name: "Updates", value: v });
   } else {
-    usedChunks.forEach((c, i) => embed.addFields({ name: `Updates (${i + 1}/${usedChunks.length})`, value: c }));
+    for (let i = 0; i < usedChunks.length; i++) {
+      const name = `Updates (${i + 1}/${usedChunks.length})`;
+      const value = usedChunks[i];
+      const need = name.length + value.length;
+      if (need < remaining) {
+        embed.addFields({ name, value });
+        remaining -= need;
+      } else {
+        break;
+      }
+    }
   }
 
   return embed;
@@ -321,53 +375,52 @@ async function upsertIncidentEmbeds(
             // prefer cache to reduce API hits
             const cached = channel.messages.cache.get(existing.messageId);
             const msg = cached ?? (await channel.messages.fetch(existing.messageId));
-            await msg.edit({ embeds: [buildIncidentEmbed(s)] });
-            discordHadSuccessSinceLastError = true;
+            await enqueueDiscord(() => msg.edit({ embeds: [buildIncidentEmbed(s)] }));
+            // success: clear any pending retry for this service
+            incidentRetry.delete(s.id);
             logInfo(`Incident edit: ${s.id} (${s.name}) msg=${existing.messageId}`);
           } catch (e) {
-            discordHadErrorSinceLastReset = true;
             logWarn(`Incident edit failed: ${s.id} (${s.name}) msg=${existing?.messageId} err=${(e as Error).message}`);
-            // recreate if missing or edit failed
+            // enqueue retry for this service
+            incidentRetry.add(s.id);
+            // also try recreate immediately
             try {
-              const newMsg = await channel.send({ embeds: [buildIncidentEmbed(s)] });
+              const newMsg = await enqueueDiscord(() => channel.send({ embeds: [buildIncidentEmbed(s)] }));
               incidentMessages.set(s.id, { messageId: newMsg.id, serviceId: s.id });
-              discordHadSuccessSinceLastError = true;
+              incidentRetry.delete(s.id);
               logInfo(`Incident create (after edit fail): ${s.id} (${s.name}) msg=${newMsg.id}`);
             } catch (err) {
               allOk = false;
-              discordHadErrorSinceLastReset = true;
               logWarn(`Incident recreate failed: ${s.id} (${s.name}) err=${(err as Error).message}`);
+              incidentRetry.add(s.id);
             }
           }
         } else {
           try {
-            const newMsg = await channel.send({ embeds: [buildIncidentEmbed(s)] });
+            const newMsg = await enqueueDiscord(() => channel.send({ embeds: [buildIncidentEmbed(s)] }));
             incidentMessages.set(s.id, { messageId: newMsg.id, serviceId: s.id });
-            discordHadSuccessSinceLastError = true;
+            incidentRetry.delete(s.id);
             logInfo(`Incident create: ${s.id} (${s.name}) msg=${newMsg.id}`);
           } catch (e) {
             allOk = false;
-            discordHadErrorSinceLastReset = true;
             logWarn(`Incident create failed: ${s.id} (${s.name}) err=${(e as Error).message}`);
+            incidentRetry.add(s.id);
           }
         }
-        // throttle between message mutations
-        await sleep(300);
       } else if (existing) {
         // resolved — delete the incident embed
         try {
           const cached = channel.messages.cache.get(existing.messageId);
           const msg = cached ?? (await channel.messages.fetch(existing.messageId));
-          await msg.delete();
-          discordHadSuccessSinceLastError = true;
+          await enqueueDiscord(() => msg.delete());
+          incidentRetryDelete.delete(s.id);
           logInfo(`Incident delete: ${s.id} (${s.name}) msg=${existing.messageId}`);
         } catch (e) {
-          discordHadErrorSinceLastReset = true;
           logWarn(`Incident delete failed: ${s.id} (${s.name}) msg=${existing.messageId} err=${(e as Error).message}`);
           allOk = false;
+          incidentRetryDelete.set(s.id, existing.messageId);
         }
         incidentMessages.delete(s.id);
-        await sleep(200);
       }
     }
   }
@@ -385,39 +438,36 @@ async function upsertMainStatusEmbeds(channel: TextChannel, embeds: MessageEmbed
   // Edit in place for shared range
   for (let i = 0; i < minCount; i++) {
     try {
-      await current[i].edit({ embeds: [embeds[i]] });
-      discordHadSuccessSinceLastError = true;
+      await enqueueDiscord(() => current[i].edit({ embeds: [embeds[i]] }));
+      mainRetryUpsert.delete(i);
       logInfo(`Main edit: page#${i + 1}`);
     } catch (err) {
-      discordHadErrorSinceLastReset = true;
       logWarn(`Main edit failed: page#${i + 1} err=${(err as Error).message}`);
       try {
-        const sent = await channel.send({ embeds: [embeds[i]] });
+        const sent = await enqueueDiscord(() => channel.send({ embeds: [embeds[i]] }));
         current[i] = sent;
-        discordHadSuccessSinceLastError = true;
+        mainRetryUpsert.delete(i);
         logInfo(`Main create (after edit fail): page#${i + 1} msg=${sent.id}`);
       } catch (e) {
-        discordHadErrorSinceLastReset = true;
         logWarn(`Main create failed: page#${i + 1} err=${(e as Error).message}`);
         allOk = false;
+        mainRetryUpsert.set(i, embeds[i]);
       }
     }
-    await sleep(300);
   }
 
   // If there are extra old pages, delete them
   if (current.length > embeds.length) {
     for (let i = embeds.length; i < current.length; i++) {
       try {
-        await current[i].delete();
-        discordHadSuccessSinceLastError = true;
+        await enqueueDiscord(() => current[i].delete());
+        mainRetryDelete.delete(current[i].id);
         logInfo(`Main delete: page#${i + 1}`);
       } catch (e) {
-        discordHadErrorSinceLastReset = true;
         logWarn(`Main delete failed: page#${i + 1} err=${(e as Error).message}`);
         allOk = false;
+        mainRetryDelete.add(current[i].id);
       }
-      await sleep(300);
     }
     mainStatusMessages = current.slice(0, embeds.length);
   }
@@ -426,16 +476,15 @@ async function upsertMainStatusEmbeds(channel: TextChannel, embeds: MessageEmbed
   if (embeds.length > current.length) {
     for (let i = current.length; i < embeds.length; i++) {
       try {
-        const sent = await channel.send({ embeds: [embeds[i]] });
+        const sent = await enqueueDiscord(() => channel.send({ embeds: [embeds[i]] }));
         mainStatusMessages.push(sent);
-        discordHadSuccessSinceLastError = true;
+        mainRetryUpsert.delete(i);
         logInfo(`Main create: page#${i + 1} msg=${sent.id}`);
       } catch (e) {
-        discordHadErrorSinceLastReset = true;
         logWarn(`Main create failed: page#${i + 1} err=${(e as Error).message}`);
         allOk = false;
+        mainRetryUpsert.set(i, embeds[i]);
       }
-      await sleep(300);
     }
   }
   return allOk;
@@ -451,39 +500,88 @@ export async function startApiStatusReporting(channel: TextChannel) {
   // Heartbeat to ensure embeds refresh periodically; interval adapts based on whether issues exist
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let heartbeatMsCurrent: number | null = null;
-  // Coalesced update control and resync guard
+  // Coalesced update control
   let updateInFlight = false;
   let pendingForce: boolean | null = null;
-  let resyncInProgress = false;
-  // Discord availability & desired state buffering
-  let discordUnavailable = false;
-  let desiredMainEmbeds: MessageEmbed[] = [];
-  let desiredIncidentCategories: { name: string; services: ServiceStatus[] }[] = [];
-  let reconnectInterval: ReturnType<typeof setInterval> | null = null;
+  // Retry processor timer (2 minutes)
+  let retryTimer: ReturnType<typeof setInterval> | null = null;
 
-  const setDiscordUnavailable = (v: boolean) => {
-    if (discordUnavailable === v) return;
-    discordUnavailable = v;
-    if (discordUnavailable) {
-      logWarn("Discord unavailable; buffering desired state and starting reconnect loop");
-      if (!reconnectInterval) {
-        reconnectInterval = setInterval(
-          async () => {
-            try {
-              // Attempt to flush desired state periodically while offline
-              await flushDiscordIfPossible();
-            } catch {
-              // ignore
+  const startRetryProcessor = () => {
+    if (retryTimer) return;
+    retryTimer = setInterval(
+      async () => {
+        try {
+          // Process incident retries one-by-one so we respect the global 1/sec queue
+          for (const sid of Array.from(incidentRetry)) {
+            // Find the latest display status for this service
+            const cats = categoriesFromCache();
+            let svc: ServiceStatus | undefined;
+            for (const c of cats) {
+              const found = c.services.find((s) => s.id === sid);
+              if (found) {
+                svc = found;
+                break;
+              }
             }
-          },
-          2 * 60 * 1000
-        ); // try every 2 minutes
-      }
-    } else if (reconnectInterval) {
-      logInfo("Discord available; stopping reconnect loop");
-      clearInterval(reconnectInterval);
-      reconnectInterval = null;
-    }
+            if (!svc) {
+              // No longer present; drop from retry
+              incidentRetry.delete(sid);
+              continue;
+            }
+            const ok = await upsertIncidentEmbeds(channel, [{ name: "Retry", services: [svc] }]).catch(() => false);
+            if (ok) incidentRetry.delete(sid);
+          }
+
+          // Process incident delete retries
+          for (const [sid, msgId] of Array.from(incidentRetryDelete.entries())) {
+            try {
+              const cached = channel.messages.cache.get(msgId);
+              const msg = cached ?? (await channel.messages.fetch(msgId));
+              await enqueueDiscord(() => msg.delete());
+              incidentRetryDelete.delete(sid);
+              // Also ensure local mapping is cleared
+              incidentMessages.delete(sid);
+            } catch (e) {
+              // keep for next round
+            }
+          }
+
+          // Process main page upserts
+          for (const [idx, emb] of Array.from(mainRetryUpsert.entries())) {
+            try {
+              if (idx < mainStatusMessages.length) {
+                await enqueueDiscord(() => mainStatusMessages[idx].edit({ embeds: [emb] }));
+              } else {
+                const sent = await enqueueDiscord(() => channel.send({ embeds: [emb] }));
+                // Ensure the array is extended appropriately
+                mainStatusMessages[idx] = sent;
+              }
+              mainRetryUpsert.delete(idx);
+            } catch (e) {
+              // keep for next round
+            }
+          }
+
+          // Process main deletions
+          for (const msgId of Array.from(mainRetryDelete)) {
+            try {
+              const cached = channel.messages.cache.get(msgId);
+              const msg = cached ?? (await channel.messages.fetch(msgId));
+              await enqueueDiscord(() => msg.delete());
+              // Remove from local tracking array if present
+              const pos = mainStatusMessages.findIndex((m) => m.id === msgId);
+              if (pos !== -1) mainStatusMessages.splice(pos, 1);
+              mainRetryDelete.delete(msgId);
+            } catch (e) {
+              // keep for next round
+            }
+          }
+        } catch (e) {
+          logWarn(`Retry processor error: ${(e as Error).message}`);
+        }
+      },
+      2 * 60 * 1000
+    );
   };
 
   const serviceIndex: Map<string, ServiceConfig> = new Map(Categories.flatMap((c) => c.services).map((s) => [s.id, s]));
@@ -608,11 +706,6 @@ export async function startApiStatusReporting(channel: TextChannel) {
     });
   };
 
-  const resetDiscordFlags = () => {
-    discordHadErrorSinceLastReset = false;
-    discordHadSuccessSinceLastError = false;
-  };
-
   const ensureHeartbeat = (desiredMs: number) => {
     if (heartbeatMsCurrent === desiredMs && heartbeatTimer) return;
     if (heartbeatTimer) clearInterval(heartbeatTimer);
@@ -626,46 +719,6 @@ export async function startApiStatusReporting(channel: TextChannel) {
     heartbeatMsCurrent = desiredMs;
     const mins = Math.round(desiredMs / 60000);
     logInfo(`Heartbeat started interval=${mins}m`);
-  };
-
-  const performFullChannelResync = async () => {
-    if (resyncInProgress) return;
-    resyncInProgress = true;
-    logInfo("Starting full channel resync");
-
-    // Try to clear all messages in the status channel
-    try {
-      logInfo("Clearing status channel…");
-      await deleteAllMessagesInTextChannel(channel);
-      logInfo("Status channel cleared");
-    } catch (e) {
-      // If we can't clear the channel, don't get stuck in a loop;
-      // just log and clear flags so we fall back to incremental updates.
-      logWarn(`Channel clear failed during resync: ${(e as Error).message}`);
-      resetDiscordFlags();
-      return;
-    }
-
-    // Reset local tracking; we're starting fresh from cache
-    mainStatusMessages = [];
-    incidentMessages.clear();
-
-    const cats = categoriesFromCache();
-    const embeds = buildMainEmbeds(cats);
-
-    // Rebuild main status embeds
-    await upsertMainStatusEmbeds(channel, embeds);
-
-    // Rebuild incident embeds (if any)
-    try {
-      await upsertIncidentEmbeds(channel, cats);
-    } catch (err) {
-      logWarn(`Incident upsert failed during resync: ${(err as Error).message}`);
-    }
-
-    resetDiscordFlags();
-    logInfo("Resync complete");
-    resyncInProgress = false;
   };
 
   const statusChanged = (a?: ServiceStatus, b?: ServiceStatus): boolean => {
@@ -688,73 +741,25 @@ export async function startApiStatusReporting(channel: TextChannel) {
     return false;
   };
 
-  const flushDiscordIfPossible = async () => {
-    if (!discordUnavailable) return;
-    if (desiredMainEmbeds.length === 0 && desiredIncidentCategories.length === 0) return;
-    logInfo("Reconnect: attempting to flush buffered updates");
-
-    const okMain = desiredMainEmbeds.length ? await upsertMainStatusEmbeds(channel, desiredMainEmbeds) : true;
-    const okInc = desiredIncidentCategories.length
-      ? await upsertIncidentEmbeds(channel, desiredIncidentCategories)
-      : true;
-
-    if (okMain && okInc) {
-      // We’ve just proven that Discord is reachable again.
-      logInfo("Reconnect success; performing full resync");
-
-      // Do the “fresh startup” behavior: wipe channel and rebuild from cache.
-      await performFullChannelResync();
-
-      // Now that resync is done, mark Discord as available again so we stop reconnect polling.
-      setDiscordUnavailable(false);
-    } else {
-      logWarn("Reconnect flush failed; will retry");
-    }
-  };
-
   const updateEmbedsIfNeeded = async (force: boolean = false) => {
     const cats = categoriesFromCache();
     const { issues } = summarizeIssues(cats);
     const hasIssuesNow = issues > 0;
 
-    // If we previously saw Discord errors AND have now observed at least one
-    // successful Discord operation, do a one-shot full resync instead of incremental updates.
-    if (discordHadErrorSinceLastReset && discordHadSuccessSinceLastError) {
-      await performFullChannelResync();
-      // Recompute from cache after resync in case it changed while we were updating
-      const { issues: postIssues } = summarizeIssues(categoriesFromCache());
-      lastHadIssues = postIssues > 0;
-      return;
-    }
-
     const shouldUpdate = force || hasIssuesNow || lastHadIssues;
     if (shouldUpdate) {
       const embeds = buildMainEmbeds(cats);
-      if (discordUnavailable) {
-        // Buffer desired state and let the reconnect loop flush
-        desiredMainEmbeds = embeds;
-        desiredIncidentCategories = cats;
-        logInfo(`Queueing updates (force=${force}) pages=${embeds.length} issues=${issues}`);
-        await flushDiscordIfPossible();
-      } else {
-        const okMain = await upsertMainStatusEmbeds(channel, embeds);
-        let okInc = true;
-        try {
-          okInc = await upsertIncidentEmbeds(channel, cats);
-        } catch (err) {
-          okInc = false;
-          logWarn(`Incident upsert failed: ${(err as Error).message}`);
-        }
-        if (!okMain || !okInc) {
-          // If any operation failed, enter offline buffering mode and retry via reconnect loop
-          desiredMainEmbeds = embeds;
-          desiredIncidentCategories = cats;
-          setDiscordUnavailable(true);
-        }
-        logInfo(
-          `Upsert complete (force=${force}) pages=${embeds.length} issues=${issues} okMain=${okMain} okInc=${okInc}`
-        );
+      const okMain = await upsertMainStatusEmbeds(channel, embeds);
+      let okInc = true;
+      try {
+        okInc = await upsertIncidentEmbeds(channel, cats);
+      } catch (err) {
+        okInc = false;
+        logWarn(`Incident upsert failed: ${(err as Error).message}`);
       }
+      logInfo(
+        `Upsert complete (force=${force}) pages=${embeds.length} issues=${issues} okMain=${okMain} okInc=${okInc}`
+      );
     }
     lastHadIssues = hasIssuesNow;
     // Adapt heartbeat cadence: faster when issues exist
@@ -773,8 +778,9 @@ export async function startApiStatusReporting(channel: TextChannel) {
       const again = pendingForce;
       pendingForce = null;
       updateInFlight = false;
-      if (again !== null) {
-        await requestUpdate(again);
+      // Only rerun immediately if a forced update was requested while we were busy.
+      if (again === true) {
+        await requestUpdate(true);
       }
     }
   };
@@ -889,7 +895,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
       logInfo("Startup: channel cleared");
     } catch (e) {
       logWarn(`Startup: channel clear failed: ${(e as Error).message}`);
-      setDiscordUnavailable(true);
+      // proceed without clearing; any failures will be retried selectively
     }
 
     const { categories } = await fetchAllStatuses();
@@ -911,22 +917,11 @@ export async function startApiStatusReporting(channel: TextChannel) {
     const displayCategories = categoriesFromCache();
 
     const embeds = buildMainEmbeds(displayCategories);
-    if (discordUnavailable) {
-      desiredMainEmbeds = embeds;
-      desiredIncidentCategories = displayCategories;
-      await flushDiscordIfPossible();
-    } else {
-      const okMain = await upsertMainStatusEmbeds(channel, embeds);
-      const okInc = await upsertIncidentEmbeds(channel, displayCategories).catch((err) => {
-        logWarn(`Incident upsert failed: ${(err as Error).message}`);
-        return false;
-      });
-      if (!okMain || !okInc) {
-        desiredMainEmbeds = embeds;
-        desiredIncidentCategories = displayCategories;
-        setDiscordUnavailable(true);
-      }
-    }
+    await upsertMainStatusEmbeds(channel, embeds);
+    await upsertIncidentEmbeds(channel, displayCategories).catch((err) => {
+      logWarn(`Incident upsert failed: ${(err as Error).message}`);
+      return false as const;
+    });
     logInfo(`Initial post complete pages=${embeds.length}`);
 
     // Initialize lastHadIssues state and start per-service schedulers
@@ -972,6 +967,8 @@ export async function startApiStatusReporting(channel: TextChannel) {
 
     // Start heartbeat with appropriate cadence based on current issue state
     ensureHeartbeat(lastHadIssues ? 5 * 60 * 1000 : 30 * 60 * 1000);
+    // Start retry processor for failed operations
+    startRetryProcessor();
   } catch (e) {
     logWarn(`API status initial run failed: ${(e as Error).message}`);
   }
