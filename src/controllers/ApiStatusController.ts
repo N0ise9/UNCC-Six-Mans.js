@@ -68,6 +68,30 @@ function enqueueDiscord<T>(fn: DiscordTask<T>): Promise<T> {
 // Small helper to space out Discord API calls and avoid burst rate limits
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Add timeouts to Discord operations so a single hung request cannot stall the queue forever
+const DISCORD_OP_TIMEOUT_MS = 20_000; // 20s safety timeout per discord op
+async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          logWarn(`Discord op timeout after ${ms}ms: ${label}`);
+          reject(new Error(`Timeout: ${label}`));
+        }, ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+// Queue + timeout wrapper for all Discord API calls that modify messages
+function queueDiscord<T>(fn: () => Promise<T>, label: string, timeoutMs = DISCORD_OP_TIMEOUT_MS): Promise<T> {
+  return enqueueDiscord(() => withTimeout(fn(), timeoutMs, label));
+}
+
 // Lightweight one-line logging helpers (local date and time with milliseconds)
 const nowLocalMs = () => {
   const d = new Date();
@@ -374,8 +398,17 @@ async function upsertIncidentEmbeds(
           try {
             // prefer cache to reduce API hits
             const cached = channel.messages.cache.get(existing.messageId);
-            const msg = cached ?? (await channel.messages.fetch(existing.messageId));
-            await enqueueDiscord(() => msg.edit({ embeds: [buildIncidentEmbed(s)] }));
+            const msg =
+              cached ??
+              (await withTimeout(
+                channel.messages.fetch(existing.messageId),
+                DISCORD_OP_TIMEOUT_MS,
+                `fetch incident msg ${existing.messageId}`
+              ));
+            await queueDiscord(
+              () => msg.edit({ embeds: [buildIncidentEmbed(s)] }),
+              `edit incident ${existing.messageId}`
+            );
             // success: clear any pending retry for this service
             incidentRetry.delete(s.id);
             logInfo(`Incident edit: ${s.id} (${s.name}) msg=${existing.messageId}`);
@@ -385,7 +418,10 @@ async function upsertIncidentEmbeds(
             incidentRetry.add(s.id);
             // also try recreate immediately
             try {
-              const newMsg = await enqueueDiscord(() => channel.send({ embeds: [buildIncidentEmbed(s)] }));
+              const newMsg = await queueDiscord(
+                () => channel.send({ embeds: [buildIncidentEmbed(s)] }),
+                `send incident ${s.id}`
+              );
               incidentMessages.set(s.id, { messageId: newMsg.id, serviceId: s.id });
               incidentRetry.delete(s.id);
               logInfo(`Incident create (after edit fail): ${s.id} (${s.name}) msg=${newMsg.id}`);
@@ -397,7 +433,10 @@ async function upsertIncidentEmbeds(
           }
         } else {
           try {
-            const newMsg = await enqueueDiscord(() => channel.send({ embeds: [buildIncidentEmbed(s)] }));
+            const newMsg = await queueDiscord(
+              () => channel.send({ embeds: [buildIncidentEmbed(s)] }),
+              `send incident ${s.id}`
+            );
             incidentMessages.set(s.id, { messageId: newMsg.id, serviceId: s.id });
             incidentRetry.delete(s.id);
             logInfo(`Incident create: ${s.id} (${s.name}) msg=${newMsg.id}`);
@@ -411,8 +450,14 @@ async function upsertIncidentEmbeds(
         // resolved — delete the incident embed
         try {
           const cached = channel.messages.cache.get(existing.messageId);
-          const msg = cached ?? (await channel.messages.fetch(existing.messageId));
-          await enqueueDiscord(() => msg.delete());
+          const msg =
+            cached ??
+            (await withTimeout(
+              channel.messages.fetch(existing.messageId),
+              DISCORD_OP_TIMEOUT_MS,
+              `fetch (for delete) incident msg ${existing.messageId}`
+            ));
+          await queueDiscord(() => msg.delete(), `delete incident ${existing.messageId}`);
           incidentRetryDelete.delete(s.id);
           logInfo(`Incident delete: ${s.id} (${s.name}) msg=${existing.messageId}`);
         } catch (e) {
@@ -438,13 +483,13 @@ async function upsertMainStatusEmbeds(channel: TextChannel, embeds: MessageEmbed
   // Edit in place for shared range
   for (let i = 0; i < minCount; i++) {
     try {
-      await enqueueDiscord(() => current[i].edit({ embeds: [embeds[i]] }));
+      await queueDiscord(() => current[i].edit({ embeds: [embeds[i]] }), `edit main page ${i + 1}`);
       mainRetryUpsert.delete(i);
       logInfo(`Main edit: page#${i + 1}`);
     } catch (err) {
       logWarn(`Main edit failed: page#${i + 1} err=${(err as Error).message}`);
       try {
-        const sent = await enqueueDiscord(() => channel.send({ embeds: [embeds[i]] }));
+        const sent = await queueDiscord(() => channel.send({ embeds: [embeds[i]] }), `send main page ${i + 1}`);
         current[i] = sent;
         mainRetryUpsert.delete(i);
         logInfo(`Main create (after edit fail): page#${i + 1} msg=${sent.id}`);
@@ -460,7 +505,7 @@ async function upsertMainStatusEmbeds(channel: TextChannel, embeds: MessageEmbed
   if (current.length > embeds.length) {
     for (let i = embeds.length; i < current.length; i++) {
       try {
-        await enqueueDiscord(() => current[i].delete());
+        await queueDiscord(() => current[i].delete(), `delete main page ${i + 1}`);
         mainRetryDelete.delete(current[i].id);
         logInfo(`Main delete: page#${i + 1}`);
       } catch (e) {
@@ -476,7 +521,7 @@ async function upsertMainStatusEmbeds(channel: TextChannel, embeds: MessageEmbed
   if (embeds.length > current.length) {
     for (let i = current.length; i < embeds.length; i++) {
       try {
-        const sent = await enqueueDiscord(() => channel.send({ embeds: [embeds[i]] }));
+        const sent = await queueDiscord(() => channel.send({ embeds: [embeds[i]] }), `send main page ${i + 1}`);
         mainStatusMessages.push(sent);
         mainRetryUpsert.delete(i);
         logInfo(`Main create: page#${i + 1} msg=${sent.id}`);
@@ -536,8 +581,14 @@ export async function startApiStatusReporting(channel: TextChannel) {
           for (const [sid, msgId] of Array.from(incidentRetryDelete.entries())) {
             try {
               const cached = channel.messages.cache.get(msgId);
-              const msg = cached ?? (await channel.messages.fetch(msgId));
-              await enqueueDiscord(() => msg.delete());
+              const msg =
+                cached ??
+                (await withTimeout(
+                  channel.messages.fetch(msgId),
+                  DISCORD_OP_TIMEOUT_MS,
+                  `fetch (retry delete) incident msg ${msgId}`
+                ));
+              await queueDiscord(() => msg.delete(), `retry delete incident ${msgId}`);
               incidentRetryDelete.delete(sid);
               // Also ensure local mapping is cleared
               incidentMessages.delete(sid);
@@ -550,9 +601,15 @@ export async function startApiStatusReporting(channel: TextChannel) {
           for (const [idx, emb] of Array.from(mainRetryUpsert.entries())) {
             try {
               if (idx < mainStatusMessages.length) {
-                await enqueueDiscord(() => mainStatusMessages[idx].edit({ embeds: [emb] }));
+                await queueDiscord(
+                  () => mainStatusMessages[idx].edit({ embeds: [emb] }),
+                  `retry edit main page ${idx + 1}`
+                );
               } else {
-                const sent = await enqueueDiscord(() => channel.send({ embeds: [emb] }));
+                const sent = await queueDiscord(
+                  () => channel.send({ embeds: [emb] }),
+                  `retry send main page ${idx + 1}`
+                );
                 // Ensure the array is extended appropriately
                 mainStatusMessages[idx] = sent;
               }
@@ -566,8 +623,14 @@ export async function startApiStatusReporting(channel: TextChannel) {
           for (const msgId of Array.from(mainRetryDelete)) {
             try {
               const cached = channel.messages.cache.get(msgId);
-              const msg = cached ?? (await channel.messages.fetch(msgId));
-              await enqueueDiscord(() => msg.delete());
+              const msg =
+                cached ??
+                (await withTimeout(
+                  channel.messages.fetch(msgId),
+                  DISCORD_OP_TIMEOUT_MS,
+                  `fetch (retry delete) main msg ${msgId}`
+                ));
+              await queueDiscord(() => msg.delete(), `retry delete main msg ${msgId}`);
               // Remove from local tracking array if present
               const pos = mainStatusMessages.findIndex((m) => m.id === msgId);
               if (pos !== -1) mainStatusMessages.splice(pos, 1);
