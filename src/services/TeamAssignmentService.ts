@@ -29,16 +29,14 @@ export function createRandomTeams(ballchasers: ReadonlyArray<PlayerInQueue>): Ar
         activeMatch.push({ id: p.id, team: Team.Blue });
         blueTeamCounter++;
       }
+    } else if (blueTeamCounter < sortedBallChaser.length / 2) {
+      blueTeamMmr += p.mmr;
+      activeMatch.push({ id: p.id, team: Team.Blue });
+      blueTeamCounter++;
     } else {
-      if (blueTeamCounter < sortedBallChaser.length / 2) {
-        blueTeamMmr += p.mmr;
-        activeMatch.push({ id: p.id, team: Team.Blue });
-        blueTeamCounter++;
-      } else {
-        orangeTeamMmr += p.mmr;
-        activeMatch.push({ id: p.id, team: Team.Orange });
-        orangeTeamCounter++;
-      }
+      orangeTeamMmr += p.mmr;
+      activeMatch.push({ id: p.id, team: Team.Orange });
+      orangeTeamCounter++;
     }
   });
 
@@ -63,9 +61,7 @@ export async function setCaptains(ballChasers: ReadonlyArray<PlayerInQueue>): Pr
     }),
   ]);
 
-  const updatedBallChasers = await QueueRepository.getAllBallChasersInQueue();
-
-  return updatedBallChasers;
+  return await QueueRepository.getAllBallChasersInQueue();
 }
 
 export async function bluePlayerChosen(chosenPlayer: string): Promise<ReadonlyArray<PlayerInQueue>> {
@@ -74,8 +70,7 @@ export async function bluePlayerChosen(chosenPlayer: string): Promise<ReadonlyAr
     team: Team.Blue,
   });
 
-  const ballPlayers = await QueueRepository.getAllBallChasersInQueue();
-  return ballPlayers;
+  return await QueueRepository.getAllBallChasersInQueue();
 }
 
 export async function orangePlayerChosen(chosenPlayers: string[]): Promise<void> {

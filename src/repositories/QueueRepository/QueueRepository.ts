@@ -7,6 +7,8 @@ import { Team } from "../../types/common";
 import { ButtonInteraction } from "discord.js";
 import { ButtonCustomID } from "../../utils/MessageHelper/CustomButtons";
 
+let twosEnabled = false;
+
 const playersMap = new Map<string, string>();
 interface CaptainsRandomVotes {
   captains: number;
@@ -58,6 +60,18 @@ export class QueueRepository {
 
   async resetTwosVoters(): Promise<void> {
     twosMap.clear();
+  }
+
+  getTwosEnabled(): boolean {
+    return twosEnabled;
+  }
+
+  setTwosEnabled(enabled: boolean): void {
+    twosEnabled = enabled;
+  }
+
+  resetTwosEnabled(): void {
+    twosEnabled = false;
   }
 
   async countCaptainsRandomVote(buttonInteraction: ButtonInteraction): Promise<CaptainsRandomVotes> {
@@ -141,6 +155,7 @@ export class QueueRepository {
     });
     this.resetCaptainsRandomVoters();
     this.resetTwosVoters();
+    this.resetTwosEnabled();
   }
 
   /**

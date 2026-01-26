@@ -425,7 +425,7 @@ export async function normCommand(
           console.log("Connected to voice channel.");
         });
 
-        const receiver = connection.receiver;
+        const { receiver } = connection;
 
         receiver.speaking.on("start", async (userId) => {
           if (receiver.subscriptions.has(userId) || busy) return;
@@ -486,7 +486,7 @@ export async function normCommand(
                     file: fs.createReadStream(outputPath),
                     model: "gpt-4o-transcribe",
                   });
-                  const text = transcription.text;
+                  const { text } = transcription;
 
                   console.info("Norm is thinking...");
 

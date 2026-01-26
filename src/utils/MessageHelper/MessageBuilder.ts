@@ -247,14 +247,12 @@ export default class MessageBuilder {
 
     if (firstPick) {
       playerChoices.setCustomId(MenuCustomID.BlueSelect).setPlaceholder(playerName + " choose a player");
-    } else {
-      if (!twos) {
-        playerChoices
-          .setCustomId(MenuCustomID.OrangeSelect)
-          .setPlaceholder(captain + " choose 2 players")
-          .setMinValues(2)
-          .setMaxValues(2);
-      }
+    } else if (!twos) {
+      playerChoices
+        .setCustomId(MenuCustomID.OrangeSelect)
+        .setPlaceholder(captain + " choose 2 players")
+        .setMinValues(2)
+        .setMaxValues(2);
     }
 
     playerChoices.addOptions(availablePlayers);

@@ -18,8 +18,7 @@ export function calculateProbabilityDecimal(teams: ActiveMatchTeams): TeamProbab
   const calcTeamProbabilityDecimal = (winnerMMR: number, loserMMR: number): number => {
     const difference = (loserMMR - winnerMMR) / 400;
     const power = Math.pow(10, difference) + 1;
-    const probabilityDecimal = 1 / power;
-    return probabilityDecimal;
+    return 1 / power;
   };
 
   return {

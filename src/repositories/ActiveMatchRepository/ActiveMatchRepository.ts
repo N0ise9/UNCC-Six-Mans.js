@@ -71,7 +71,7 @@ export class ActiveMatchRepository {
   }
 
   async getAllBrokenQueueVotesInActiveMatch(playerInMatchId: string): Promise<number> {
-    const allPlayersInMatch = await this.#ActiveMatch
+    return await this.#ActiveMatch
       .findUnique({
         select: {
           id: true,
@@ -88,8 +88,6 @@ export class ActiveMatchRepository {
           },
         });
       });
-
-    return allPlayersInMatch;
   }
 
   async getAllBrokenQueueVotersInActiveMatch(playerInMatchId: string): Promise<ActiveMatchTeams> {
@@ -193,8 +191,7 @@ export class ActiveMatchRepository {
     });
 
     if (playerInMatch) {
-      const player = this.#getPlayerInActiveMatchWithMmr(playerInMatch);
-      return player;
+      return this.#getPlayerInActiveMatchWithMmr(playerInMatch);
     } else {
       return null;
     }
