@@ -550,6 +550,8 @@ export async function startApiStatusReporting(channel: TextChannel) {
   let pendingForce: boolean | null = null;
   // Retry processor timer (2 minutes)
   let retryTimer: ReturnType<typeof setInterval> | null = null;
+  let sweepCursor = 0;
+  const MAX_CHECKS_PER_SWEEP = 850; // keep under 900 with slack
 
   const startRetryProcessor = () => {
     if (retryTimer) return;
@@ -920,8 +922,12 @@ export async function startApiStatusReporting(channel: TextChannel) {
     });
     const count = candidates.length;
     if (count === 0) return;
+    if (sweepCursor >= count) sweepCursor = 0;
+    const batch = candidates.slice(sweepCursor, sweepCursor + MAX_CHECKS_PER_SWEEP);
+    sweepCursor += batch.length;
+
     const windowMs = 15 * 60 * 1000;
-    const spacing = Math.max(1000, Math.floor(windowMs / count));
+    const spacing = Math.max(250, Math.floor(windowMs / batch.length));
     candidates.forEach((cfg, idx) => {
       const t = setTimeout(async () => {
         // Skip if this service moved to issue polling since scheduled
