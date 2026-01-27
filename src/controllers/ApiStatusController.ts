@@ -926,7 +926,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
     const batch = candidates.slice(sweepCursor, sweepCursor + MAX_CHECKS_PER_SWEEP);
     sweepCursor += batch.length;
 
-    const windowMs = 15 * 60 * 1000;
+    const windowMs = 30 * 60 * 1000;
     const spacing = Math.max(250, Math.floor(windowMs / batch.length));
     candidates.forEach((cfg, idx) => {
       const t = setTimeout(async () => {
@@ -951,7 +951,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
         scheduleNonIssueSweep();
         planNextNonIssueSweep();
       },
-      15 * 60 * 1000
+      30 * 60 * 1000
     );
   };
 
