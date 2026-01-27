@@ -548,6 +548,9 @@ export async function startApiStatusReporting(channel: TextChannel) {
   // Coalesced update control
   let updateInFlight = false;
   let pendingForce: boolean | null = null;
+  let pendingUpdate = false; // NEW: remembers non-force updates that happened during inFlight
+  let updateSoonTimer: ReturnType<typeof setTimeout> | null = null;
+  let updateSoonForce = false;
   // Retry processor timer (2 minutes)
   let retryTimer: ReturnType<typeof setInterval> | null = null;
   let sweepCursor = 0;
@@ -776,7 +779,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     heartbeatTimer = setInterval(async () => {
       try {
-        await requestUpdate(true);
+        requestUpdateSoon(true);
       } catch (e) {
         logWarn(`Heartbeat update failed: ${(e as Error).message}`);
       }
@@ -833,21 +836,45 @@ export async function startApiStatusReporting(channel: TextChannel) {
 
   const requestUpdate = async (force: boolean) => {
     if (updateInFlight) {
+      pendingUpdate = true; // NEW: remember that something changed
       pendingForce = (pendingForce ?? false) || force;
       return;
     }
+
     updateInFlight = true;
     try {
       await updateEmbedsIfNeeded(force);
     } finally {
-      const again = pendingForce;
+      const againForce = pendingForce === true;
+      const againAny = pendingUpdate;
+
       pendingForce = null;
+      pendingUpdate = false;
       updateInFlight = false;
-      // Only rerun immediately if a forced update was requested while we were busy.
-      if (again === true) {
-        await requestUpdate(true);
+
+      // If anything changed while we were updating, schedule one follow-up run
+      if (againForce || againAny) {
+        requestUpdateSoon(againForce); // coalesce follow-up too
       }
     }
+  };
+
+  const requestUpdateSoon = (force: boolean) => {
+    updateSoonForce = updateSoonForce || force;
+
+    if (updateSoonTimer) return;
+
+    updateSoonTimer = setTimeout(async () => {
+      const f = updateSoonForce;
+      updateSoonForce = false;
+      updateSoonTimer = null;
+
+      try {
+        await requestUpdate(f);
+      } catch (e) {
+        logWarn(`Debounced update failed: ${(e as Error).message}`);
+      }
+    }, 10_000); // 10s debounce window
   };
 
   const onServiceUpdated = async (newStatus: ServiceStatus, prev?: ServiceStatus) => {
@@ -899,7 +926,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
 
     // Update embeds only when there are issues or resolving previous ones, or when this service changed significantly
     if (changed) {
-      await requestUpdate(false);
+      requestUpdateSoon(false);
     }
   };
 
@@ -928,7 +955,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
 
     const windowMs = 30 * 60 * 1000;
     const spacing = Math.max(250, Math.floor(windowMs / batch.length));
-    candidates.forEach((cfg, idx) => {
+    batch.forEach((cfg, idx) => {
       const t = setTimeout(async () => {
         // Skip if this service moved to issue polling since scheduled
         if (issueIntervals.has(cfg.id)) return;
@@ -1043,4 +1070,13 @@ export async function startApiStatusReporting(channel: TextChannel) {
   }
 
   // All further checks are handled by staggered sweep timers and per-issue intervals
+  setInterval(() => {
+    const stale = [...statusCache.values()].filter((s) => Date.now() - +s.lastChecked > 45 * 60 * 1000).length;
+
+    logInfo(
+      `Watchdog: discordQ=${discordTaskQueue.length} ` +
+        `inFlight=${updateInFlight} pendingUpdate=${pendingUpdate} ` +
+        `pendingForce=${pendingForce} staleServices=${stale}`
+    );
+  }, 60_000);
 }
