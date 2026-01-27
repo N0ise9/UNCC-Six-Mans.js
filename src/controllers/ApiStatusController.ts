@@ -31,6 +31,23 @@ const mainRetryDelete = new Set<string>(); // messageId
 const incidentRetry = new Set<string>(); // serviceId (for create/edit failures)
 const incidentRetryDelete = new Map<string, string>(); // serviceId -> messageId (for delete failures)
 
+// ---- Sweep / polling metrics (for watchdog) ----
+let sweepPlannedTotal = 0; // total candidates at sweep start
+let sweepPlannedBatch = 0; // batch size at sweep start
+let sweepRemainingChecks = 0; // how many checks remain in this sweep batch
+let sweepGen = 0; // sweep generation counter
+let sweepWindowTimer: ReturnType<typeof setTimeout> | null = null;
+let newSweepScheduled = false;
+
+let checkedSinceWatchdog = 0; // checks completed since last watchdog tick
+let okSinceWatchdog = 0; // completed checks that are operational
+let issueSinceWatchdog = 0; // completed checks that are non-operational (excluding unknown)
+let unknownSinceWatchdog = 0; // completed checks that returned unknown
+let checkFailSinceWatchdog = 0; // completed checks that threw
+
+// Optional: last check timestamp (useful to detect total poll stalls)
+let lastCheckAt = 0;
+
 // Global Discord task queue to ensure we only post/edit/delete one embed per second
 type DiscordTask<T = unknown> = () => Promise<T>;
 const discordTaskQueue: DiscordTask[] = [];
@@ -541,7 +558,6 @@ export async function startApiStatusReporting(channel: TextChannel) {
   const statusCache = new Map<string, ServiceStatus>(); // serviceId -> last known status
   const issueIntervals = new Map<string, ReturnType<typeof setInterval>>(); // serviceId -> interval handle
   let nonIssueTimeouts: Array<ReturnType<typeof setTimeout>> = []; // scheduled one-offs over 15 minutes
-  let nonIssueSweepTimer: ReturnType<typeof setTimeout> | null = null; // timer to start next 15-min sweep
   // Heartbeat to ensure embeds refresh periodically; interval adapts based on whether issues exist
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let heartbeatMsCurrent: number | null = null;
@@ -554,7 +570,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
   // Retry processor timer (2 minutes)
   let retryTimer: ReturnType<typeof setInterval> | null = null;
   let sweepCursor = 0;
-  const MAX_CHECKS_PER_SWEEP = 850; // keep under 900 with slack
+  const MAX_CHECKS_PER_SWEEP = 1000; // keep under 900 with slack
 
   const startRetryProcessor = () => {
     if (retryTimer) return;
@@ -901,9 +917,20 @@ export async function startApiStatusReporting(channel: TextChannel) {
       const handle = setInterval(
         async () => {
           try {
+            logInfo(`IssuePoll start svc=${cfg.id}`);
             const updated = await checkSingleService(cfg);
+            logInfo(`IssuePoll done svc=${cfg.id} status=${updated.status}`);
+
+            // ---- metrics ----
+            checkedSinceWatchdog++;
+            lastCheckAt = Date.now();
+            if (updated.status === "operational") okSinceWatchdog++;
+            else if (updated.status === "unknown") unknownSinceWatchdog++;
+            else issueSinceWatchdog++;
+
             const before = statusCache.get(cfg.id);
             await onServiceUpdated(updated, before);
+
             // If resolved, stop interval
             if (updated.status === "operational" || updated.status === "unknown") {
               const h = issueIntervals.get(cfg.id);
@@ -911,6 +938,8 @@ export async function startApiStatusReporting(channel: TextChannel) {
               issueIntervals.delete(cfg.id);
             }
           } catch (e) {
+            checkFailSinceWatchdog++;
+            lastCheckAt = Date.now();
             logWarn(`Polling failed for ${cfg.id}: ${(e as Error).message}`);
           }
         },
@@ -920,6 +949,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
     }
     if (!isIssue && wasIssue) {
       const h = issueIntervals.get(cfg.id);
+      logInfo(`IssuePoll resolved svc=${cfg.id} stopping interval`);
       if (h) clearInterval(h);
       issueIntervals.delete(cfg.id);
     }
@@ -933,20 +963,36 @@ export async function startApiStatusReporting(channel: TextChannel) {
   const clearNonIssueTimeouts = () => {
     for (const t of nonIssueTimeouts) clearTimeout(t);
     nonIssueTimeouts = [];
+
+    if (sweepWindowTimer) clearTimeout(sweepWindowTimer);
+    sweepWindowTimer = null;
+
+    // Counters should reflect “nothing pending” now
+    sweepRemainingChecks = 0;
+    sweepPlannedBatch = 0;
+    // (optional) keep sweepPlannedTotal as “last known total candidates” or also reset it:
+    // sweepPlannedTotal = 0;
   };
 
   const scheduleNonIssueSweep = () => {
     clearNonIssueTimeouts();
-    // Build list of services to check that are not currently under issue polling
-    const candidates: ServiceConfig[] = Categories.flatMap((c) => c.services).filter((svc) => {
-      // Never directly poll group roots like "aws"; they are aggregates only
-      if (svc.isGroupRoot) return false;
+    sweepGen++;
+    const myGen = sweepGen;
 
-      if (issueIntervals.has(svc.id)) return false; // handled by 5-min polling
-      const st = statusCache.get(svc.id);
-      // include if unknown or operational (or not yet checked)
-      return !st || st.status === "operational" || st.status === "unknown";
-    });
+    if (sweepWindowTimer) clearTimeout(sweepWindowTimer);
+    sweepWindowTimer = null;
+    // Build list of services to check that are not currently under issue polling
+    const candidates: ServiceConfig[] = Categories.flatMap((c) => c.services)
+      .filter((svc) => {
+        // Never directly poll group roots like "aws"; they are aggregates only
+        if (svc.isGroupRoot) return false;
+
+        if (issueIntervals.has(svc.id)) return false; // handled by 5-min polling
+        const st = statusCache.get(svc.id);
+        // include if unknown or operational (or not yet checked)
+        return !st || st.status === "operational" || st.status === "unknown";
+      })
+      .sort((a, b) => a.id.localeCompare(b.id));
     const count = candidates.length;
     if (count === 0) return;
     if (sweepCursor >= count) sweepCursor = 0;
@@ -955,31 +1001,54 @@ export async function startApiStatusReporting(channel: TextChannel) {
 
     const windowMs = 30 * 60 * 1000;
     const spacing = Math.max(250, Math.floor(windowMs / batch.length));
+    sweepPlannedTotal = candidates.length;
+    sweepPlannedBatch = batch.length;
+    sweepRemainingChecks = batch.length;
+
+    logInfo(`Sweep: total=${candidates.length} batch=${batch.length} cursor=${sweepCursor} spacing=${spacing}ms`);
+
     batch.forEach((cfg, idx) => {
       const t = setTimeout(async () => {
-        // Skip if this service moved to issue polling since scheduled
-        if (issueIntervals.has(cfg.id)) return;
+        if (myGen !== sweepGen) return; // stale timeout from an older sweep
         try {
+          // If moved to issue polling, treat as "done" for this batch
+          if (issueIntervals.has(cfg.id)) {
+            logInfo(`SweepCheck skip svc=${cfg.id} (moved to issue polling)`);
+            return;
+          }
           const updated = await checkSingleService(cfg);
+          checkedSinceWatchdog++;
+          lastCheckAt = Date.now();
+          if (updated.status === "operational") okSinceWatchdog++;
+          else if (updated.status === "unknown") unknownSinceWatchdog++;
+          else issueSinceWatchdog++;
+
           const before = statusCache.get(cfg.id);
           await onServiceUpdated(updated, before);
         } catch (e) {
+          checkFailSinceWatchdog++;
+          lastCheckAt = Date.now();
           logWarn(`Sweep check failed for ${cfg.id}: ${(e as Error).message}`);
+        } finally {
+          sweepRemainingChecks = Math.max(0, sweepRemainingChecks - 1);
+
+          if (sweepRemainingChecks === 0 && !newSweepScheduled) {
+            newSweepScheduled = true;
+            logInfo("Sweep batch complete — scheduling next batch");
+            setTimeout(() => {
+              newSweepScheduled = false;
+              scheduleNonIssueSweep();
+            }, 1000);
+          }
         }
       }, idx * spacing);
+
       nonIssueTimeouts.push(t);
     });
-  };
-
-  const planNextNonIssueSweep = () => {
-    if (nonIssueSweepTimer) clearTimeout(nonIssueSweepTimer);
-    nonIssueSweepTimer = setTimeout(
-      () => {
-        scheduleNonIssueSweep();
-        planNextNonIssueSweep();
-      },
-      30 * 60 * 1000
-    );
+    sweepWindowTimer = setTimeout(() => {
+      if (myGen !== sweepGen) return;
+      logInfo(`Sweep window complete: cursor=${sweepCursor} total=${count} remaining=${sweepRemainingChecks}`);
+    }, windowMs + 1000);
   };
 
   // Initial run
@@ -1038,14 +1107,25 @@ export async function startApiStatusReporting(channel: TextChannel) {
               async () => {
                 try {
                   const updated = await checkSingleService(cfg);
+
+                  // ---- metrics ----
+                  checkedSinceWatchdog++;
+                  lastCheckAt = Date.now();
+                  if (updated.status === "operational") okSinceWatchdog++;
+                  else if (updated.status === "unknown") unknownSinceWatchdog++;
+                  else issueSinceWatchdog++;
+
                   const before = statusCache.get(cfg.id);
                   await onServiceUpdated(updated, before);
+
                   if (updated.status === "operational" || updated.status === "unknown") {
                     const h = issueIntervals.get(cfg.id);
                     if (h) clearInterval(h);
                     issueIntervals.delete(cfg.id);
                   }
                 } catch (e) {
+                  checkFailSinceWatchdog++;
+                  lastCheckAt = Date.now();
                   logWarn(`Polling failed for ${cfg.id}: ${(e as Error).message}`);
                 }
               },
@@ -1059,7 +1139,6 @@ export async function startApiStatusReporting(channel: TextChannel) {
 
     // Stagger checks for non-issue services over 15 minutes
     scheduleNonIssueSweep();
-    planNextNonIssueSweep();
 
     // Start heartbeat with appropriate cadence based on current issue state
     ensureHeartbeat(lastHadIssues ? 5 * 60 * 1000 : 30 * 60 * 1000);
@@ -1071,12 +1150,40 @@ export async function startApiStatusReporting(channel: TextChannel) {
 
   // All further checks are handled by staggered sweep timers and per-issue intervals
   setInterval(() => {
-    const stale = [...statusCache.values()].filter((s) => Date.now() - +s.lastChecked > 45 * 60 * 1000).length;
+    const stale = [...statusCache.values()].filter((s) => {
+      const t =
+        s.lastChecked instanceof Date
+          ? s.lastChecked.getTime()
+          : typeof s.lastChecked === "string"
+            ? new Date(s.lastChecked).getTime()
+            : typeof s.lastChecked === "number"
+              ? s.lastChecked
+              : NaN;
+      return !Number.isFinite(t) || Date.now() - t > 60 * 60 * 1000;
+    }).length;
+
+    const leftThisSweepBatch = sweepRemainingChecks; // remaining checks to attempt
+    const checked = checkedSinceWatchdog;
+    const ok = okSinceWatchdog;
+    const issues = issueSinceWatchdog;
+    const unknown = unknownSinceWatchdog;
+    const fails = checkFailSinceWatchdog;
+
+    // Reset per-minute counters after logging
+    checkedSinceWatchdog = 0;
+    okSinceWatchdog = 0;
+    issueSinceWatchdog = 0;
+    unknownSinceWatchdog = 0;
+    checkFailSinceWatchdog = 0;
+
+    const lagSec = lastCheckAt ? Math.round((Date.now() - lastCheckAt) / 1000) : -1;
 
     logInfo(
-      `Watchdog: discordQ=${discordTaskQueue.length} ` +
-        `inFlight=${updateInFlight} pendingUpdate=${pendingUpdate} ` +
-        `pendingForce=${pendingForce} staleServices=${stale}`
+      "Watchdog: " +
+        `discordQ=${discordTaskQueue.length} inFlight=${updateInFlight} pendingUpdate=${pendingUpdate} pendingForce=${pendingForce} ` +
+        `checks/min=${checked} ok=${ok} issues=${issues} unknown=${unknown} fails=${fails} ` +
+        `sweepTotal=${sweepPlannedTotal} sweepBatch=${sweepPlannedBatch} leftInBatch=${leftThisSweepBatch} ` +
+        `staleServices=${stale} lastCheckLag=${lagSec}s`
     );
   }, 60_000);
 }
