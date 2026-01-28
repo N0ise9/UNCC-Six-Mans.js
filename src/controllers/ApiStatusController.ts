@@ -1149,41 +1149,44 @@ export async function startApiStatusReporting(channel: TextChannel) {
   }
 
   // All further checks are handled by staggered sweep timers and per-issue intervals
-  setInterval(() => {
-    const stale = [...statusCache.values()].filter((s) => {
-      const t =
-        s.lastChecked instanceof Date
-          ? s.lastChecked.getTime()
-          : typeof s.lastChecked === "string"
-            ? new Date(s.lastChecked).getTime()
-            : typeof s.lastChecked === "number"
-              ? s.lastChecked
-              : NaN;
-      return !Number.isFinite(t) || Date.now() - t > 60 * 60 * 1000;
-    }).length;
+  setInterval(
+    () => {
+      const stale = [...statusCache.values()].filter((s) => {
+        const t =
+          s.lastChecked instanceof Date
+            ? s.lastChecked.getTime()
+            : typeof s.lastChecked === "string"
+              ? new Date(s.lastChecked).getTime()
+              : typeof s.lastChecked === "number"
+                ? s.lastChecked
+                : NaN;
+        return !Number.isFinite(t) || Date.now() - t > 60 * 60 * 1000;
+      }).length;
 
-    const leftThisSweepBatch = sweepRemainingChecks; // remaining checks to attempt
-    const checked = checkedSinceWatchdog;
-    const ok = okSinceWatchdog;
-    const issues = issueSinceWatchdog;
-    const unknown = unknownSinceWatchdog;
-    const fails = checkFailSinceWatchdog;
+      const leftThisSweepBatch = sweepRemainingChecks; // remaining checks to attempt
+      const checked = checkedSinceWatchdog;
+      const ok = okSinceWatchdog;
+      const issues = issueSinceWatchdog;
+      const unknown = unknownSinceWatchdog;
+      const fails = checkFailSinceWatchdog;
 
-    // Reset per-minute counters after logging
-    checkedSinceWatchdog = 0;
-    okSinceWatchdog = 0;
-    issueSinceWatchdog = 0;
-    unknownSinceWatchdog = 0;
-    checkFailSinceWatchdog = 0;
+      // Reset 5-minute counters after logging
+      checkedSinceWatchdog = 0;
+      okSinceWatchdog = 0;
+      issueSinceWatchdog = 0;
+      unknownSinceWatchdog = 0;
+      checkFailSinceWatchdog = 0;
 
-    const lagSec = lastCheckAt ? Math.round((Date.now() - lastCheckAt) / 1000) : -1;
+      const lagSec = lastCheckAt ? Math.round((Date.now() - lastCheckAt) / 1000) : -1;
 
-    logInfo(
-      "Watchdog: " +
-        `discordQ=${discordTaskQueue.length} inFlight=${updateInFlight} pendingUpdate=${pendingUpdate} pendingForce=${pendingForce} ` +
-        `checks/min=${checked} ok=${ok} issues=${issues} unknown=${unknown} fails=${fails} ` +
-        `sweepTotal=${sweepPlannedTotal} sweepBatch=${sweepPlannedBatch} leftInBatch=${leftThisSweepBatch} ` +
-        `staleServices=${stale} lastCheckLag=${lagSec}s`
-    );
-  }, 60_000);
+      logInfo(
+        "Watchdog: " +
+          `discordQ=${discordTaskQueue.length} inFlight=${updateInFlight} pendingUpdate=${pendingUpdate} pendingForce=${pendingForce} ` +
+          `checks/min=${checked} ok=${ok} issues=${issues} unknown=${unknown} fails=${fails} ` +
+          `sweepTotal=${sweepPlannedTotal} sweepBatch=${sweepPlannedBatch} leftInBatch=${leftThisSweepBatch} ` +
+          `staleServices=${stale} lastCheckLag=${lagSec}s`
+      );
+    },
+    60 * 5 * 1000
+  );
 }
