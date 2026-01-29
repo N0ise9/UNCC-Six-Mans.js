@@ -1182,7 +1182,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
       logInfo(
         "Watchdog: " +
           `discordQ=${discordTaskQueue.length} inFlight=${updateInFlight} pendingUpdate=${pendingUpdate} pendingForce=${pendingForce} ` +
-          `checks/min=${checked} ok=${ok} issues=${issues} unknown=${unknown} fails=${fails} ` +
+          `checks/5min=${checked} ok=${ok} issues=${issues} unknown=${unknown} fails=${fails} ` +
           `sweepTotal=${sweepPlannedTotal} sweepBatch=${sweepPlannedBatch} leftInBatch=${leftThisSweepBatch} ` +
           `staleServices=${stale} lastCheckLag=${lagSec}s`
       );
