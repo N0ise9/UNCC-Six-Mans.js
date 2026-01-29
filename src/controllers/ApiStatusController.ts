@@ -30,6 +30,8 @@ const mainRetryUpsert = new Map<number, MessageEmbed>(); // pageIndex -> embed
 const mainRetryDelete = new Set<string>(); // messageId
 const incidentRetry = new Set<string>(); // serviceId (for create/edit failures)
 const incidentRetryDelete = new Map<string, string>(); // serviceId -> messageId (for delete failures)
+let activeReportingStop: (() => void) | null = null;
+let activeReportingRunId = 1;
 
 // ---- Sweep / polling metrics (for watchdog) ----
 let sweepPlannedTotal = 0; // total candidates at sweep start
@@ -553,6 +555,16 @@ async function upsertMainStatusEmbeds(channel: TextChannel, embeds: MessageEmbed
 }
 
 export async function startApiStatusReporting(channel: TextChannel) {
+  // If already running, stop previous polling sweep before starting a new one when this is called.
+  if (activeReportingStop) {
+    logInfo("[APIStatus] Received new start request; Restarting polling sweep...");
+    activeReportingRunId++;
+    activeReportingStop();
+    activeReportingStop = null;
+  }
+  const runId = activeReportingRunId;
+  logInfo(`[APIStatus] Starting reporting run #${runId}`);
+
   // State for adaptive, staggered polling
   let lastHadIssues = false;
   const statusCache = new Map<string, ServiceStatus>(); // serviceId -> last known status
@@ -561,6 +573,9 @@ export async function startApiStatusReporting(channel: TextChannel) {
   // Heartbeat to ensure embeds refresh periodically; interval adapts based on whether issues exist
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let heartbeatMsCurrent: number | null = null;
+  let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  let nextSweepTimer: ReturnType<typeof setTimeout> | null = null;
+  let stopped = false;
   // Coalesced update control
   let updateInFlight = false;
   let pendingForce: boolean | null = null;
@@ -570,7 +585,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
   // Retry processor timer (2 minutes)
   let retryTimer: ReturnType<typeof setInterval> | null = null;
   let sweepCursor = 0;
-  const MAX_CHECKS_PER_SWEEP = 1000; // keep under 900 with slack
+  const MAX_CHECKS_PER_SWEEP = 1000; // # to check per sweep window (aid to avoid throttling)
 
   const startRetryProcessor = () => {
     if (retryTimer) return;
@@ -1009,6 +1024,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
 
     batch.forEach((cfg, idx) => {
       const t = setTimeout(async () => {
+        if (stopped) return;
         if (myGen !== sweepGen) return; // stale timeout from an older sweep
         try {
           // If moved to issue polling, treat as "done" for this batch
@@ -1035,7 +1051,8 @@ export async function startApiStatusReporting(channel: TextChannel) {
           if (sweepRemainingChecks === 0 && !newSweepScheduled) {
             newSweepScheduled = true;
             logInfo("Sweep batch complete — scheduling next batch");
-            setTimeout(() => {
+            nextSweepTimer = setTimeout(() => {
+              if (stopped) return;
               newSweepScheduled = false;
               scheduleNonIssueSweep();
             }, 1000);
@@ -1149,8 +1166,9 @@ export async function startApiStatusReporting(channel: TextChannel) {
   }
 
   // All further checks are handled by staggered sweep timers and per-issue intervals
-  setInterval(
+  watchdogTimer = setInterval(
     () => {
+      if (stopped) return;
       const stale = [...statusCache.values()].filter((s) => {
         const t =
           s.lastChecked instanceof Date
@@ -1189,4 +1207,54 @@ export async function startApiStatusReporting(channel: TextChannel) {
     },
     60 * 5 * 1000
   );
+  activeReportingStop = () => {
+    stopped = true;
+    // Invalidate any already-scheduled sweep callbacks
+    sweepGen++;
+    // Clear the staggered non-issue sweep timers + sweep window timer
+    clearNonIssueTimeouts();
+    // Clear the next sweep timer
+    if (nextSweepTimer) {
+      clearTimeout(nextSweepTimer);
+      nextSweepTimer = null;
+    }
+    newSweepScheduled = false;
+
+    // Clear Heartbeat
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    heartbeatMsCurrent = null;
+
+    // Clear Retry Processor
+    if (retryTimer) {
+      clearInterval(retryTimer);
+      retryTimer = null;
+    }
+
+    // Clear Watchdog logger
+    if (watchdogTimer) {
+      clearInterval(watchdogTimer);
+      watchdogTimer = null;
+    }
+
+    // Clear Per-Service issue polling intervals
+    for (const h of issueIntervals.values()) clearInterval(h);
+    issueIntervals.clear();
+
+    // Clear any pending debounced update timer
+    if (updateSoonTimer) {
+      clearTimeout(updateSoonTimer);
+      updateSoonTimer = null;
+    }
+    updateSoonForce = false;
+
+    // Reset coalescing flags
+    updateInFlight = false;
+    pendingForce = null;
+    pendingUpdate = false;
+
+    logInfo("[APIStatus] Reporting stopped, all timers cleared.");
+  };
 }
