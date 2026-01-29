@@ -558,12 +558,11 @@ export async function startApiStatusReporting(channel: TextChannel) {
   // If already running, stop previous polling sweep before starting a new one when this is called.
   if (activeReportingStop) {
     logInfo("[APIStatus] Received new start request; Restarting polling sweep...");
-    activeReportingRunId++;
     activeReportingStop();
     activeReportingStop = null;
   }
   const runId = activeReportingRunId;
-  logInfo(`[APIStatus] Starting reporting run #${runId}`);
+  logInfo(`[APIStatus] Starting.. RunID=${runId} PID=${process.pid}`);
 
   // State for adaptive, staggered polling
   let lastHadIssues = false;
@@ -576,6 +575,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
   let watchdogTimer: ReturnType<typeof setInterval> | null = null;
   let nextSweepTimer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
+  const isStale = () => stopped || runId !== activeReportingRunId;
   // Coalesced update control
   let updateInFlight = false;
   let pendingForce: boolean | null = null;
@@ -591,6 +591,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
     if (retryTimer) return;
     retryTimer = setInterval(
       async () => {
+        if (isStale()) return;
         try {
           // Process incident retries one-by-one so we respect the global 1/sec queue
           for (const sid of Array.from(incidentRetry)) {
@@ -809,6 +810,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
     if (heartbeatMsCurrent === desiredMs && heartbeatTimer) return;
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     heartbeatTimer = setInterval(async () => {
+      if (isStale()) return;
       try {
         requestUpdateSoon(true);
       } catch (e) {
@@ -884,7 +886,9 @@ export async function startApiStatusReporting(channel: TextChannel) {
       updateInFlight = false;
 
       // If anything changed while we were updating, schedule one follow-up run
-      if (againForce || againAny) {
+      // BUT if this was a forced refresh (heartbeat), don't immediately reschedule
+      // just because background sweep checks landed mid-upsert
+      if (againForce || (!force && againAny)) {
         requestUpdateSoon(againForce); // coalesce follow-up too
       }
     }
@@ -931,9 +935,11 @@ export async function startApiStatusReporting(channel: TextChannel) {
       // start 5-min polling for this service
       const handle = setInterval(
         async () => {
+          if (isStale()) return;
           try {
-            logInfo(`IssuePoll start svc=${cfg.id}`);
+            logInfo(`IssuePoll Start: RunID=${runId} PID=${process.pid} SVC=${cfg.id}`);
             const updated = await checkSingleService(cfg);
+            if (isStale()) return;
             logInfo(`IssuePoll done svc=${cfg.id} status=${updated.status}`);
 
             // ---- metrics ----
@@ -970,7 +976,8 @@ export async function startApiStatusReporting(channel: TextChannel) {
     }
 
     // Update embeds only when there are issues or resolving previous ones, or when this service changed significantly
-    if (changed) {
+    const affectsDisplay = isIssue || wasIssue || lastHadIssues;
+    if (changed && affectsDisplay) {
       requestUpdateSoon(false);
     }
   };
@@ -1024,8 +1031,11 @@ export async function startApiStatusReporting(channel: TextChannel) {
 
     batch.forEach((cfg, idx) => {
       const t = setTimeout(async () => {
+        if (isStale()) return;
         if (stopped) return;
         if (myGen !== sweepGen) return; // stale timeout from an older sweep
+        logInfo(`SweepCheck Start: RunID=${runId} PID=${process.pid} SVC=${cfg.id}`);
+
         try {
           // If moved to issue polling, treat as "done" for this batch
           if (issueIntervals.has(cfg.id)) {
@@ -1033,6 +1043,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
             return;
           }
           const updated = await checkSingleService(cfg);
+          if (isStale()) return;
           checkedSinceWatchdog++;
           lastCheckAt = Date.now();
           if (updated.status === "operational") okSinceWatchdog++;
@@ -1052,6 +1063,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
             newSweepScheduled = true;
             logInfo("Sweep batch complete — scheduling next batch");
             nextSweepTimer = setTimeout(() => {
+              if (isStale()) return;
               if (stopped) return;
               newSweepScheduled = false;
               scheduleNonIssueSweep();
@@ -1122,8 +1134,10 @@ export async function startApiStatusReporting(channel: TextChannel) {
           if (cfg && !cfg.isGroupRoot && !issueIntervals.has(cfg.id)) {
             const handle = setInterval(
               async () => {
+                if (isStale()) return;
                 try {
                   const updated = await checkSingleService(cfg);
+                  if (isStale()) return;
 
                   // ---- metrics ----
                   checkedSinceWatchdog++;
@@ -1168,6 +1182,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
   // All further checks are handled by staggered sweep timers and per-issue intervals
   watchdogTimer = setInterval(
     () => {
+      if (isStale()) return;
       if (stopped) return;
       const stale = [...statusCache.values()].filter((s) => {
         const t =
@@ -1208,6 +1223,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
     60 * 5 * 1000
   );
   activeReportingStop = () => {
+    activeReportingRunId++;
     stopped = true;
     // Invalidate any already-scheduled sweep callbacks
     sweepGen++;
@@ -1257,4 +1273,11 @@ export async function startApiStatusReporting(channel: TextChannel) {
 
     logInfo("[APIStatus] Reporting stopped, all timers cleared.");
   };
+}
+
+export function stopApiStatusReporting() {
+  if (activeReportingStop) {
+    activeReportingStop();
+    activeReportingStop = null;
+  }
 }
