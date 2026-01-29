@@ -430,7 +430,7 @@ async function upsertIncidentEmbeds(
             );
             // success: clear any pending retry for this service
             incidentRetry.delete(s.id);
-            logInfo(`Incident edit: ${s.id} (${s.name}) msg=${existing.messageId}`);
+            logInfo(`Incident edit: ${s.id} (${s.name}) PID=${process.pid}`);
           } catch (e) {
             logWarn(`Incident edit failed: ${s.id} (${s.name}) msg=${existing?.messageId} err=${(e as Error).message}`);
             // enqueue retry for this service
@@ -443,7 +443,7 @@ async function upsertIncidentEmbeds(
               );
               incidentMessages.set(s.id, { messageId: newMsg.id, serviceId: s.id });
               incidentRetry.delete(s.id);
-              logInfo(`Incident create (after edit fail): ${s.id} (${s.name}) msg=${newMsg.id}`);
+              logInfo(`Incident create (after edit fail): ${s.id} (${s.name}) PID=${process.pid}`);
             } catch (err) {
               allOk = false;
               logWarn(`Incident recreate failed: ${s.id} (${s.name}) err=${(err as Error).message}`);
@@ -458,7 +458,7 @@ async function upsertIncidentEmbeds(
             );
             incidentMessages.set(s.id, { messageId: newMsg.id, serviceId: s.id });
             incidentRetry.delete(s.id);
-            logInfo(`Incident create: ${s.id} (${s.name}) msg=${newMsg.id}`);
+            logInfo(`Incident create: ${s.id} (${s.name}) PID=${process.pid}`);
           } catch (e) {
             allOk = false;
             logWarn(`Incident create failed: ${s.id} (${s.name}) err=${(e as Error).message}`);
@@ -478,7 +478,7 @@ async function upsertIncidentEmbeds(
             ));
           await queueDiscord(() => msg.delete(), `delete incident ${existing.messageId}`);
           incidentRetryDelete.delete(s.id);
-          logInfo(`Incident delete: ${s.id} (${s.name}) msg=${existing.messageId}`);
+          logInfo(`Incident delete: ${s.id} (${s.name}) PID=${process.pid}`);
         } catch (e) {
           logWarn(`Incident delete failed: ${s.id} (${s.name}) msg=${existing.messageId} err=${(e as Error).message}`);
           allOk = false;
@@ -504,14 +504,14 @@ async function upsertMainStatusEmbeds(channel: TextChannel, embeds: MessageEmbed
     try {
       await queueDiscord(() => current[i].edit({ embeds: [embeds[i]] }), `edit main page ${i + 1}`);
       mainRetryUpsert.delete(i);
-      logInfo(`Main edit: page#${i + 1}`);
+      logInfo(`Main edit: page#${i + 1} PID=${process.pid}`);
     } catch (err) {
       logWarn(`Main edit failed: page#${i + 1} err=${(err as Error).message}`);
       try {
         const sent = await queueDiscord(() => channel.send({ embeds: [embeds[i]] }), `send main page ${i + 1}`);
         current[i] = sent;
         mainRetryUpsert.delete(i);
-        logInfo(`Main create (after edit fail): page#${i + 1} msg=${sent.id}`);
+        logInfo(`Main create (after edit fail): page#${i + 1} PID=${process.pid}`);
       } catch (e) {
         logWarn(`Main create failed: page#${i + 1} err=${(e as Error).message}`);
         allOk = false;
@@ -526,7 +526,7 @@ async function upsertMainStatusEmbeds(channel: TextChannel, embeds: MessageEmbed
       try {
         await queueDiscord(() => current[i].delete(), `delete main page ${i + 1}`);
         mainRetryDelete.delete(current[i].id);
-        logInfo(`Main delete: page#${i + 1}`);
+        logInfo(`Main delete: page#${i + 1} PID=${process.pid}`);
       } catch (e) {
         logWarn(`Main delete failed: page#${i + 1} err=${(e as Error).message}`);
         allOk = false;
@@ -543,7 +543,7 @@ async function upsertMainStatusEmbeds(channel: TextChannel, embeds: MessageEmbed
         const sent = await queueDiscord(() => channel.send({ embeds: [embeds[i]] }), `send main page ${i + 1}`);
         mainStatusMessages.push(sent);
         mainRetryUpsert.delete(i);
-        logInfo(`Main create: page#${i + 1} msg=${sent.id}`);
+        logInfo(`Main create: page#${i + 1} PID=${process.pid}`);
       } catch (e) {
         logWarn(`Main create failed: page#${i + 1} err=${(e as Error).message}`);
         allOk = false;
@@ -940,7 +940,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
             logInfo(`IssuePoll Start: RunID=${runId} PID=${process.pid} SVC=${cfg.id}`);
             const updated = await checkSingleService(cfg);
             if (isStale()) return;
-            logInfo(`IssuePoll done svc=${cfg.id} status=${updated.status}`);
+            logInfo(`IssuePoll done SVC=${cfg.id} status=${updated.status}`);
 
             // ---- metrics ----
             checkedSinceWatchdog++;
@@ -970,7 +970,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
     }
     if (!isIssue && wasIssue) {
       const h = issueIntervals.get(cfg.id);
-      logInfo(`IssuePoll resolved svc=${cfg.id} stopping interval`);
+      logInfo(`IssuePoll resolved SVC=${cfg.id} stopping interval`);
       if (h) clearInterval(h);
       issueIntervals.delete(cfg.id);
     }
@@ -1028,13 +1028,13 @@ export async function startApiStatusReporting(channel: TextChannel) {
     sweepRemainingChecks = batch.length;
 
     logInfo(`Sweep: total=${candidates.length} batch=${batch.length} cursor=${sweepCursor} spacing=${spacing}ms`);
+    logInfo(`SweepCheck Start: RunID=${runId} PID=${process.pid}`);
 
     batch.forEach((cfg, idx) => {
       const t = setTimeout(async () => {
         if (isStale()) return;
         if (stopped) return;
         if (myGen !== sweepGen) return; // stale timeout from an older sweep
-        logInfo(`SweepCheck Start: RunID=${runId} PID=${process.pid} SVC=${cfg.id}`);
 
         try {
           // If moved to issue polling, treat as "done" for this batch
