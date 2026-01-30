@@ -1217,7 +1217,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
           `discordQ=${discordTaskQueue.length} inFlight=${updateInFlight} pendingUpdate=${pendingUpdate} pendingForce=${pendingForce} ` +
           `checks/5min=${checked} ok=${ok} issues=${issues} unknown=${unknown} fails=${fails} ` +
           `sweepTotal=${sweepPlannedTotal} sweepBatch=${sweepPlannedBatch} leftInBatch=${leftThisSweepBatch} ` +
-          `staleServices=${stale} lastCheckLag=${lagSec}s`
+          `staleServices=${stale} lastCheckLag=${lagSec}s RunID=${runId} PID=${process.pid}`
       );
     },
     60 * 5 * 1000
