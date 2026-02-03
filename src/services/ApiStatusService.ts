@@ -1,3 +1,4 @@
+/* eslint-disable sort-keys */
 import { XMLParser } from "fast-xml-parser";
 
 export type StatusLevel =
@@ -59,6 +60,53 @@ async function fetchWithTimeout(url: string, ms = 15000): Promise<Response> {
   } finally {
     clearTimeout(id);
   }
+}
+
+// Decode common HTML entities and strip HTML tags to plain text for Discord embeds
+function decodeHtmlEntities(text: string): string {
+  if (!text) return text;
+  let result = text;
+  const map: Record<string, string> = {
+    "&amp;": "&",
+    "&lt;": "<",
+    "&gt;": ">",
+    // eslint-disable-next-line quotes
+    "&quot;": '"',
+    "&#39;": "'",
+    "&apos;": "'",
+    "&nbsp;": " ",
+  };
+  for (const [k, v] of Object.entries(map)) {
+    result = result.replace(new RegExp(k, "g"), v);
+  }
+  // numeric entities
+  result = result.replace(/&#(\d+);/g, (_, d: string) => String.fromCharCode(parseInt(d, 10)));
+  result = result.replace(/&#x([0-9a-fA-F]+);/g, (_, h: string) => String.fromCharCode(parseInt(h, 16)));
+  return result;
+}
+
+function htmlToText(html: string): string {
+  if (!html) return "";
+  // Normalize newlines first
+  let s = html.replace(/\r\n?|\r/g, "\n");
+  // Line break style tags -> newlines
+  s = s.replace(/<br\s*\/?\s*>/gi, "\n");
+  s = s.replace(/<\/(p|div|h[1-6])\s*>/gi, "\n");
+  // Start of blocks -> nothing
+  s = s.replace(/<(p|div|h[1-6])[^>]*>/gi, "");
+  // Lists -> bullets
+  s = s.replace(/<li[^>]*>/gi, "• ");
+  s = s.replace(/<\/li\s*>/gi, "\n");
+  s = s.replace(/<\/?(ul|ol)[^>]*>/gi, "");
+  // Remove all remaining tags
+  s = s.replace(/<[^>]+>/g, "");
+  // Decode entities
+  s = decodeHtmlEntities(s);
+  // Collapse excessive whitespace/newlines
+  s = s.replace(/[\t ]+/g, " ");
+  s = s.replace(/\n{3,}/g, "\n\n");
+  s = s.replace(/ *\n */g, "\n");
+  return s.trim();
 }
 
 function statuspageToLevel(indicator?: string, overall?: string): StatusLevel {
@@ -128,8 +176,12 @@ async function fetchStatuspage(service: ServiceConfig): Promise<ServiceStatus> {
         created_at: i.created_at,
         id: i.id,
         impact: i.impact,
-        incident_updates: (i.incident_updates || []).map((u) => ({ body: u.body, created_at: u.created_at })),
-        name: i.name,
+        // Many providers return HTML in update bodies; convert to safe plain text
+        incident_updates: (i.incident_updates || []).map((u) => ({
+          body: htmlToText(u.body),
+          created_at: u.created_at,
+        })),
+        name: htmlToText(i.name),
         shortlink: i.shortlink,
         status: i.status,
       }));
@@ -466,14 +518,14 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
     for (const e of entries.slice(0, 200)) {
       const tsStr = (e.updated || e.published || e.pubDate || "").toString();
       const ts = tsStr ? Date.parse(tsStr) : NaN;
-      const title = (e.title || "").toString();
+      const title = htmlToText((e.title || "").toString());
       const bodyRaw =
         typeof e.summary === "string"
           ? e.summary
           : typeof e.content === "string"
             ? e.content
             : ((e as Record<string, unknown> | undefined)?.["description"] as string | undefined) || "";
-      const body = (bodyRaw || title).toString();
+      const body = htmlToText((bodyRaw || title).toString());
       // Try to capture a link for this entry if present
       let link: string | undefined;
       if (typeof e.link === "string") link = e.link;
@@ -587,13 +639,13 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
     let feedTitle = "";
     if (isAtom(parsed)) {
       const feedObj = parsed.feed as { title?: string; entry?: unknown | unknown[] };
-      feedTitle = (feedObj.title || "").toString();
+      feedTitle = htmlToText((feedObj.title || "").toString());
       const atomEntries = Array.isArray(feedObj.entry) ? feedObj.entry : feedObj.entry ? [feedObj.entry] : [];
       for (const e of atomEntries) entries.push(e as FeedEntry);
     } else if (isRss(parsed)) {
       const { channel } = parsed.rss as { channel?: { title?: string; item?: unknown | unknown[] } };
       if (channel) {
-        feedTitle = (channel.title || "").toString();
+        feedTitle = htmlToText((channel.title || "").toString());
         const items = Array.isArray(channel.item) ? channel.item : channel.item ? [channel.item] : [];
         for (const i of items) entries.push(i as FeedEntry);
       }
@@ -603,7 +655,7 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
     const now = Date.now();
     const updates: IncidentUpdateInfo[] = [];
     let topStatus: StatusLevel = "operational";
-    let incidentName = entries[0]?.title || feedTitle || service.name;
+    let incidentName = htmlToText((entries[0]?.title || feedTitle || service.name).toString());
     let shortlink: string | undefined;
     let latestNonOperationalTitle2: string | undefined;
     let latestNonOperationalLink2: string | undefined;
@@ -614,14 +666,14 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
     for (const e of entries.slice(0, 20)) {
       const tsStr = (e.updated || e.published || e.pubDate || "").toString();
       const ts = tsStr ? Date.parse(tsStr) : NaN;
-      const title = (e.title || "").toString();
+      const title = htmlToText((e.title || "").toString());
       const bodyRaw =
         typeof e.summary === "string"
           ? e.summary
           : typeof e.content === "string"
             ? e.content
             : ((e as Record<string, unknown> | undefined)?.["description"] as string | undefined) || "";
-      const body = (bodyRaw || title).toString();
+      const body = htmlToText((bodyRaw || title).toString());
       let link: string | undefined;
       if (typeof e.link === "string") {
         link = e.link;
