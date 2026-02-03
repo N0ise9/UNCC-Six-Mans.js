@@ -1363,10 +1363,10 @@ export const Categories: CategoryConfig[] = [
         type: "statuspage",
       },
       {
-        apiUrl: "https://status.front.com/api/v2/summary.json",
+        apiUrl: "https://www.frontstatus.com/api/v2/summary.json",
         id: "front",
         name: "Front",
-        pageUrl: "https://status.front.com/",
+        pageUrl: "https://www.frontstatus.com/",
         type: "statuspage",
       },
       {
@@ -1546,17 +1546,17 @@ export const Categories: CategoryConfig[] = [
         type: "statuspage",
       },
       {
-        apiUrl: "https://status-ovhcloud.com/api/v2/summary.json",
+        apiUrl: "https://www.status-ovhcloud.com/api/v2/summary.json",
         id: "ovhcloud",
         name: "OVHcloud",
-        pageUrl: "https://status-ovhcloud.com/",
+        pageUrl: "https://www.status-ovhcloud.com/",
         type: "statuspage",
       },
       {
-        apiUrl: "https://hostinger-status.com/api/v2/summary.json",
+        apiUrl: "https://statuspage.hostinger.com/api/v2/summary.json",
         id: "hostinger",
         name: "Hostinger",
-        pageUrl: "https://hostinger-status.com/",
+        pageUrl: "https://statuspage.hostinger.com/",
         type: "statuspage",
       },
       {

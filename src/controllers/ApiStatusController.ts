@@ -344,12 +344,34 @@ function buildIncidentEmbed(service: ServiceStatus) {
   }
 
   const active = incidents[0];
-  const updateLines = (active.incident_updates || []).map(
+  // Build update lines, ensuring no single line can exceed Discord's per-field 1024 char limit
+  const rawUpdateLines = (active.incident_updates || []).map(
     (u) => `• [<t:${Math.floor(new Date(u.created_at).getTime() / 1000)}:R>] ${u.body}`
   );
 
   // Build fields with values <= 1024 chars each
   const MAX_FIELD_VALUE = 1024;
+  // Some providers post extremely verbose updates; split any single line that exceeds field value limits
+  const expandLongLines = (lines: string[]): string[] => {
+    const out: string[] = [];
+    // Keep a safety margin so we don't accidentally exceed the limit when joining
+    const pieceLen = Math.max(200, MAX_FIELD_VALUE - 10);
+    for (const ln of lines) {
+      if (ln.length <= MAX_FIELD_VALUE) {
+        out.push(ln);
+        continue;
+      }
+      let rest = ln;
+      while (rest.length > 0) {
+        const take = rest.slice(0, pieceLen);
+        const continued = rest.length > pieceLen;
+        out.push(continued ? take + "…" : take);
+        rest = rest.slice(pieceLen);
+      }
+    }
+    return out;
+  };
+  const updateLines = expandLongLines(rawUpdateLines);
   const chunks: string[] = [];
   let current = "";
   for (const ln of updateLines) {
