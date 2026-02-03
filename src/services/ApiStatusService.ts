@@ -227,10 +227,12 @@ function inferStatusFromText(text: string): StatusLevel {
   const t = text.toLowerCase();
   // Ignore informational posts explicitly stating no impact
   if (/(no\s+operational\s+impact|no\s+impact)/i.test(t)) return "operational";
+  if (/(\bno\s+issues\b|\bno\s+known\s+issues\b)/i.test(t)) return "operational";
   if (/(maintenance)/i.test(t)) return "under_maintenance";
   if (/(critical|major outage|service unavailable|outage|unavailable|downtime|down)/i.test(t)) return "major_outage";
   if (/(partial)/i.test(t)) return "partial_outage";
-  if (/(degrad)/i.test(t)) return "degraded_performance";
+  if (/(degrad|incident|investigating|identified|latenc|error|elevated\s+error|disruption|interruption|issue)/i.test(t))
+    return "degraded_performance";
   return "operational";
 }
 
@@ -450,6 +452,8 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
     let maintenanceInProgress = false;
     let latestResolutionMs = -1;
     let latestNonOperationalMs = -1;
+    let latestNonOperationalTitle: string | undefined;
+    let latestNonOperationalLink: string | undefined;
     const rank: Record<StatusLevel, number> = {
       degraded_performance: 2,
       major_outage: 4,
@@ -463,8 +467,24 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
       const tsStr = (e.updated || e.published || e.pubDate || "").toString();
       const ts = tsStr ? Date.parse(tsStr) : NaN;
       const title = (e.title || "").toString();
-      const bodyRaw = typeof e.summary === "string" ? e.summary : typeof e.content === "string" ? e.content : "";
+      const bodyRaw =
+        typeof e.summary === "string"
+          ? e.summary
+          : typeof e.content === "string"
+            ? e.content
+            : ((e as Record<string, unknown> | undefined)?.["description"] as string | undefined) || "";
       const body = (bodyRaw || title).toString();
+      // Try to capture a link for this entry if present
+      let link: string | undefined;
+      if (typeof e.link === "string") link = e.link;
+      else if (Array.isArray(e.link)) {
+        const first = e.link[0] as Record<string, unknown> | undefined;
+        const href = first && typeof first["@_href"] === "string" ? (first["@_href"] as string) : undefined;
+        link = href;
+      } else if (e.link && typeof e.link === "object") {
+        const obj = e.link as Record<string, unknown>;
+        link = typeof obj["@_href"] === "string" ? (obj["@_href"] as string) : undefined;
+      }
       if (!Number.isNaN(ts) && now - ts <= 1000 * 60 * 60 * 24 * 3) {
         updates.push({ body, created_at: new Date(ts).toISOString() });
         const combined = `${title} ${body}`;
@@ -474,6 +494,10 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
         }
         const st = inferStatusFromText(combined);
         if (st !== "operational") latestNonOperationalMs = Math.max(latestNonOperationalMs, ts);
+        if (st !== "operational" && (latestNonOperationalTitle === undefined || ts >= latestNonOperationalMs)) {
+          latestNonOperationalTitle = title || latestNonOperationalTitle;
+          latestNonOperationalLink = link || latestNonOperationalLink;
+        }
         if (rank[st] > rank[topStatus]) topStatus = st;
         if (st === "under_maintenance" && /(in progress|ongoing)/i.test(combined)) {
           maintenanceInProgress = true;
@@ -496,8 +520,8 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
               id: `${service.id}-rss-incident`,
               impact: topStatus,
               incident_updates: sorted,
-              name: `${service.name} — Aggregated RSS incidents`,
-              shortlink: service.pageUrl,
+              name: (latestNonOperationalTitle || `${service.name} — Aggregated RSS incidents`).toString(),
+              shortlink: latestNonOperationalLink || service.pageUrl,
               status: topStatus,
             },
           ]
@@ -508,7 +532,7 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
         incidents.length > 0
           ? topStatus === "under_maintenance" && maintenanceInProgress
             ? "Maintenance in progress"
-            : "Recent incidents detected"
+            : (latestNonOperationalTitle || "Recent incidents detected").toString()
           : "",
       id: service.id,
       incidents,
@@ -581,6 +605,8 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
     let topStatus: StatusLevel = "operational";
     let incidentName = entries[0]?.title || feedTitle || service.name;
     let shortlink: string | undefined;
+    let latestNonOperationalTitle2: string | undefined;
+    let latestNonOperationalLink2: string | undefined;
 
     let maintenanceInProgress = false;
     let latestResolutionMs = -1;
@@ -589,7 +615,12 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
       const tsStr = (e.updated || e.published || e.pubDate || "").toString();
       const ts = tsStr ? Date.parse(tsStr) : NaN;
       const title = (e.title || "").toString();
-      const bodyRaw = typeof e.summary === "string" ? e.summary : typeof e.content === "string" ? e.content : "";
+      const bodyRaw =
+        typeof e.summary === "string"
+          ? e.summary
+          : typeof e.content === "string"
+            ? e.content
+            : ((e as Record<string, unknown> | undefined)?.["description"] as string | undefined) || "";
       const body = (bodyRaw || title).toString();
       let link: string | undefined;
       if (typeof e.link === "string") {
@@ -624,6 +655,11 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
             unknown: 5,
           };
           if (rank[st] > rank[topStatus]) topStatus = st;
+          // Track latest non-operational entry's title/link for summary
+          if (!latestNonOperationalTitle2 || ts >= latestNonOperationalMs) {
+            latestNonOperationalTitle2 = title || latestNonOperationalTitle2;
+            latestNonOperationalLink2 = link || latestNonOperationalLink2;
+          }
           if (!shortlink && link) shortlink = String(link);
           if (!incidentName && title) incidentName = title;
           if (st === "under_maintenance" && /(in progress|ongoing)/i.test(combined)) {
@@ -647,8 +683,8 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
               id: `${service.id}-rss-incident`,
               impact: topStatus,
               incident_updates: updates,
-              name: incidentName,
-              shortlink,
+              name: (latestNonOperationalTitle2 || incidentName).toString(),
+              shortlink: latestNonOperationalLink2 || shortlink,
               status: topStatus,
             },
           ]
@@ -659,7 +695,7 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
         incidents.length > 0
           ? topStatus === "under_maintenance" && maintenanceInProgress
             ? "Maintenance in progress"
-            : incidentName
+            : (latestNonOperationalTitle2 || incidentName).toString()
           : "",
       id: service.id,
       incidents,
@@ -1312,6 +1348,41 @@ export const Categories: CategoryConfig[] = [
         pageUrl: "https://health.aws.amazon.com/health/status",
         type: "generic",
       },
+      {
+        apiUrl: "https://status.zendesk.com/api/v2/summary.json",
+        id: "zendesk",
+        name: "Zendesk",
+        pageUrl: "https://status.zendesk.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.hubspot.com/api/v2/summary.json",
+        id: "hubspot",
+        name: "HubSpot",
+        pageUrl: "https://status.hubspot.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.front.com/api/v2/summary.json",
+        id: "front",
+        name: "Front",
+        pageUrl: "https://status.front.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.miro.com/api/v2/summary.json",
+        id: "miro",
+        name: "Miro",
+        pageUrl: "https://status.miro.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.notion.so/api/v2/summary.json",
+        id: "notion",
+        name: "Notion",
+        pageUrl: "https://status.notion.so/",
+        type: "statuspage",
+      },
       // AWS child services: each RSS feed is its own independently scheduled service
       ...buildAwsChildServices(),
       {
@@ -1324,8 +1395,12 @@ export const Categories: CategoryConfig[] = [
       {
         id: "azure",
         name: "Microsoft Azure",
+        // Keep official Azure status page; support both legacy and new RSS endpoints
         pageUrl: "https://status.azure.com/",
-        rssUrl: "https://rssfeed.azure.status.microsoft/en-us/status/feed/",
+        rssUrls: [
+          "https://rssfeed.azure.status.microsoft/en-us/status/feed/",
+          "https://azure.status.microsoft/en-us/status/feed/",
+        ],
         type: "generic",
       },
       {
@@ -1341,6 +1416,13 @@ export const Categories: CategoryConfig[] = [
         pageUrl: "https://ocistatus.oraclecloud.com/",
         rssUrl: "https://ocistatus.oraclecloud.com/api/v2/incident-summary.rss",
         type: "generic",
+      },
+      {
+        apiUrl: "https://status.digitalocean.com/api/v2/summary.json",
+        id: "digitalocean",
+        name: "DigitalOcean",
+        pageUrl: "https://status.digitalocean.com/",
+        type: "statuspage",
       },
       {
         id: "linode",
@@ -1396,6 +1478,20 @@ export const Categories: CategoryConfig[] = [
         type: "statuspage",
       },
       {
+        apiUrl: "https://status.lastpass.com/api/v2/summary.json",
+        id: "lastpass",
+        name: "LastPass",
+        pageUrl: "https://status.lastpass.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.duo.com/api/v2/summary.json",
+        id: "duo",
+        name: "Duo Security",
+        pageUrl: "https://status.duo.com/",
+        type: "statuspage",
+      },
+      {
         id: "zoom",
         name: "Zoom",
         pageUrl: "https://www.zoomstatus.com/",
@@ -1440,6 +1536,34 @@ export const Categories: CategoryConfig[] = [
         name: "Netlify",
         pageUrl: "https://www.netlifystatus.com/",
         rssUrl: "https://www.netlifystatus.com/history.rss",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://www.vercel-status.com/api/v2/summary.json",
+        id: "vercel",
+        name: "Vercel",
+        pageUrl: "https://www.vercel-status.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status-ovhcloud.com/api/v2/summary.json",
+        id: "ovhcloud",
+        name: "OVHcloud",
+        pageUrl: "https://status-ovhcloud.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://hostinger-status.com/api/v2/summary.json",
+        id: "hostinger",
+        name: "Hostinger",
+        pageUrl: "https://hostinger-status.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.webflow.com/api/v2/summary.json",
+        id: "webflow",
+        name: "Webflow",
+        pageUrl: "https://status.webflow.com/",
         type: "statuspage",
       },
     ],
@@ -1488,6 +1612,27 @@ export const Categories: CategoryConfig[] = [
         rssUrl: "http://status.coinbase.com/history.rss",
         type: "statuspage",
       },
+      {
+        apiUrl: "https://status.robinhood.com/api/v2/summary.json",
+        id: "robinhood",
+        name: "Robinhood",
+        pageUrl: "https://status.robinhood.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.gemini.com/api/v2/summary.json",
+        id: "gemini",
+        name: "Gemini",
+        pageUrl: "https://status.gemini.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.brex.com/api/v2/summary.json",
+        id: "brex",
+        name: "Brex",
+        pageUrl: "https://status.brex.com/",
+        type: "statuspage",
+      },
     ],
   },
   {
@@ -1501,10 +1646,45 @@ export const Categories: CategoryConfig[] = [
         type: "statuspage",
       },
       {
+        apiUrl: "https://status.algolia.com/api/v2/summary.json",
+        id: "algolia",
+        name: "Algolia",
+        pageUrl: "https://status.algolia.com/",
+        type: "statuspage",
+      },
+      {
         id: "gitlab",
         name: "GitLab",
         pageUrl: "https://status.gitlab.com/",
         rssUrl: "https://status.gitlab.com/pages/5b36dc6502d06804c08349f7/rss",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://confluence.status.atlassian.com/api/v2/summary.json",
+        id: "confluence",
+        name: "Confluence",
+        pageUrl: "https://confluence.status.atlassian.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://trello.status.atlassian.com/api/v2/summary.json",
+        id: "trello",
+        name: "Trello",
+        pageUrl: "https://trello.status.atlassian.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.asana.com/api/v2/summary.json",
+        id: "asana",
+        name: "Asana",
+        pageUrl: "https://status.asana.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://loom.status.atlassian.com/api/v2/summary.json",
+        id: "loom",
+        name: "Loom",
+        pageUrl: "https://loom.status.atlassian.com/",
         type: "statuspage",
       },
       {
@@ -1543,6 +1723,7 @@ export const Categories: CategoryConfig[] = [
         type: "statuspage",
       },
       {
+        apiUrl: "https://status.dropbox.com/api/v2/summary.json",
         id: "dropbox",
         name: "Dropbox",
         pageUrl: "https://status.dropbox.com/",
@@ -1584,6 +1765,69 @@ export const Categories: CategoryConfig[] = [
         type: "statuspage",
       },
       {
+        apiUrl: "https://status.box.com/api/v2/summary.json",
+        id: "box",
+        name: "Box",
+        pageUrl: "https://status.box.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.postman.com/api/v2/summary.json",
+        id: "postman",
+        name: "Postman",
+        pageUrl: "https://status.postman.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://snyk.statuspage.io/api/v2/summary.json",
+        id: "snyk",
+        name: "Snyk",
+        pageUrl: "https://snyk.statuspage.io/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.launchdarkly.com/api/v2/summary.json",
+        id: "launchdarkly",
+        name: "LaunchDarkly",
+        pageUrl: "https://status.launchdarkly.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.harness.io/api/v2/summary.json",
+        id: "harness",
+        name: "Harness",
+        pageUrl: "https://status.harness.io/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.figma.com/api/v2/summary.json",
+        id: "figma",
+        name: "Figma",
+        pageUrl: "https://status.figma.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.mixpanel.com/api/v2/summary.json",
+        id: "mixpanel",
+        name: "Mixpanel",
+        pageUrl: "https://status.mixpanel.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.segment.com/api/v2/summary.json",
+        id: "segment",
+        name: "Segment",
+        pageUrl: "https://status.segment.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.pagerduty.com/api/v2/summary.json",
+        id: "pagerduty",
+        name: "PagerDuty",
+        pageUrl: "https://status.pagerduty.com/",
+        type: "statuspage",
+      },
+      {
         id: "newrelic",
         name: "New Relic",
         pageUrl: "https://status.newrelic.com/",
@@ -1602,6 +1846,48 @@ export const Categories: CategoryConfig[] = [
         name: "MongoDB Atlas",
         pageUrl: "https://status.mongodb.com/",
         rssUrl: "https://status.mongodb.com/history.rss",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.airtable.com/api/v2/summary.json",
+        id: "airtable",
+        name: "Airtable",
+        pageUrl: "https://status.airtable.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.supabase.com/api/v2/summary.json",
+        id: "supabase",
+        name: "Supabase",
+        pageUrl: "https://status.supabase.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://crowdstrike.statuspage.io/api/v2/summary.json",
+        id: "crowdstrike",
+        name: "CrowdStrike",
+        pageUrl: "https://crowdstrike.statuspage.io/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.fivetran.com/api/v2/summary.json",
+        id: "fivetran",
+        name: "Fivetran",
+        pageUrl: "https://status.fivetran.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.snowflake.com/api/v2/summary.json",
+        id: "snowflake",
+        name: "Snowflake",
+        pageUrl: "https://status.snowflake.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.metabase.com/api/v2/summary.json",
+        id: "metabase",
+        name: "Metabase",
+        pageUrl: "https://status.metabase.com/",
         type: "statuspage",
       },
       {
@@ -1631,11 +1917,26 @@ export const Categories: CategoryConfig[] = [
     name: "Messaging / Social Platforms",
     services: [
       {
+        apiUrl: "https://slack-status.com/api/v2/summary.json",
         id: "slack",
         name: "Slack",
         pageUrl: "https://slack-status.com/",
         rssUrl: "https://slack-status.com/feed/rss",
+        type: "statuspage",
+      },
+      {
+        id: "microsoft365",
+        name: "Microsoft 365",
+        pageUrl: "https://status.cloud.microsoft/",
+        rssUrl: "https://status.cloud.microsoft/api/feed/mac",
         type: "generic",
+      },
+      {
+        apiUrl: "https://status.vzconnect.com/api/v2/summary.json",
+        id: "vzconnect",
+        name: "Verizon Connect",
+        pageUrl: "https://status.vzconnect.com/",
+        type: "statuspage",
       },
       {
         apiUrl: "https://discordstatus.com/api/v2/summary.json",
@@ -1660,6 +1961,28 @@ export const Categories: CategoryConfig[] = [
         type: "statuspage",
       },
       {
+        apiUrl: "https://www.intercomstatus.com/api/v2/summary.json",
+        id: "intercom",
+        name: "Intercom",
+        pageUrl: "https://www.intercomstatus.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://www.vimeostatus.com/api/v2/summary.json",
+        id: "vimeo",
+        name: "Vimeo",
+        pageUrl: "https://www.vimeostatus.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://status.wistia.com/api/v2/summary.json",
+        id: "wistia",
+        name: "Wistia",
+        pageUrl: "https://status.wistia.com/",
+        type: "statuspage",
+      },
+      {
+        apiUrl: "https://www.redditstatus.com/api/v2/summary.json",
         id: "reddit",
         name: "Reddit",
         pageUrl: "https://www.redditstatus.com/",
