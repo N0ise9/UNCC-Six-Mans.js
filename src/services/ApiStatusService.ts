@@ -111,7 +111,16 @@ function htmlToText(html: string): string {
 
 function statuspageToLevel(indicator?: string, overall?: string): StatusLevel {
   // indicator: none|minor|major|critical; overall description might include Maintenance
-  if (!indicator) return "unknown";
+  if (!indicator) {
+    const o = (overall || "").toLowerCase();
+    if (!o) return "unknown";
+    if (/maintenance/.test(o)) return "under_maintenance";
+    if (/all\s*systems\s*operational|operational|no\s*issues|no\s*incidents/i.test(o)) return "operational";
+    if (/degrad/.test(o)) return "degraded_performance";
+    if (/partial/.test(o)) return "partial_outage";
+    if (/outage|unavailable|major|critical/.test(o)) return "major_outage";
+    return "unknown";
+  }
   const ind = indicator.toLowerCase();
   if (overall && /maintenance/i.test(overall)) return "under_maintenance";
   switch (ind) {
@@ -1342,8 +1351,18 @@ async function checkService(service: ServiceConfig): Promise<ServiceStatus> {
     const sp = await fetchStatuspage(service);
     const spUnreachable = sp.status === "unknown" && sp.description === "Unreachable";
     if (!spUnreachable) {
+      // Some Statuspage sites occasionally return a 200 with an empty/ambiguous summary.
+      // If the summary yields an unknown status, try the RSS feed for a better signal.
+      if (sp.status === "unknown") {
+        try {
+          const rssFallback = await fetchRSS(service);
+          if (rssFallback.status !== "unknown") return rssFallback;
+        } catch {
+          // ignore and use the summary result below
+        }
+      }
       // If non-operational and RSS is available, consult RSS for richer details or more severe state
-      const hasRss = !!service.rssUrl || (service.rssUrls && service.rssUrls.length > 0);
+      const hasRss = true; // we can derive Statuspage RSS even if not explicitly configured
       if (hasRss && sp.status !== "operational" && sp.status !== "unknown") {
         try {
           const rss = await fetchRSS(service);
@@ -1363,8 +1382,8 @@ async function checkService(service: ServiceConfig): Promise<ServiceStatus> {
       }
       return sp;
     }
-    // If statuspage summary unreachable, fall back to RSS, then generic
-    if (service.rssUrl || (service.rssUrls && service.rssUrls.length)) {
+    // If statuspage summary unreachable, fall back to RSS (Statuspage sites have a history feed), then generic
+    {
       const rss = await fetchRSS(service);
       if (rss.status !== "unknown") {
         return rss;
@@ -2031,6 +2050,7 @@ export const Categories: CategoryConfig[] = [
         id: "wistia",
         name: "Wistia",
         pageUrl: "https://status.wistia.com/",
+        rssUrl: "https://status.wistia.com/history.rss",
         type: "statuspage",
       },
       {

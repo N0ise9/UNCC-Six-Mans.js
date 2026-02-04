@@ -25,6 +25,15 @@ const incidentMessages = new Map<string, IncidentMessage>(); // key: serviceId
 const lastSeenTimestamps = new Map<string, number>(); // serviceId -> epoch ms
 // Track Discord connectivity around embed operations (removed detailed flag usage; retry is selective now)
 
+// --- Logging verbosity control ---
+// 0: no logs
+// 1: existing verbose logs (default)
+// 2: only minimal diagnostic logs for service checks and Discord edit calls
+const LOG_VERBOSITY = 1;
+let currentRunId = 0; // populated when startApiStatusReporting is invoked
+type UpdateContext = "normal" | "issue" | "heartbeat";
+let lastUpdateContext: UpdateContext = "normal";
+
 // Retry queues for failed operations (processed every 2 minutes)
 const mainRetryUpsert = new Map<number, MessageEmbed>(); // pageIndex -> embed
 const mainRetryDelete = new Set<string>(); // messageId
@@ -40,6 +49,14 @@ let sweepRemainingChecks = 0; // how many checks remain in this sweep batch
 let sweepGen = 0; // sweep generation counter
 let sweepWindowTimer: ReturnType<typeof setTimeout> | null = null;
 let newSweepScheduled = false;
+// AWS sweep metrics (run in parallel with default)
+let sweepPlannedTotalAws = 0;
+let sweepPlannedBatchAws = 0;
+let sweepRemainingChecksAws = 0;
+let sweepGenAws = 0;
+let sweepWindowTimerAws: ReturnType<typeof setTimeout> | null = null;
+let newSweepScheduledAws = false;
+let sweepCursorAws = 0;
 
 let checkedSinceWatchdog = 0; // checks completed since last watchdog tick
 let okSinceWatchdog = 0; // completed checks that are operational
@@ -125,8 +142,23 @@ const nowLocalMs = () => {
   const mmm = p3(d.getMilliseconds());
   return `${MM}/${DD}/${yyyy} - ${hh}:${mm}:${ss}.${mmm}`;
 };
-const logInfo = (msg: string) => console.info(`[APIStatus ${nowLocalMs()}] ${msg}`);
-const logWarn = (msg: string) => console.warn(`[APIStatus ${nowLocalMs()}] ${msg}`);
+// Level-1 legacy logs
+const logInfo = (msg: string) => {
+  if (LOG_VERBOSITY === 1) console.info(`[APIStatus ${nowLocalMs()}] ${msg}`);
+};
+const logWarn = (msg: string) => {
+  if (LOG_VERBOSITY === 1) console.warn(`[APIStatus ${nowLocalMs()}] ${msg}`);
+};
+
+// Level-2 minimal diagnostics (no timestamps; exact fields requested)
+const v2LogCheck = (cadence: UpdateContext, serviceName: string, runId: number) => {
+  if (LOG_VERBOSITY >= 2)
+    console.info(`CHECK cadence=${cadence} service=${serviceName} runId=${runId} pid=${process.pid}`);
+};
+const v2LogDiscordEdit = (cadence: UpdateContext, serviceName: string, runId: number) => {
+  if (LOG_VERBOSITY >= 2)
+    console.info(`DISCORD_EDIT cadence=${cadence} service=${serviceName} runId=${runId} pid=${process.pid}`);
+};
 
 function statusEmoji(level: ServiceStatus["status"]): string {
   switch (level) {
@@ -331,11 +363,36 @@ function buildIncidentEmbed(service: ServiceStatus) {
     if (worst !== "operational") iconStatus = worst;
   }
 
+  // Compute a stable "last updated" based on provider timestamps to avoid churn on retries
+  const latestUpdateMs = (() => {
+    const incs = incidents || [];
+    let latest = 0;
+    for (const inc of incs) {
+      if (inc.created_at) {
+        const t = Date.parse(inc.created_at);
+        if (!Number.isNaN(t)) latest = Math.max(latest, t);
+      }
+      for (const u of inc.incident_updates || []) {
+        const t = Date.parse(u.created_at);
+        if (!Number.isNaN(t)) latest = Math.max(latest, t);
+      }
+    }
+    // Fallback to service.lastChecked if we didn't find any incident timestamps
+    if (!latest && service.lastChecked) {
+      const t =
+        service.lastChecked instanceof Date ? service.lastChecked.getTime() : Date.parse(String(service.lastChecked));
+      if (!Number.isNaN(t)) latest = t;
+    }
+    return latest || Date.now();
+  })();
+
   const embed = new MessageEmbed({
     color: ColorCodes.DarkRed,
     title: `Incident — ${service.name}`,
     url: service.pageUrl,
-    description: `${statusEmoji(iconStatus)} ${service.description ?? service.status}\nLast updated: <t:${Math.floor(Date.now() / 1000)}:R>`,
+    description: `${statusEmoji(iconStatus)} ${service.description ?? service.status}\nLast updated: <t:${Math.floor(
+      latestUpdateMs / 1000
+    )}:R>`,
   });
 
   if (incidents.length === 0) {
@@ -389,9 +446,12 @@ function buildIncidentEmbed(service: ServiceStatus) {
   const MAX_UPDATE_FIELDS = 10;
   const usedChunks = chunks.slice(0, MAX_UPDATE_FIELDS);
 
-  const incidentTitle = (active.name || "").toString().trim() || "Incident";
+  // Discord field name must be <= 256 chars and non-empty. Sanitize and clamp.
+  const rawIncidentTitle = (active.name || "").toString().replace(/\s+/g, " ").trim() || "Incident";
+  const incidentTitle = rawIncidentTitle.length > 256 ? rawIncidentTitle.slice(0, 255) + "…" : rawIncidentTitle;
   const linkValue = (active.shortlink ? `[Status Page](${active.shortlink})` : service.pageUrl) || service.pageUrl;
-  embed.addFields({ name: incidentTitle, value: linkValue });
+  const safeLinkValue = linkValue.length > 1024 ? linkValue.slice(0, 1023) + "…" : linkValue;
+  embed.addFields({ name: incidentTitle, value: safeLinkValue });
 
   // Respect embed total character limit (~6000)
   const TOTAL_LIMIT = 6000;
@@ -446,6 +506,7 @@ async function upsertIncidentEmbeds(
                 DISCORD_OP_TIMEOUT_MS,
                 `fetch incident msg ${existing.messageId}`
               ));
+            v2LogDiscordEdit(lastUpdateContext, s.name, currentRunId);
             await queueDiscord(
               () => msg.edit({ embeds: [buildIncidentEmbed(s)] }),
               `edit incident ${existing.messageId}`
@@ -584,18 +645,21 @@ export async function startApiStatusReporting(channel: TextChannel) {
     activeReportingStop = null;
   }
   const runId = activeReportingRunId;
+  currentRunId = runId;
   logInfo(`[APIStatus] Starting.. RunID=${runId} PID=${process.pid}`);
 
   // State for adaptive, staggered polling
   let lastHadIssues = false;
   const statusCache = new Map<string, ServiceStatus>(); // serviceId -> last known status
   const issueIntervals = new Map<string, ReturnType<typeof setInterval>>(); // serviceId -> interval handle
-  let nonIssueTimeouts: Array<ReturnType<typeof setTimeout>> = []; // scheduled one-offs over 15 minutes
+  let nonIssueTimeouts: Array<ReturnType<typeof setTimeout>> = []; // scheduled one-offs over 15 minutes (default sweep)
+  let nonIssueTimeoutsAws: Array<ReturnType<typeof setTimeout>> = []; // AWS sweep
   // Heartbeat to ensure embeds refresh periodically; interval adapts based on whether issues exist
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let heartbeatMsCurrent: number | null = null;
   let watchdogTimer: ReturnType<typeof setInterval> | null = null;
   let nextSweepTimer: ReturnType<typeof setTimeout> | null = null;
+  let nextSweepTimerAws: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
   const isStale = () => stopped || runId !== activeReportingRunId;
   // Coalesced update control
@@ -834,6 +898,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
     heartbeatTimer = setInterval(async () => {
       if (isStale()) return;
       try {
+        lastUpdateContext = "heartbeat";
         requestUpdateSoon(true);
       } catch (e) {
         logWarn(`Heartbeat update failed: ${(e as Error).message}`);
@@ -934,11 +999,12 @@ export async function startApiStatusReporting(channel: TextChannel) {
     }, 10_000); // 10s debounce window
   };
 
-  const onServiceUpdated = async (newStatus: ServiceStatus, prev?: ServiceStatus) => {
+  const onServiceUpdated = async (newStatus: ServiceStatus, prev?: ServiceStatus, source: UpdateContext = "normal") => {
     const cfg = getServiceConfig(newStatus.id);
     if (!cfg) return; // unknown service id
     const old = prev ?? statusCache.get(newStatus.id);
     statusCache.set(newStatus.id, newStatus);
+    lastUpdateContext = source;
     // Update last-seen timestamp when status is known (not unknown)
     try {
       if (newStatus.status !== "unknown" && newStatus.lastChecked) {
@@ -959,6 +1025,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
         async () => {
           if (isStale()) return;
           try {
+            v2LogCheck("issue", cfg.name, runId);
             logInfo(`IssuePoll Start: RunID=${runId} PID=${process.pid} SVC=${cfg.id}`);
             const updated = await checkSingleService(cfg);
             if (isStale()) return;
@@ -972,7 +1039,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
             else issueSinceWatchdog++;
 
             const before = statusCache.get(cfg.id);
-            await onServiceUpdated(updated, before);
+            await onServiceUpdated(updated, before, "issue");
 
             // If resolved, stop interval
             if (updated.status === "operational" || updated.status === "unknown") {
@@ -1018,6 +1085,18 @@ export async function startApiStatusReporting(channel: TextChannel) {
     // sweepPlannedTotal = 0;
   };
 
+  const clearAwsTimeouts = () => {
+    for (const t of nonIssueTimeoutsAws) clearTimeout(t);
+    nonIssueTimeoutsAws = [];
+
+    if (sweepWindowTimerAws) clearTimeout(sweepWindowTimerAws);
+    sweepWindowTimerAws = null;
+
+    sweepRemainingChecksAws = 0;
+    sweepPlannedBatchAws = 0;
+    // sweepPlannedTotalAws can be preserved or reset as needed
+  };
+
   const scheduleNonIssueSweep = () => {
     clearNonIssueTimeouts();
     sweepGen++;
@@ -1030,6 +1109,8 @@ export async function startApiStatusReporting(channel: TextChannel) {
       .filter((svc) => {
         // Never directly poll group roots like "aws"; they are aggregates only
         if (svc.isGroupRoot) return false;
+        // Exclude AWS children from default sweep; they are handled by the AWS sweep
+        if (svc.groupId === "aws") return false;
 
         if (issueIntervals.has(svc.id)) return false; // handled by 5-min polling
         const st = statusCache.get(svc.id);
@@ -1064,6 +1145,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
             logInfo(`SweepCheck skip svc=${cfg.id} (moved to issue polling)`);
             return;
           }
+          v2LogCheck("normal", cfg.name, runId);
           const updated = await checkSingleService(cfg);
           if (isStale()) return;
           checkedSinceWatchdog++;
@@ -1073,7 +1155,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
           else issueSinceWatchdog++;
 
           const before = statusCache.get(cfg.id);
-          await onServiceUpdated(updated, before);
+          await onServiceUpdated(updated, before, "normal");
         } catch (e) {
           checkFailSinceWatchdog++;
           lastCheckAt = Date.now();
@@ -1099,6 +1181,89 @@ export async function startApiStatusReporting(channel: TextChannel) {
     sweepWindowTimer = setTimeout(() => {
       if (myGen !== sweepGen) return;
       logInfo(`Sweep window complete: cursor=${sweepCursor} total=${count} remaining=${sweepRemainingChecks}`);
+    }, windowMs + 1000);
+  };
+
+  // Separate AWS sweep running in parallel
+  const scheduleAwsSweep = () => {
+    clearAwsTimeouts();
+    sweepGenAws++;
+    const myGen = sweepGenAws;
+
+    if (sweepWindowTimerAws) clearTimeout(sweepWindowTimerAws);
+    sweepWindowTimerAws = null;
+
+    const candidates: ServiceConfig[] = Categories.flatMap((c) => c.services)
+      .filter((svc) => {
+        if (svc.isGroupRoot) return false; // not the aggregate row
+        if (svc.groupId !== "aws") return false; // only AWS children here
+        if (issueIntervals.has(svc.id)) return false;
+        const st = statusCache.get(svc.id);
+        return !st || st.status === "operational" || st.status === "unknown";
+      })
+      .sort((a, b) => a.id.localeCompare(b.id));
+
+    const count = candidates.length;
+    if (count === 0) return;
+    if (sweepCursorAws >= count) sweepCursorAws = 0;
+    const windowMs = 30 * 60 * 1000;
+    const batch = candidates.slice(sweepCursorAws, sweepCursorAws + MAX_CHECKS_PER_SWEEP);
+    sweepCursorAws += batch.length;
+    const spacing = Math.max(250, Math.floor(windowMs / batch.length));
+
+    sweepPlannedTotalAws = candidates.length;
+    sweepPlannedBatchAws = batch.length;
+    sweepRemainingChecksAws = batch.length;
+
+    logInfo(
+      `AWS Sweep: total=${candidates.length} batch=${batch.length} cursor=${sweepCursorAws} spacing=${spacing}ms`
+    );
+
+    batch.forEach((cfg, idx) => {
+      const t = setTimeout(async () => {
+        if (isStale()) return;
+        if (stopped) return;
+        if (myGen !== sweepGenAws) return;
+
+        try {
+          if (issueIntervals.has(cfg.id)) return;
+          v2LogCheck("normal", cfg.name, runId);
+          const updated = await checkSingleService(cfg);
+          if (isStale()) return;
+          checkedSinceWatchdog++;
+          lastCheckAt = Date.now();
+          if (updated.status === "operational") okSinceWatchdog++;
+          else if (updated.status === "unknown") unknownSinceWatchdog++;
+          else issueSinceWatchdog++;
+
+          const before = statusCache.get(cfg.id);
+          await onServiceUpdated(updated, before, "normal");
+        } catch (e) {
+          checkFailSinceWatchdog++;
+          lastCheckAt = Date.now();
+          logWarn(`AWS sweep check failed for ${cfg.id}: ${(e as Error).message}`);
+        } finally {
+          sweepRemainingChecksAws = Math.max(0, sweepRemainingChecksAws - 1);
+
+          if (sweepRemainingChecksAws === 0 && !newSweepScheduledAws) {
+            newSweepScheduledAws = true;
+            nextSweepTimerAws = setTimeout(() => {
+              if (isStale()) return;
+              if (stopped) return;
+              newSweepScheduledAws = false;
+              scheduleAwsSweep();
+            }, 1000);
+          }
+        }
+      }, idx * spacing);
+      nonIssueTimeoutsAws.push(t);
+    });
+
+    sweepWindowTimerAws = setTimeout(() => {
+      if (myGen !== sweepGenAws) return;
+      logInfo(
+        `AWS Sweep window complete: cursor=${sweepCursorAws} total=${count} remaining=${sweepRemainingChecksAws}`
+      );
     }, windowMs + 1000);
   };
 
@@ -1158,6 +1323,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
               async () => {
                 if (isStale()) return;
                 try {
+                  v2LogCheck("issue", cfg.name, runId);
                   const updated = await checkSingleService(cfg);
                   if (isStale()) return;
 
@@ -1169,7 +1335,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
                   else issueSinceWatchdog++;
 
                   const before = statusCache.get(cfg.id);
-                  await onServiceUpdated(updated, before);
+                  await onServiceUpdated(updated, before, "issue");
 
                   if (updated.status === "operational" || updated.status === "unknown") {
                     const h = issueIntervals.get(cfg.id);
@@ -1192,6 +1358,8 @@ export async function startApiStatusReporting(channel: TextChannel) {
 
     // Stagger checks for non-issue services over 15 minutes
     scheduleNonIssueSweep();
+    // Run AWS checks in a parallel sweep so large AWS feed sets don't block others
+    scheduleAwsSweep();
 
     // Start heartbeat with appropriate cadence based on current issue state
     ensureHeartbeat(lastHadIssues ? 5 * 60 * 1000 : 30 * 60 * 1000);
@@ -1218,7 +1386,8 @@ export async function startApiStatusReporting(channel: TextChannel) {
         return !Number.isFinite(t) || Date.now() - t > 60 * 60 * 1000;
       }).length;
 
-      const leftThisSweepBatch = sweepRemainingChecks; // remaining checks to attempt
+      const leftThisSweepBatch = sweepRemainingChecks; // remaining checks to attempt (default sweep)
+      const leftThisSweepBatchAws = sweepRemainingChecksAws; // remaining checks to attempt (AWS sweep)
       const checked = checkedSinceWatchdog;
       const ok = okSinceWatchdog;
       const issues = issueSinceWatchdog;
@@ -1239,6 +1408,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
           `discordQ=${discordTaskQueue.length} inFlight=${updateInFlight} pendingUpdate=${pendingUpdate} pendingForce=${pendingForce} ` +
           `checks/5min=${checked} ok=${ok} issues=${issues} unknown=${unknown} fails=${fails} ` +
           `sweepTotal=${sweepPlannedTotal} sweepBatch=${sweepPlannedBatch} leftInBatch=${leftThisSweepBatch} ` +
+          `awsSweepTotal=${sweepPlannedTotalAws} awsSweepBatch=${sweepPlannedBatchAws} awsLeftInBatch=${leftThisSweepBatchAws} ` +
           `staleServices=${stale} lastCheckLag=${lagSec}s RunID=${runId} PID=${process.pid}`
       );
     },
@@ -1249,14 +1419,22 @@ export async function startApiStatusReporting(channel: TextChannel) {
     stopped = true;
     // Invalidate any already-scheduled sweep callbacks
     sweepGen++;
+    sweepGenAws++;
     // Clear the staggered non-issue sweep timers + sweep window timer
     clearNonIssueTimeouts();
+    // Clear AWS sweep timers
+    clearAwsTimeouts();
     // Clear the next sweep timer
     if (nextSweepTimer) {
       clearTimeout(nextSweepTimer);
       nextSweepTimer = null;
     }
+    if (nextSweepTimerAws) {
+      clearTimeout(nextSweepTimerAws);
+      nextSweepTimerAws = null;
+    }
     newSweepScheduled = false;
+    newSweepScheduledAws = false;
 
     // Clear Heartbeat
     if (heartbeatTimer) {
