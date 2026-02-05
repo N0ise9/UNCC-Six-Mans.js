@@ -12,6 +12,7 @@ import {
   checkSingleService,
   ServiceConfig,
   StatusLevel,
+  impactToStatusWithState,
 } from "../services/ApiStatusService";
 
 type IncidentMessage = {
@@ -21,15 +22,23 @@ type IncidentMessage = {
 
 let mainStatusMessages: Message[] = [];
 const incidentMessages = new Map<string, IncidentMessage>(); // key: serviceId
+const incidentPayloads = new Map<string, string>(); // serviceId -> embed signature
 // Track last time a service's status page was successfully seen (any non-unknown status)
 const lastSeenTimestamps = new Map<string, number>(); // serviceId -> epoch ms
 // Track Discord connectivity around embed operations (removed detailed flag usage; retry is selective now)
 
 // --- Logging verbosity control ---
 // 0: no logs
-// 1: existing verbose logs (default)
-// 2: only minimal diagnostic logs for service checks and Discord edit calls
-const LOG_VERBOSITY = 1;
+// 1: important operational logs only (watchdog, incidents, incident edits, check failures)
+// 2: minimal diagnostic logs for service checks and Discord edit calls (plus important)
+// 3: full verbose logs (plus minimal + important)
+enum LogVerbosity {
+  None = 0,
+  Important = 1,
+  Minimal = 2,
+  Verbose = 3,
+}
+const LOG_VERBOSITY: LogVerbosity = LogVerbosity.Important;
 let currentRunId = 0; // populated when startApiStatusReporting is invoked
 type UpdateContext = "normal" | "issue" | "heartbeat";
 let lastUpdateContext: UpdateContext = "normal";
@@ -144,21 +153,29 @@ const nowLocalMs = () => {
 };
 // Level-1 legacy logs
 const logInfo = (msg: string) => {
-  if (LOG_VERBOSITY === 1) console.info(`[APIStatus ${nowLocalMs()}] ${msg}`);
+  if (LOG_VERBOSITY >= LogVerbosity.Verbose) console.info(`[APIStatus ${nowLocalMs()}] ${msg}`);
 };
 const logWarn = (msg: string) => {
-  if (LOG_VERBOSITY === 1) console.warn(`[APIStatus ${nowLocalMs()}] ${msg}`);
+  if (LOG_VERBOSITY >= LogVerbosity.Verbose) console.warn(`[APIStatus ${nowLocalMs()}] ${msg}`);
+};
+const logImportant = (msg: string) => {
+  if (LOG_VERBOSITY >= LogVerbosity.Important) console.info(`[APIStatus ${nowLocalMs()}] ${msg}`);
+};
+const logImportantWarn = (msg: string) => {
+  if (LOG_VERBOSITY >= LogVerbosity.Important) console.warn(`[APIStatus ${nowLocalMs()}] ${msg}`);
 };
 
 // Level-2 minimal diagnostics (no timestamps; exact fields requested)
 const v2LogCheck = (cadence: UpdateContext, serviceName: string, runId: number) => {
-  if (LOG_VERBOSITY >= 2)
+  if (LOG_VERBOSITY >= LogVerbosity.Minimal)
     console.info(`CHECK cadence=${cadence} service=${serviceName} runId=${runId} pid=${process.pid}`);
 };
 const v2LogDiscordEdit = (cadence: UpdateContext, serviceName: string, runId: number) => {
-  if (LOG_VERBOSITY >= 2)
+  if (LOG_VERBOSITY >= LogVerbosity.Minimal)
     console.info(`DISCORD_EDIT cadence=${cadence} service=${serviceName} runId=${runId} pid=${process.pid}`);
 };
+
+const embedSignature = (embed: MessageEmbed) => JSON.stringify(embed.toJSON());
 
 function statusEmoji(level: ServiceStatus["status"]): string {
   switch (level) {
@@ -177,25 +194,66 @@ function statusEmoji(level: ServiceStatus["status"]): string {
   }
 }
 
-function overallColor(categories: { services: ServiceStatus[] }[]): number {
-  const severityRank: Record<ServiceStatus["status"], number> = {
-    operational: 0,
-    under_maintenance: 1,
-    degraded_performance: 2,
-    partial_outage: 3,
-    major_outage: 4,
-    unknown: 5,
-  };
+const DISPLAY_STATUS_RANK: Record<StatusLevel, number> = {
+  operational: 0,
+  under_maintenance: 1,
+  degraded_performance: 2,
+  partial_outage: 3,
+  major_outage: 4,
+  unknown: 5,
+};
 
+const INCIDENT_STATUS_RANK: Record<StatusLevel, number> = {
+  operational: 0,
+  under_maintenance: 1,
+  degraded_performance: 2,
+  partial_outage: 3,
+  major_outage: 4,
+  unknown: -1,
+};
+
+const isWorseStatus = (candidate: StatusLevel, current: StatusLevel, rank: Record<StatusLevel, number>) =>
+  rank[candidate] > rank[current];
+
+const isIssueStatus = (status: StatusLevel) => status !== "operational" && status !== "unknown";
+
+const worstIncidentStatus = (incidents?: IncidentInfo[]): StatusLevel => {
+  if (!incidents || incidents.length === 0) return "operational";
+  let worst: StatusLevel = "operational";
+  for (const inc of incidents) {
+    const lvl = impactToStatusWithState(inc.impact, inc.status);
+    if (isWorseStatus(lvl, worst, INCIDENT_STATUS_RANK)) worst = lvl;
+  }
+  return worst;
+};
+
+const deriveIncidentStatus = (service: ServiceStatus): StatusLevel => {
+  let iconStatus: StatusLevel = service.status;
+  if ((service.status === "operational" || service.status === "unknown") && service.incidents?.length) {
+    const worst = worstIncidentStatus(service.incidents);
+    if (worst !== "operational") iconStatus = worst;
+  }
+  return iconStatus;
+};
+
+const recordCheckResult = (status: ServiceStatus["status"]) => {
+  checkedSinceWatchdog++;
+  lastCheckAt = Date.now();
+  if (status === "operational") okSinceWatchdog++;
+  else if (status === "unknown") unknownSinceWatchdog++;
+  else issueSinceWatchdog++;
+};
+
+const recordCheckFailure = () => {
+  checkFailSinceWatchdog++;
+  lastCheckAt = Date.now();
+};
+
+function overallColor(categories: { services: ServiceStatus[] }[]): number {
   let worst: ServiceStatus["status"] = "operational";
-  let worstRank = severityRank[worst];
   for (const c of categories) {
     for (const s of c.services) {
-      const r = severityRank[s.status];
-      if (r > worstRank) {
-        worst = s.status;
-        worstRank = r;
-      }
+      if (isWorseStatus(s.status, worst, DISPLAY_STATUS_RANK)) worst = s.status;
     }
   }
   switch (worst) {
@@ -224,43 +282,8 @@ function buildMainEmbeds(categories: { name: string; services: ServiceStatus[] }
   const MAX_FIELDS = 25;
   const TOTAL_CHAR_LIMIT = 6000; // per-embed total char cap
 
-  // Map incident impacts/status text to a StatusLevel for display emphasis
-  const impactToLevel = (impact?: string, status?: string): StatusLevel => {
-    const imp = (impact || "").toLowerCase();
-    const st = (status || "").toLowerCase();
-    if (/scheduled|in_progress/.test(st)) return "under_maintenance";
-    if (imp === "critical") return "major_outage";
-    if (imp === "major") return "partial_outage";
-    if (imp === "minor") return "degraded_performance";
-    if (/(investigating|identified|monitoring|verifying|postmortem)/.test(st)) return "degraded_performance";
-    return "operational";
-  };
-
-  const worstFromIncidents = (incidents?: IncidentInfo[]): StatusLevel => {
-    if (!incidents || incidents.length === 0) return "operational";
-    let worst: StatusLevel = "operational";
-    const rank: Record<StatusLevel, number> = {
-      operational: 0,
-      under_maintenance: 1,
-      degraded_performance: 2,
-      partial_outage: 3,
-      major_outage: 4,
-      unknown: -1,
-    };
-    for (const inc of incidents) {
-      const lvl = impactToLevel(inc.impact, inc.status);
-      if (rank[lvl] > rank[worst]) worst = lvl;
-    }
-    return worst;
-  };
-
   const safeLine = (s: ServiceStatus) => {
-    let iconStatus: StatusLevel = s.status;
-    // If incidents exist but status is operational/unknown, derive a more accurate emphasis from incident impacts
-    if ((s.status === "operational" || s.status === "unknown") && s.incidents && s.incidents.length > 0) {
-      const worst = worstFromIncidents(s.incidents);
-      if (worst !== "operational") iconStatus = worst;
-    }
+    const iconStatus = deriveIncidentStatus(s);
     // For unknown (unreachable) show last-seen timestamp when available
     if (iconStatus === "unknown") {
       const ts = lastSeenTimestamps.get(s.id);
@@ -334,34 +357,7 @@ function buildMainEmbeds(categories: { name: string; services: ServiceStatus[] }
 
 function buildIncidentEmbed(service: ServiceStatus) {
   const incidents: IncidentInfo[] = service.incidents || [];
-  // Derive a better emoji level if incidents exist but status is operational/unknown
-  const impactToLevel = (impact?: string, status?: string): StatusLevel => {
-    const imp = (impact || "").toLowerCase();
-    const st = (status || "").toLowerCase();
-    if (/scheduled|in_progress/.test(st)) return "under_maintenance";
-    if (imp === "critical") return "major_outage";
-    if (imp === "major") return "partial_outage";
-    if (imp === "minor") return "degraded_performance";
-    if (/(investigating|identified|monitoring|verifying|postmortem)/.test(st)) return "degraded_performance";
-    return service.status;
-  };
-  let iconStatus: StatusLevel = service.status;
-  if ((service.status === "operational" || service.status === "unknown") && incidents.length > 0) {
-    let worst: StatusLevel = "operational";
-    const rank: Record<StatusLevel, number> = {
-      operational: 0,
-      under_maintenance: 1,
-      degraded_performance: 2,
-      partial_outage: 3,
-      major_outage: 4,
-      unknown: -1,
-    };
-    for (const inc of incidents) {
-      const lvl = impactToLevel(inc.impact, inc.status);
-      if (rank[lvl] > rank[worst]) worst = lvl;
-    }
-    if (worst !== "operational") iconStatus = worst;
-  }
+  const iconStatus = deriveIncidentStatus(service);
 
   // Compute a stable "last updated" based on provider timestamps to avoid churn on retries
   const latestUpdateMs = (() => {
@@ -490,11 +486,30 @@ async function upsertIncidentEmbeds(
   for (const cat of categories) {
     for (const s of cat.services) {
       // Only create incident embeds when we have concrete incident details to show
-      const hasIssue = (s.status !== "operational" && s.status !== "unknown") || (s.incidents?.length || 0) > 0;
+      const hasIssue = isIssueStatus(s.status) || (s.incidents?.length || 0) > 0;
       const hasIncidentDetails = Array.isArray(s.incidents) && s.incidents.length > 0;
       const existing = incidentMessages.get(s.id);
       if (hasIssue && hasIncidentDetails) {
+        const embed = buildIncidentEmbed(s);
+        const signature = embedSignature(embed);
         if (existing) {
+          const prior = incidentPayloads.get(s.id);
+          if (prior === signature) {
+            const cached = channel.messages.cache.get(existing.messageId);
+            if (cached) {
+              continue;
+            }
+            try {
+              await withTimeout(
+                channel.messages.fetch(existing.messageId),
+                DISCORD_OP_TIMEOUT_MS,
+                `fetch incident msg ${existing.messageId}`
+              );
+              continue;
+            } catch {
+              // fall through to recreate below
+            }
+          }
           // edit existing
           try {
             // prefer cache to reduce API hits
@@ -507,26 +522,24 @@ async function upsertIncidentEmbeds(
                 `fetch incident msg ${existing.messageId}`
               ));
             v2LogDiscordEdit(lastUpdateContext, s.name, currentRunId);
-            await queueDiscord(
-              () => msg.edit({ embeds: [buildIncidentEmbed(s)] }),
-              `edit incident ${existing.messageId}`
-            );
+            await queueDiscord(() => msg.edit({ embeds: [embed] }), `edit incident ${existing.messageId}`);
+            incidentPayloads.set(s.id, signature);
             // success: clear any pending retry for this service
             incidentRetry.delete(s.id);
             logInfo(`Incident edit: ${s.id} (${s.name}) PID=${process.pid}`);
+            logImportant(`Incident edit: ${s.id} (${s.name}) PID=${process.pid}`);
           } catch (e) {
             logWarn(`Incident edit failed: ${s.id} (${s.name}) msg=${existing?.messageId} err=${(e as Error).message}`);
             // enqueue retry for this service
             incidentRetry.add(s.id);
             // also try recreate immediately
             try {
-              const newMsg = await queueDiscord(
-                () => channel.send({ embeds: [buildIncidentEmbed(s)] }),
-                `send incident ${s.id}`
-              );
+              const newMsg = await queueDiscord(() => channel.send({ embeds: [embed] }), `send incident ${s.id}`);
               incidentMessages.set(s.id, { messageId: newMsg.id, serviceId: s.id });
+              incidentPayloads.set(s.id, signature);
               incidentRetry.delete(s.id);
               logInfo(`Incident create (after edit fail): ${s.id} (${s.name}) PID=${process.pid}`);
+              logImportant(`Incident post: ${s.id} (${s.name}) PID=${process.pid}`);
             } catch (err) {
               allOk = false;
               logWarn(`Incident recreate failed: ${s.id} (${s.name}) err=${(err as Error).message}`);
@@ -535,13 +548,12 @@ async function upsertIncidentEmbeds(
           }
         } else {
           try {
-            const newMsg = await queueDiscord(
-              () => channel.send({ embeds: [buildIncidentEmbed(s)] }),
-              `send incident ${s.id}`
-            );
+            const newMsg = await queueDiscord(() => channel.send({ embeds: [embed] }), `send incident ${s.id}`);
             incidentMessages.set(s.id, { messageId: newMsg.id, serviceId: s.id });
+            incidentPayloads.set(s.id, signature);
             incidentRetry.delete(s.id);
             logInfo(`Incident create: ${s.id} (${s.name}) PID=${process.pid}`);
+            logImportant(`Incident post: ${s.id} (${s.name}) PID=${process.pid}`);
           } catch (e) {
             allOk = false;
             logWarn(`Incident create failed: ${s.id} (${s.name}) err=${(e as Error).message}`);
@@ -562,12 +574,14 @@ async function upsertIncidentEmbeds(
           await queueDiscord(() => msg.delete(), `delete incident ${existing.messageId}`);
           incidentRetryDelete.delete(s.id);
           logInfo(`Incident delete: ${s.id} (${s.name}) PID=${process.pid}`);
+          logImportant(`Incident removed: ${s.id} (${s.name}) PID=${process.pid}`);
         } catch (e) {
           logWarn(`Incident delete failed: ${s.id} (${s.name}) msg=${existing.messageId} err=${(e as Error).message}`);
           allOk = false;
           incidentRetryDelete.set(s.id, existing.messageId);
         }
         incidentMessages.delete(s.id);
+        incidentPayloads.delete(s.id);
       }
     }
   }
@@ -576,7 +590,11 @@ async function upsertIncidentEmbeds(
 
 // Edit existing page messages when possible; only delete/create when count changes
 // Returns true if all discord operations succeeded; false if any failed
-async function upsertMainStatusEmbeds(channel: TextChannel, embeds: MessageEmbed[]): Promise<boolean> {
+async function upsertMainStatusEmbeds(
+  channel: TextChannel,
+  embeds: MessageEmbed[],
+  onEditFailure?: (reason: string) => void
+): Promise<boolean> {
   const current = mainStatusMessages;
   const minCount = Math.min(current.length, embeds.length);
   let allOk = true;
@@ -590,6 +608,11 @@ async function upsertMainStatusEmbeds(channel: TextChannel, embeds: MessageEmbed
       logInfo(`Main edit: page#${i + 1} PID=${process.pid}`);
     } catch (err) {
       logWarn(`Main edit failed: page#${i + 1} err=${(err as Error).message}`);
+      if (onEditFailure) {
+        onEditFailure(`Main edit failed page#${i + 1}: ${(err as Error).message}`);
+        allOk = false;
+        return false;
+      }
       try {
         const sent = await queueDiscord(() => channel.send({ embeds: [embeds[i]] }), `send main page ${i + 1}`);
         current[i] = sent;
@@ -651,7 +674,10 @@ export async function startApiStatusReporting(channel: TextChannel) {
   // State for adaptive, staggered polling
   let lastHadIssues = false;
   const statusCache = new Map<string, ServiceStatus>(); // serviceId -> last known status
-  const issueIntervals = new Map<string, ReturnType<typeof setInterval>>(); // serviceId -> interval handle
+  const issueServices = new Set<string>(); // active issue services (non-operational; unknown excluded)
+  const issuePollTimeouts = new Map<string, ReturnType<typeof setTimeout>>(); // per-cycle scheduled polls
+  let issueCycleTimer: ReturnType<typeof setInterval> | null = null;
+  let issueCycleAlignTimeout: ReturnType<typeof setTimeout> | null = null;
   let nonIssueTimeouts: Array<ReturnType<typeof setTimeout>> = []; // scheduled one-offs over 30 minutes (default sweep)
   let nonIssueTimeoutsAws: Array<ReturnType<typeof setTimeout>> = []; // AWS sweep
   // Heartbeat to ensure embeds refresh periodically; interval adapts based on whether issues exist
@@ -672,11 +698,43 @@ export async function startApiStatusReporting(channel: TextChannel) {
   // Retry processor timer (2 minutes)
   let retryTimer: ReturnType<typeof setInterval> | null = null;
   let sweepCursor = 0;
-  // Per-service issue polling alignment support
-  const issueStartTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
   const FIVE_MIN = 5 * 60 * 1000;
   const POLL_AHEAD_MS = 45 * 1000; // start polls ~45s before the 5m embed tick
+  const POLL_SPREAD_MS = 30 * 1000; // spread issue polls across 30s (leaving 15s before heartbeat)
   const MAX_CHECKS_PER_SWEEP = 1000; // # to check per sweep window (aid to avoid throttling)
+  const HARD_RESTART_DELAY_MS = 15 * 1000; // pause before forced restart after fatal Discord edit failure
+  let hardRestartPending = false;
+  let hardRestartTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const resetDiscordTracking = () => {
+    mainStatusMessages = [];
+    incidentMessages.clear();
+    incidentPayloads.clear();
+    mainRetryUpsert.clear();
+    mainRetryDelete.clear();
+    incidentRetry.clear();
+    incidentRetryDelete.clear();
+  };
+
+  const requestHardRestart = (reason: string) => {
+    if (hardRestartPending) return;
+    hardRestartPending = true;
+    logWarn(`Hard restart requested: ${reason}`);
+    stopApiStatusReporting();
+    if (hardRestartTimer) {
+      clearTimeout(hardRestartTimer);
+      hardRestartTimer = null;
+    }
+    hardRestartTimer = setTimeout(async () => {
+      hardRestartTimer = null;
+      try {
+        resetDiscordTracking();
+        await startApiStatusReporting(channel);
+      } catch (e) {
+        logWarn(`Hard restart failed: ${(e as Error).message}`);
+      }
+    }, HARD_RESTART_DELAY_MS);
+  };
 
   const startRetryProcessor = () => {
     if (retryTimer) return;
@@ -800,24 +858,13 @@ export async function startApiStatusReporting(channel: TextChannel) {
   ): ServiceStatus => {
     if (!children.length) return rootStatus;
 
-    const rank: Record<StatusLevel, number> = {
-      operational: 0,
-      under_maintenance: 1,
-      degraded_performance: 2,
-      partial_outage: 3,
-      major_outage: 4,
-      unknown: -1,
-    };
-
     let topStatus: StatusLevel = "operational";
     let latestChecked = rootStatus.lastChecked ?? new Date(0);
     const incidents: IncidentInfo[] = [];
 
     for (const child of children) {
       // pick worst status among children
-      if (rank[child.status] > rank[topStatus]) {
-        topStatus = child.status;
-      }
+      if (isWorseStatus(child.status, topStatus, INCIDENT_STATUS_RANK)) topStatus = child.status;
       if (child.lastChecked && child.lastChecked > latestChecked) {
         latestChecked = child.lastChecked;
       }
@@ -965,6 +1012,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
   };
 
   const updateEmbedsIfNeeded = async (force: boolean = false) => {
+    if (hardRestartPending) return;
     const cats = categoriesFromCache();
     const { issues } = summarizeIssues(cats);
     const hasIssuesNow = issues > 0;
@@ -972,7 +1020,8 @@ export async function startApiStatusReporting(channel: TextChannel) {
     const shouldUpdate = force || hasIssuesNow || lastHadIssues;
     if (shouldUpdate) {
       const embeds = buildMainEmbeds(cats);
-      const okMain = await upsertMainStatusEmbeds(channel, embeds);
+      const okMain = await upsertMainStatusEmbeds(channel, embeds, requestHardRestart);
+      if (hardRestartPending) return;
       let okInc = true;
       try {
         okInc = await upsertIncidentEmbeds(channel, cats);
@@ -990,6 +1039,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
   };
 
   const requestUpdate = async (force: boolean) => {
+    if (isStale()) return;
     if (updateInFlight) {
       pendingUpdate = true; // NEW: remember that something changed
       pendingForce = (pendingForce ?? false) || force;
@@ -1034,6 +1084,82 @@ export async function startApiStatusReporting(channel: TextChannel) {
     }, 10_000); // 10s debounce window
   };
 
+  const clearIssuePollTimeouts = () => {
+    for (const t of issuePollTimeouts.values()) clearTimeout(t);
+    issuePollTimeouts.clear();
+  };
+
+  const stopIssuePolling = () => {
+    clearIssuePollTimeouts();
+    if (issueCycleTimer) {
+      clearInterval(issueCycleTimer);
+      issueCycleTimer = null;
+    }
+    if (issueCycleAlignTimeout) {
+      clearTimeout(issueCycleAlignTimeout);
+      issueCycleAlignTimeout = null;
+    }
+  };
+
+  const pollIssueService = async (cfg: ServiceConfig) => {
+    if (isStale()) return;
+    try {
+      v2LogCheck("issue", cfg.name, runId);
+      logInfo(`IssuePoll Start: RunID=${runId} PID=${process.pid} SVC=${cfg.id}`);
+      const updated = await checkSingleService(cfg);
+      if (isStale()) return;
+      logInfo(`IssuePoll done SVC=${cfg.id} status=${updated.status}`);
+
+      // ---- metrics ----
+      recordCheckResult(updated.status);
+
+      const before = statusCache.get(cfg.id);
+      await onServiceUpdated(updated, before, "issue");
+    } catch (e) {
+      recordCheckFailure();
+      logWarn(`Polling failed for ${cfg.id}: ${(e as Error).message}`);
+      logImportantWarn(`Check failed: ${cfg.id} (${cfg.name}) err=${(e as Error).message}`);
+    }
+  };
+
+  const runIssuePollCycle = () => {
+    if (isStale() || stopped) return;
+    clearIssuePollTimeouts();
+    const issueIds = Array.from(issueServices).sort((a, b) => a.localeCompare(b));
+    if (issueIds.length === 0) return;
+
+    const spacing = issueIds.length > 1 ? POLL_SPREAD_MS / (issueIds.length - 1) : 0;
+    logInfo(`IssuePoll schedule: count=${issueIds.length} window=${POLL_SPREAD_MS}ms spacing=${Math.round(spacing)}ms`);
+
+    issueIds.forEach((id, idx) => {
+      const cfg = getServiceConfig(id);
+      if (!cfg) return;
+      const delay = Math.round(idx * spacing);
+      const t = setTimeout(async () => {
+        if (isStale() || stopped) return;
+        if (!issueServices.has(id)) return;
+        await pollIssueService(cfg);
+      }, delay);
+      issuePollTimeouts.set(id, t);
+    });
+  };
+
+  const ensureIssuePollCycle = () => {
+    if (issueServices.size === 0) {
+      stopIssuePolling();
+      return;
+    }
+    if (issueCycleTimer || issueCycleAlignTimeout) return;
+    const alignDelayRaw = msUntilNextAlignedTick(FIVE_MIN, 0) - POLL_AHEAD_MS;
+    const alignDelay = alignDelayRaw >= 0 ? alignDelayRaw : alignDelayRaw + FIVE_MIN;
+    issueCycleAlignTimeout = setTimeout(() => {
+      issueCycleAlignTimeout = null;
+      runIssuePollCycle();
+      issueCycleTimer = setInterval(runIssuePollCycle, FIVE_MIN);
+      logInfo(`IssuePoll cycle started window=${POLL_SPREAD_MS}ms ahead=${POLL_AHEAD_MS}ms`);
+    }, alignDelay);
+  };
+
   const onServiceUpdated = async (newStatus: ServiceStatus, prev?: ServiceStatus, source: UpdateContext = "normal") => {
     const cfg = getServiceConfig(newStatus.id);
     if (!cfg) return; // unknown service id
@@ -1052,62 +1178,31 @@ export async function startApiStatusReporting(channel: TextChannel) {
 
     if (!changed) return;
 
-    // Manage per-service polling strategy transitions
-    const isIssue = newStatus.status !== "operational" && newStatus.status !== "unknown";
-    const wasIssue = old ? old.status !== "operational" && old.status !== "unknown" : false;
+    // Manage issue polling membership
+    const isIssue = isIssueStatus(newStatus.status);
+    const inIssueSet = issueServices.has(cfg.id);
+    const wasIssue = old ? isIssueStatus(old.status) : false;
 
-    if (isIssue && !issueIntervals.has(cfg.id) && !issueStartTimeouts.has(cfg.id)) {
-      // Start aligned 5-min polling for this service with an initial delay so it runs shortly before the embed tick
-      const pollOnce = async () => {
-        if (isStale()) return;
-        try {
-          v2LogCheck("issue", cfg.name, runId);
-          logInfo(`IssuePoll Start: RunID=${runId} PID=${process.pid} SVC=${cfg.id}`);
-          const updated = await checkSingleService(cfg);
-          if (isStale()) return;
-          logInfo(`IssuePoll done SVC=${cfg.id} status=${updated.status}`);
-
-          // ---- metrics ----
-          checkedSinceWatchdog++;
-          lastCheckAt = Date.now();
-          if (updated.status === "operational") okSinceWatchdog++;
-          else if (updated.status === "unknown") unknownSinceWatchdog++;
-          else issueSinceWatchdog++;
-
-          const before = statusCache.get(cfg.id);
-          await onServiceUpdated(updated, before, "issue");
-
-          // If resolved, stop interval
-          if (updated.status === "operational" || updated.status === "unknown") {
-            const h = issueIntervals.get(cfg.id);
-            if (h) clearInterval(h);
-            issueIntervals.delete(cfg.id);
-          }
-        } catch (e) {
-          checkFailSinceWatchdog++;
-          lastCheckAt = Date.now();
-          logWarn(`Polling failed for ${cfg.id}: ${(e as Error).message}`);
-        }
-      };
-
-      const alignDelayRaw = msUntilNextAlignedTick(FIVE_MIN, 0) - POLL_AHEAD_MS;
-      const alignDelay = alignDelayRaw >= 0 ? alignDelayRaw : alignDelayRaw + FIVE_MIN;
-      const startT = setTimeout(async () => {
-        issueStartTimeouts.delete(cfg.id);
-        await pollOnce();
-        const h = setInterval(pollOnce, FIVE_MIN);
-        issueIntervals.set(cfg.id, h);
-      }, alignDelay);
-      issueStartTimeouts.set(cfg.id, startT);
+    if (isIssue && !wasIssue) {
+      logImportant(`Incident detected: ${cfg.id} (${cfg.name}) status=${newStatus.status} PID=${process.pid}`);
+    } else if (!isIssue && wasIssue) {
+      logImportant(`Incident resolved: ${cfg.id} (${cfg.name}) PID=${process.pid}`);
     }
-    if (!isIssue && wasIssue) {
-      const h = issueIntervals.get(cfg.id);
-      logInfo(`IssuePoll resolved SVC=${cfg.id} stopping interval`);
-      if (h) clearInterval(h);
-      issueIntervals.delete(cfg.id);
-      const t = issueStartTimeouts.get(cfg.id);
-      if (t) clearTimeout(t);
-      issueStartTimeouts.delete(cfg.id);
+
+    if (isIssue && !cfg.isGroupRoot && !inIssueSet) {
+      issueServices.add(cfg.id);
+      ensureIssuePollCycle();
+    }
+    if (!isIssue && inIssueSet) {
+      issueServices.delete(cfg.id);
+      const pending = issuePollTimeouts.get(cfg.id);
+      if (pending) {
+        clearTimeout(pending);
+        issuePollTimeouts.delete(cfg.id);
+      }
+      if (issueServices.size === 0) {
+        stopIssuePolling();
+      }
     }
 
     // Update embeds only when there are issues or resolving previous ones, or when this service changed significantly
@@ -1156,7 +1251,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
         // Exclude AWS children from default sweep; they are handled by the AWS sweep
         if (svc.groupId === "aws") return false;
 
-        if (issueIntervals.has(svc.id)) return false; // handled by 5-min polling
+        if (issueServices.has(svc.id)) return false; // handled by 5-min polling
         const st = statusCache.get(svc.id);
         // include if unknown or operational (or not yet checked)
         return !st || st.status === "operational" || st.status === "unknown";
@@ -1185,25 +1280,21 @@ export async function startApiStatusReporting(channel: TextChannel) {
 
         try {
           // If moved to issue polling, treat as "done" for this batch
-          if (issueIntervals.has(cfg.id)) {
+          if (issueServices.has(cfg.id)) {
             logInfo(`SweepCheck skip svc=${cfg.id} (moved to issue polling)`);
             return;
           }
           v2LogCheck("normal", cfg.name, runId);
           const updated = await checkSingleService(cfg);
           if (isStale()) return;
-          checkedSinceWatchdog++;
-          lastCheckAt = Date.now();
-          if (updated.status === "operational") okSinceWatchdog++;
-          else if (updated.status === "unknown") unknownSinceWatchdog++;
-          else issueSinceWatchdog++;
+          recordCheckResult(updated.status);
 
           const before = statusCache.get(cfg.id);
           await onServiceUpdated(updated, before, "normal");
         } catch (e) {
-          checkFailSinceWatchdog++;
-          lastCheckAt = Date.now();
+          recordCheckFailure();
           logWarn(`Sweep check failed for ${cfg.id}: ${(e as Error).message}`);
+          logImportantWarn(`Check failed: ${cfg.id} (${cfg.name}) err=${(e as Error).message}`);
         } finally {
           sweepRemainingChecks = Math.max(0, sweepRemainingChecks - 1);
 
@@ -1241,7 +1332,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
       .filter((svc) => {
         if (svc.isGroupRoot) return false; // not the aggregate row
         if (svc.groupId !== "aws") return false; // only AWS children here
-        if (issueIntervals.has(svc.id)) return false;
+        if (issueServices.has(svc.id)) return false;
         const st = statusCache.get(svc.id);
         return !st || st.status === "operational" || st.status === "unknown";
       })
@@ -1270,22 +1361,18 @@ export async function startApiStatusReporting(channel: TextChannel) {
         if (myGen !== sweepGenAws) return;
 
         try {
-          if (issueIntervals.has(cfg.id)) return;
+          if (issueServices.has(cfg.id)) return;
           v2LogCheck("normal", cfg.name, runId);
           const updated = await checkSingleService(cfg);
           if (isStale()) return;
-          checkedSinceWatchdog++;
-          lastCheckAt = Date.now();
-          if (updated.status === "operational") okSinceWatchdog++;
-          else if (updated.status === "unknown") unknownSinceWatchdog++;
-          else issueSinceWatchdog++;
+          recordCheckResult(updated.status);
 
           const before = statusCache.get(cfg.id);
           await onServiceUpdated(updated, before, "normal");
         } catch (e) {
-          checkFailSinceWatchdog++;
-          lastCheckAt = Date.now();
+          recordCheckFailure();
           logWarn(`AWS sweep check failed for ${cfg.id}: ${(e as Error).message}`);
+          logImportantWarn(`Check failed: ${cfg.id} (${cfg.name}) err=${(e as Error).message}`);
         } finally {
           sweepRemainingChecksAws = Math.max(0, sweepRemainingChecksAws - 1);
 
@@ -1318,6 +1405,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
       logInfo("Startup: clearing status channel…");
       await deleteAllMessagesInTextChannel(channel);
       logInfo("Startup: channel cleared");
+      resetDiscordTracking();
     } catch (e) {
       logWarn(`Startup: channel clear failed: ${(e as Error).message}`);
       // proceed without clearing; any failures will be retried selectively
@@ -1342,7 +1430,8 @@ export async function startApiStatusReporting(channel: TextChannel) {
     const displayCategories = categoriesFromCache();
 
     const embeds = buildMainEmbeds(displayCategories);
-    await upsertMainStatusEmbeds(channel, embeds);
+    await upsertMainStatusEmbeds(channel, embeds, requestHardRestart);
+    if (hardRestartPending) return;
     await upsertIncidentEmbeds(channel, displayCategories).catch((err) => {
       logWarn(`Incident upsert failed: ${(err as Error).message}`);
       return false as const;
@@ -1357,54 +1446,17 @@ export async function startApiStatusReporting(channel: TextChannel) {
       lastHadIssues = false;
     }
 
-    // Start aligned 5-min polling for any services already having issues
+    // Track active issue services for aligned issue polling
+    issueServices.clear();
     for (const cat of categories) {
       for (const svc of cat.services) {
-        if (svc.status !== "operational" && svc.status !== "unknown") {
+        if (isIssueStatus(svc.status)) {
           const cfg = getServiceConfig(svc.id);
-          if (cfg && !cfg.isGroupRoot && !issueIntervals.has(cfg.id) && !issueStartTimeouts.has(cfg.id)) {
-            const pollOnce = async () => {
-              if (isStale()) return;
-              try {
-                v2LogCheck("issue", cfg.name, runId);
-                const updated = await checkSingleService(cfg);
-                if (isStale()) return;
-
-                // ---- metrics ----
-                checkedSinceWatchdog++;
-                lastCheckAt = Date.now();
-                if (updated.status === "operational") okSinceWatchdog++;
-                else if (updated.status === "unknown") unknownSinceWatchdog++;
-                else issueSinceWatchdog++;
-
-                const before = statusCache.get(cfg.id);
-                await onServiceUpdated(updated, before, "issue");
-
-                if (updated.status === "operational" || updated.status === "unknown") {
-                  const h = issueIntervals.get(cfg.id);
-                  if (h) clearInterval(h);
-                  issueIntervals.delete(cfg.id);
-                }
-              } catch (e) {
-                checkFailSinceWatchdog++;
-                lastCheckAt = Date.now();
-                logWarn(`Polling failed for ${cfg.id}: ${(e as Error).message}`);
-              }
-            };
-
-            const alignDelayRaw = msUntilNextAlignedTick(FIVE_MIN, 0) - POLL_AHEAD_MS;
-            const alignDelay = alignDelayRaw >= 0 ? alignDelayRaw : alignDelayRaw + FIVE_MIN;
-            const startT = setTimeout(async () => {
-              issueStartTimeouts.delete(cfg.id);
-              await pollOnce();
-              const h = setInterval(pollOnce, FIVE_MIN);
-              issueIntervals.set(cfg.id, h);
-            }, alignDelay);
-            issueStartTimeouts.set(cfg.id, startT);
-          }
+          if (cfg && !cfg.isGroupRoot) issueServices.add(cfg.id);
         }
       }
     }
+    ensureIssuePollCycle();
 
     // Stagger checks for non-issue services over 30 minutes
     scheduleNonIssueSweep();
@@ -1419,7 +1471,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
     logWarn(`API status initial run failed: ${(e as Error).message}`);
   }
 
-  // All further checks are handled by staggered sweep timers and per-issue intervals
+  // All further checks are handled by staggered sweep timers and aligned issue polling cycles
   watchdogTimer = setInterval(
     () => {
       if (isStale()) return;
@@ -1453,14 +1505,15 @@ export async function startApiStatusReporting(channel: TextChannel) {
 
       const lagSec = lastCheckAt ? Math.round((Date.now() - lastCheckAt) / 1000) : -1;
 
-      logInfo(
+      const watchdogMsg =
         "Watchdog: " +
-          `discordQ=${discordTaskQueue.length} inFlight=${updateInFlight} pendingUpdate=${pendingUpdate} pendingForce=${pendingForce} ` +
-          `checks/5min=${checked} ok=${ok} issues=${issues} unknown=${unknown} fails=${fails} ` +
-          `sweepTotal=${sweepPlannedTotal} sweepBatch=${sweepPlannedBatch} leftInBatch=${leftThisSweepBatch} ` +
-          `awsSweepTotal=${sweepPlannedTotalAws} awsSweepBatch=${sweepPlannedBatchAws} awsLeftInBatch=${leftThisSweepBatchAws} ` +
-          `staleServices=${stale} lastCheckLag=${lagSec}s RunID=${runId} PID=${process.pid}`
-      );
+        `discordQ=${discordTaskQueue.length} inFlight=${updateInFlight} pendingUpdate=${pendingUpdate} pendingForce=${pendingForce} ` +
+        `checks/5min=${checked} ok=${ok} issues=${issues} unknown=${unknown} fails=${fails} ` +
+        `sweepTotal=${sweepPlannedTotal} sweepBatch=${sweepPlannedBatch} leftInBatch=${leftThisSweepBatch} ` +
+        `awsSweepTotal=${sweepPlannedTotalAws} awsSweepBatch=${sweepPlannedBatchAws} awsLeftInBatch=${leftThisSweepBatchAws} ` +
+        `staleServices=${stale} lastCheckLag=${lagSec}s RunID=${runId} PID=${process.pid}`;
+      logInfo(watchdogMsg);
+      logImportant(watchdogMsg);
     },
     60 * 5 * 1000
   );
@@ -1509,11 +1562,9 @@ export async function startApiStatusReporting(channel: TextChannel) {
       watchdogTimer = null;
     }
 
-    // Clear Per-Service issue polling intervals
-    for (const h of issueIntervals.values()) clearInterval(h);
-    issueIntervals.clear();
-    for (const t of issueStartTimeouts.values()) clearTimeout(t);
-    issueStartTimeouts.clear();
+    // Clear aligned issue polling timers and state
+    stopIssuePolling();
+    issueServices.clear();
 
     // Clear any pending debounced update timer
     if (updateSoonTimer) {

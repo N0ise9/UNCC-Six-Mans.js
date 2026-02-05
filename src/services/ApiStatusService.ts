@@ -51,6 +51,79 @@ export interface CategoryConfig {
   services: ServiceConfig[];
 }
 
+const STATUS_RANK: Record<StatusLevel, number> = {
+  degraded_performance: 2,
+  major_outage: 4,
+  operational: 0,
+  partial_outage: 3,
+  under_maintenance: 1,
+  // Treat unknown as the lowest severity so it never overrides a known non-operational status
+  unknown: -1,
+};
+
+const STATUS_RANK_UNKNOWN_HIGH: Record<StatusLevel, number> = {
+  degraded_performance: 2,
+  major_outage: 4,
+  operational: 0,
+  partial_outage: 3,
+  under_maintenance: 1,
+  unknown: 5,
+};
+
+const isWorseStatus = (candidate: StatusLevel, current: StatusLevel, rank = STATUS_RANK): boolean =>
+  rank[candidate] > rank[current];
+
+function buildStatus(service: ServiceConfig, overrides: Partial<ServiceStatus> = {}): ServiceStatus {
+  return {
+    id: service.id,
+    name: service.name,
+    pageUrl: service.pageUrl,
+    status: "unknown",
+    description: "",
+    lastChecked: new Date(),
+    incidents: [],
+    ...overrides,
+  };
+}
+
+function errorStatus(service: ServiceConfig, description: string, status: StatusLevel = "unknown"): ServiceStatus {
+  return buildStatus(service, { status, description, incidents: [] });
+}
+
+function normalizeStatusLevel(value?: string): StatusLevel | null {
+  const v = (value || "").toLowerCase();
+  switch (v) {
+    case "operational":
+    case "degraded_performance":
+    case "partial_outage":
+    case "major_outage":
+    case "under_maintenance":
+      return v;
+    case "maintenance":
+      return "under_maintenance";
+    default:
+      return null;
+  }
+}
+
+function impactToStatusLevel(impact?: string, fallback: StatusLevel = "operational"): StatusLevel {
+  const normalized = normalizeStatusLevel(impact);
+  if (normalized) return normalized;
+  const imp = (impact || "").toLowerCase();
+  if (imp === "critical") return "major_outage";
+  if (imp === "major") return "partial_outage";
+  if (imp === "minor") return "degraded_performance";
+  if (imp === "none") return "operational";
+  return fallback;
+}
+
+export function impactToStatusWithState(impact?: string, status?: string): StatusLevel {
+  const st = (status || "").toLowerCase();
+  if (/scheduled|in_progress/.test(st)) return "under_maintenance";
+  const active = /(investigating|identified|monitoring|verifying|postmortem)/.test(st);
+  return impactToStatusLevel(impact, active ? "degraded_performance" : "operational");
+}
+
 // Helper to fetch with timeout
 async function fetchWithTimeout(url: string, ms = 15000): Promise<Response> {
   const controller = new AbortController();
@@ -204,34 +277,15 @@ async function fetchStatuspage(service: ServiceConfig): Promise<ServiceStatus> {
     // Escalate overall status based on active incidents. Some Statuspage sites keep the indicator at "none"
     // while incidents are in progress; in that case, ensure we reflect a non-operational state.
     if (incidents.length > 0) {
-      const mapImpact = (imp?: string, st?: string): StatusLevel => {
-        const impact = (imp || "").toLowerCase();
-        const s = (st || "").toLowerCase();
-        if (/scheduled|in_progress/.test(s)) return "under_maintenance";
-        switch (impact) {
-          case "critical":
-            return "major_outage";
-          case "major":
-            return "partial_outage";
-          case "minor":
-            return "degraded_performance";
-          case "none":
-          default:
-            // Unknown impact but active states like investigating/identified should show degradation
-            return /(investigating|identified|monitoring|verifying|postmortem)/.test(s)
-              ? "degraded_performance"
-              : "operational";
-        }
-      };
       let incWorst: StatusLevel = "operational";
       for (const inc of incidents) {
-        const m = mapImpact(inc.impact, inc.status);
+        const m = impactToStatusWithState(inc.impact, inc.status);
         incWorst = escalateStatus(incWorst, m);
       }
       status = escalateStatus(status, incWorst);
     }
 
-    return {
+    return buildStatus(service, {
       // Append short text for live maintenance, otherwise keep concise
       description:
         status === "under_maintenance" && incidents.length > 0
@@ -239,23 +293,11 @@ async function fetchStatuspage(service: ServiceConfig): Promise<ServiceStatus> {
           : status === "operational"
             ? ""
             : data?.status?.description,
-      id: service.id,
       incidents,
-      lastChecked: new Date(),
-      name: service.name,
-      pageUrl: service.pageUrl,
-      status: status,
-    };
+      status,
+    });
   } catch (e) {
-    return {
-      description: "Unreachable",
-      id: service.id,
-      incidents: [],
-      lastChecked: new Date(),
-      name: service.name,
-      pageUrl: service.pageUrl,
-      status: "unknown",
-    };
+    return errorStatus(service, "Unreachable");
   }
 }
 
@@ -263,25 +305,12 @@ async function fetchGeneric(service: ServiceConfig): Promise<ServiceStatus> {
   try {
     const res = await fetchWithTimeout(service.pageUrl);
     const { ok, status } = res;
-    return {
+    return buildStatus(service, {
       description: ok ? "" : `HTTP ${status}`,
-      id: service.id,
-      incidents: [],
-      lastChecked: new Date(),
-      name: service.name,
-      pageUrl: service.pageUrl,
       status: ok ? "operational" : "major_outage",
-    };
+    });
   } catch (e) {
-    return {
-      description: "Unreachable",
-      id: service.id,
-      incidents: [],
-      lastChecked: new Date(),
-      name: service.name,
-      pageUrl: service.pageUrl,
-      status: "unknown",
-    };
+    return errorStatus(service, "Unreachable");
   }
 }
 
@@ -516,14 +545,6 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
     let latestNonOperationalMs = -1;
     let latestNonOperationalTitle: string | undefined;
     let latestNonOperationalLink: string | undefined;
-    const rank: Record<StatusLevel, number> = {
-      degraded_performance: 2,
-      major_outage: 4,
-      operational: 0,
-      partial_outage: 3,
-      under_maintenance: 1,
-      unknown: 5,
-    };
 
     for (const e of entries.slice(0, 200)) {
       const tsStr = (e.updated || e.published || e.pubDate || "").toString();
@@ -560,7 +581,7 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
           latestNonOperationalTitle = title || latestNonOperationalTitle;
           latestNonOperationalLink = link || latestNonOperationalLink;
         }
-        if (rank[st] > rank[topStatus]) topStatus = st;
+        if (isWorseStatus(st, topStatus, STATUS_RANK_UNKNOWN_HIGH)) topStatus = st;
         if (st === "under_maintenance" && /(in progress|ongoing)/i.test(combined)) {
           maintenanceInProgress = true;
         }
@@ -589,20 +610,16 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
           ]
         : [];
 
-    return {
+    return buildStatus(service, {
       description:
         incidents.length > 0
           ? topStatus === "under_maintenance" && maintenanceInProgress
             ? "Maintenance in progress"
             : (latestNonOperationalTitle || "Recent incidents detected").toString()
           : "",
-      id: service.id,
       incidents,
-      lastChecked: new Date(),
-      name: service.name,
-      pageUrl: service.pageUrl,
       status: incidents.length > 0 ? topStatus : "operational",
-    };
+    });
   }
 
   let rssUrl = service.rssUrl || (service.type === "statuspage" ? deriveStatuspageRssUrl(service.pageUrl) : undefined);
@@ -615,15 +632,7 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
   }
   if (!rssUrl) {
     // No RSS configured
-    return {
-      description: "No RSS",
-      id: service.id,
-      incidents: [],
-      lastChecked: new Date(),
-      name: service.name,
-      pageUrl: service.pageUrl,
-      status: "unknown",
-    };
+    return buildStatus(service, { description: "No RSS", status: "unknown" });
   }
 
   try {
@@ -708,15 +717,7 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
         if (st !== "operational") {
           latestNonOperationalMs = Math.max(latestNonOperationalMs, ts);
           // pick the worst
-          const rank: Record<StatusLevel, number> = {
-            degraded_performance: 2,
-            major_outage: 4,
-            operational: 0,
-            partial_outage: 3,
-            under_maintenance: 1,
-            unknown: 5,
-          };
-          if (rank[st] > rank[topStatus]) topStatus = st;
+          if (isWorseStatus(st, topStatus, STATUS_RANK_UNKNOWN_HIGH)) topStatus = st;
           // Track latest non-operational entry's title/link for summary
           if (!latestNonOperationalTitle2 || ts >= latestNonOperationalMs) {
             latestNonOperationalTitle2 = title || latestNonOperationalTitle2;
@@ -752,44 +753,23 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
           ]
         : [];
 
-    return {
+    return buildStatus(service, {
       description:
         incidents.length > 0
           ? topStatus === "under_maintenance" && maintenanceInProgress
             ? "Maintenance in progress"
             : (latestNonOperationalTitle2 || incidentName).toString()
           : "",
-      id: service.id,
       incidents,
-      lastChecked: new Date(),
-      name: service.name,
-      pageUrl: service.pageUrl,
       status: incidents.length > 0 ? topStatus : "operational",
-    };
+    });
   } catch (e) {
-    return {
-      description: "Unreachable",
-      id: service.id,
-      incidents: [],
-      lastChecked: new Date(),
-      name: service.name,
-      pageUrl: service.pageUrl,
-      status: "unknown",
-    };
+    return errorStatus(service, "Unreachable");
   }
 }
 
 function escalateStatus(a: StatusLevel, b: StatusLevel): StatusLevel {
-  const rank: Record<StatusLevel, number> = {
-    degraded_performance: 2,
-    major_outage: 4,
-    operational: 0,
-    partial_outage: 3,
-    under_maintenance: 1,
-    // Treat unknown as the lowest severity so it never overrides a known non-operational status
-    unknown: -1,
-  };
-  return rank[b] > rank[a] ? b : a;
+  return isWorseStatus(b, a, STATUS_RANK) ? b : a;
 }
 
 function extractSpanById(html: string, id: string): { text: string | null; openTag: string | null } {
@@ -927,39 +907,21 @@ async function fetchSteamStatus(service: ServiceConfig): Promise<ServiceStatus> 
 
     // If we discovered incidents but overall is still operational/unknown, escalate based on incident impacts
     if (incidents.length > 0 && (overall === "operational" || overall === "unknown")) {
-      const mapImpact = (imp?: string): StatusLevel => {
-        const s = (imp || "").toLowerCase();
-        if (s === "critical") return "major_outage";
-        if (s === "major") return "partial_outage";
-        if (s === "minor") return "degraded_performance";
-        return "degraded_performance"; // default to degraded when incident exists without clear impact
-      };
       let worst: StatusLevel = "operational";
-      for (const inc of incidents) worst = escalateStatus(worst, mapImpact(inc.impact));
+      for (const inc of incidents)
+        worst = escalateStatus(worst, impactToStatusLevel(inc.impact, "degraded_performance"));
       overall = escalateStatus(overall, worst);
     }
 
     // Keep concise; only append text for noteworthy states
     const description = overall === "operational" ? "" : overall === "major_outage" ? "Major Outage" : parts.join("; ");
-    return {
+    return buildStatus(service, {
       description: description || "Parsed Steam status",
-      id: service.id,
       incidents,
-      lastChecked: new Date(),
-      name: service.name,
-      pageUrl: service.pageUrl,
       status: overall,
-    };
+    });
   } catch (e) {
-    return {
-      description: "Unreachable",
-      id: service.id,
-      incidents: [],
-      lastChecked: new Date(),
-      name: service.name,
-      pageUrl: service.pageUrl,
-      status: "major_outage",
-    };
+    return errorStatus(service, "Unreachable", "major_outage");
   }
 }
 
@@ -1091,25 +1053,9 @@ async function fetchAuth0Status(service: ServiceConfig): Promise<ServiceStatus> 
     else if (overall === "degraded_performance") description = "Degraded Performance";
     else if (overall === "under_maintenance") description = "Maintenance in progress";
 
-    return {
-      description,
-      id: service.id,
-      incidents,
-      lastChecked: new Date(),
-      name: service.name,
-      pageUrl: service.pageUrl,
-      status: overall,
-    };
+    return buildStatus(service, { description, incidents, status: overall });
   } catch (e) {
-    return {
-      description: "Unreachable",
-      id: service.id,
-      incidents: [],
-      lastChecked: new Date(),
-      name: service.name,
-      pageUrl: service.pageUrl,
-      status: "major_outage",
-    };
+    return errorStatus(service, "Unreachable", "major_outage");
   }
 }
 
@@ -1261,20 +1207,16 @@ async function fetchAppleSupportStatus(service: ServiceConfig): Promise<ServiceS
             ]
           : [];
 
-      return {
+      return buildStatus(service, {
         description:
           overall === "under_maintenance" && incidents.length
             ? "Maintenance in progress"
             : incidents.length
               ? "Issues detected"
               : "",
-        id: service.id,
         incidents,
-        lastChecked: new Date(),
-        name: service.name,
-        pageUrl: service.pageUrl,
         status: incidents.length ? overall : "operational",
-      };
+      });
     } catch {
       // try next
     }
@@ -1314,20 +1256,16 @@ async function fetchAppleDeveloperStatus(service: ServiceConfig): Promise<Servic
             },
           ]
         : [];
-    return {
+    return buildStatus(service, {
       description:
         overall === "under_maintenance" && incidents.length
           ? "Maintenance in progress"
           : incidents.length
             ? "Issues detected"
             : "",
-      id: service.id,
       incidents,
-      lastChecked: new Date(),
-      name: service.name,
-      pageUrl: service.pageUrl,
       status: incidents.length ? overall : "operational",
-    };
+    });
   } catch {
     return await fetchGeneric(service);
   }
@@ -1367,15 +1305,8 @@ async function checkService(service: ServiceConfig): Promise<ServiceStatus> {
       if (hasRss && sp.status !== "operational" && sp.status !== "unknown") {
         try {
           const rss = await fetchRSS(service);
-          const rank: Record<StatusLevel, number> = {
-            degraded_performance: 2,
-            major_outage: 4,
-            operational: 0,
-            partial_outage: 3,
-            under_maintenance: 1,
-            unknown: 5,
-          };
-          const rssBetter = rank[rss.status] > rank[sp.status] || (sp.incidents?.length ?? 0) === 0;
+          const rssBetter =
+            isWorseStatus(rss.status, sp.status, STATUS_RANK_UNKNOWN_HIGH) || (sp.incidents?.length ?? 0) === 0;
           return rssBetter ? rss : sp;
         } catch {
           return sp;
@@ -2165,15 +2096,7 @@ export async function fetchAllStatuses(): Promise<{ categories: { name: string; 
           return await checkService(svc);
         } catch {
           // Extremely defensive fallback
-          return {
-            description: "Unreachable",
-            id: svc.id,
-            incidents: [],
-            lastChecked: new Date(),
-            name: svc.name,
-            pageUrl: svc.pageUrl,
-            status: "major_outage" as StatusLevel,
-          };
+          return errorStatus(svc, "Unreachable", "major_outage");
         }
       })
     );
