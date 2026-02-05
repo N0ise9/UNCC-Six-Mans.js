@@ -656,6 +656,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
   let nonIssueTimeoutsAws: Array<ReturnType<typeof setTimeout>> = []; // AWS sweep
   // Heartbeat to ensure embeds refresh periodically; interval adapts based on whether issues exist
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let heartbeatAlignTimeout: ReturnType<typeof setTimeout> | null = null;
   let heartbeatMsCurrent: number | null = null;
   let watchdogTimer: ReturnType<typeof setInterval> | null = null;
   let nextSweepTimer: ReturnType<typeof setTimeout> | null = null;
@@ -671,6 +672,10 @@ export async function startApiStatusReporting(channel: TextChannel) {
   // Retry processor timer (2 minutes)
   let retryTimer: ReturnType<typeof setInterval> | null = null;
   let sweepCursor = 0;
+  // Per-service issue polling alignment support
+  const issueStartTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+  const FIVE_MIN = 5 * 60 * 1000;
+  const POLL_AHEAD_MS = 45 * 1000; // start polls ~45s before the 5m embed tick
   const MAX_CHECKS_PER_SWEEP = 1000; // # to check per sweep window (aid to avoid throttling)
 
   const startRetryProcessor = () => {
@@ -892,10 +897,30 @@ export async function startApiStatusReporting(channel: TextChannel) {
     });
   };
 
+  // Compute ms until next aligned tick on a given interval and optional offset
+  const msUntilNextAlignedTick = (intervalMs: number, offsetMs = 0) => {
+    const now = Date.now();
+    const next = Math.ceil((now - offsetMs) / intervalMs) * intervalMs + offsetMs;
+    return Math.max(0, next - now);
+  };
+
   const ensureHeartbeat = (desiredMs: number) => {
-    if (heartbeatMsCurrent === desiredMs && heartbeatTimer) return;
-    if (heartbeatTimer) clearInterval(heartbeatTimer);
-    heartbeatTimer = setInterval(async () => {
+    if (heartbeatMsCurrent === desiredMs && heartbeatTimer && !heartbeatAlignTimeout) return;
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    if (heartbeatAlignTimeout) {
+      clearTimeout(heartbeatAlignTimeout);
+      heartbeatAlignTimeout = null;
+    }
+
+    // Align heartbeat to the next 5-minute boundary when running at 5 minutes,
+    // otherwise just start after desiredMs
+    const initialDelay = desiredMs === FIVE_MIN ? msUntilNextAlignedTick(FIVE_MIN, 0) : desiredMs;
+
+    heartbeatAlignTimeout = setTimeout(async () => {
+      heartbeatAlignTimeout = null;
       if (isStale()) return;
       try {
         lastUpdateContext = "heartbeat";
@@ -903,10 +928,20 @@ export async function startApiStatusReporting(channel: TextChannel) {
       } catch (e) {
         logWarn(`Heartbeat update failed: ${(e as Error).message}`);
       }
-    }, desiredMs);
+      heartbeatTimer = setInterval(async () => {
+        if (isStale()) return;
+        try {
+          lastUpdateContext = "heartbeat";
+          requestUpdateSoon(true);
+        } catch (e) {
+          logWarn(`Heartbeat update failed: ${(e as Error).message}`);
+        }
+      }, desiredMs);
+      const mins = Math.round(desiredMs / 60000);
+      logInfo(`Heartbeat started interval=${mins}m (aligned)`);
+    }, initialDelay);
+
     heartbeatMsCurrent = desiredMs;
-    const mins = Math.round(desiredMs / 60000);
-    logInfo(`Heartbeat started interval=${mins}m`);
   };
 
   const statusChanged = (a?: ServiceStatus, b?: ServiceStatus): boolean => {
@@ -1015,60 +1050,69 @@ export async function startApiStatusReporting(channel: TextChannel) {
     }
     const changed = statusChanged(old, newStatus);
 
+    if (!changed) return;
+
     // Manage per-service polling strategy transitions
     const isIssue = newStatus.status !== "operational" && newStatus.status !== "unknown";
     const wasIssue = old ? old.status !== "operational" && old.status !== "unknown" : false;
 
-    if (isIssue && !issueIntervals.has(cfg.id)) {
-      // start 5-min polling for this service
-      const handle = setInterval(
-        async () => {
+    if (isIssue && !issueIntervals.has(cfg.id) && !issueStartTimeouts.has(cfg.id)) {
+      // Start aligned 5-min polling for this service with an initial delay so it runs shortly before the embed tick
+      const pollOnce = async () => {
+        if (isStale()) return;
+        try {
+          v2LogCheck("issue", cfg.name, runId);
+          logInfo(`IssuePoll Start: RunID=${runId} PID=${process.pid} SVC=${cfg.id}`);
+          const updated = await checkSingleService(cfg);
           if (isStale()) return;
-          try {
-            v2LogCheck("issue", cfg.name, runId);
-            logInfo(`IssuePoll Start: RunID=${runId} PID=${process.pid} SVC=${cfg.id}`);
-            const updated = await checkSingleService(cfg);
-            if (isStale()) return;
-            logInfo(`IssuePoll done SVC=${cfg.id} status=${updated.status}`);
+          logInfo(`IssuePoll done SVC=${cfg.id} status=${updated.status}`);
 
-            // ---- metrics ----
-            checkedSinceWatchdog++;
-            lastCheckAt = Date.now();
-            if (updated.status === "operational") okSinceWatchdog++;
-            else if (updated.status === "unknown") unknownSinceWatchdog++;
-            else issueSinceWatchdog++;
+          // ---- metrics ----
+          checkedSinceWatchdog++;
+          lastCheckAt = Date.now();
+          if (updated.status === "operational") okSinceWatchdog++;
+          else if (updated.status === "unknown") unknownSinceWatchdog++;
+          else issueSinceWatchdog++;
 
-            const before = statusCache.get(cfg.id);
-            await onServiceUpdated(updated, before, "issue");
+          const before = statusCache.get(cfg.id);
+          await onServiceUpdated(updated, before, "issue");
 
-            // If resolved, stop interval
-            if (updated.status === "operational" || updated.status === "unknown") {
-              const h = issueIntervals.get(cfg.id);
-              if (h) clearInterval(h);
-              issueIntervals.delete(cfg.id);
-            }
-          } catch (e) {
-            checkFailSinceWatchdog++;
-            lastCheckAt = Date.now();
-            logWarn(`Polling failed for ${cfg.id}: ${(e as Error).message}`);
+          // If resolved, stop interval
+          if (updated.status === "operational" || updated.status === "unknown") {
+            const h = issueIntervals.get(cfg.id);
+            if (h) clearInterval(h);
+            issueIntervals.delete(cfg.id);
           }
-        },
-        5 * 60 * 1000
-      );
-      issueIntervals.set(cfg.id, handle);
+        } catch (e) {
+          checkFailSinceWatchdog++;
+          lastCheckAt = Date.now();
+          logWarn(`Polling failed for ${cfg.id}: ${(e as Error).message}`);
+        }
+      };
+
+      const alignDelayRaw = msUntilNextAlignedTick(FIVE_MIN, 0) - POLL_AHEAD_MS;
+      const alignDelay = alignDelayRaw >= 0 ? alignDelayRaw : alignDelayRaw + FIVE_MIN;
+      const startT = setTimeout(async () => {
+        issueStartTimeouts.delete(cfg.id);
+        await pollOnce();
+        const h = setInterval(pollOnce, FIVE_MIN);
+        issueIntervals.set(cfg.id, h);
+      }, alignDelay);
+      issueStartTimeouts.set(cfg.id, startT);
     }
     if (!isIssue && wasIssue) {
       const h = issueIntervals.get(cfg.id);
       logInfo(`IssuePoll resolved SVC=${cfg.id} stopping interval`);
       if (h) clearInterval(h);
       issueIntervals.delete(cfg.id);
+      const t = issueStartTimeouts.get(cfg.id);
+      if (t) clearTimeout(t);
+      issueStartTimeouts.delete(cfg.id);
     }
 
     // Update embeds only when there are issues or resolving previous ones, or when this service changed significantly
-    const affectsDisplay = isIssue || wasIssue || lastHadIssues;
-    if (changed && affectsDisplay) {
-      requestUpdateSoon(false);
-    }
+    // Throttle incident edits to the aligned heartbeat tick; avoid immediate edits here
+    // Still allow the heartbeat to refresh the embeds on the 5-minute schedule.
   };
 
   const clearNonIssueTimeouts = () => {
@@ -1313,44 +1357,50 @@ export async function startApiStatusReporting(channel: TextChannel) {
       lastHadIssues = false;
     }
 
-    // Start 5-min polling for any services already having issues
+    // Start aligned 5-min polling for any services already having issues
     for (const cat of categories) {
       for (const svc of cat.services) {
         if (svc.status !== "operational" && svc.status !== "unknown") {
           const cfg = getServiceConfig(svc.id);
-          if (cfg && !cfg.isGroupRoot && !issueIntervals.has(cfg.id)) {
-            const handle = setInterval(
-              async () => {
+          if (cfg && !cfg.isGroupRoot && !issueIntervals.has(cfg.id) && !issueStartTimeouts.has(cfg.id)) {
+            const pollOnce = async () => {
+              if (isStale()) return;
+              try {
+                v2LogCheck("issue", cfg.name, runId);
+                const updated = await checkSingleService(cfg);
                 if (isStale()) return;
-                try {
-                  v2LogCheck("issue", cfg.name, runId);
-                  const updated = await checkSingleService(cfg);
-                  if (isStale()) return;
 
-                  // ---- metrics ----
-                  checkedSinceWatchdog++;
-                  lastCheckAt = Date.now();
-                  if (updated.status === "operational") okSinceWatchdog++;
-                  else if (updated.status === "unknown") unknownSinceWatchdog++;
-                  else issueSinceWatchdog++;
+                // ---- metrics ----
+                checkedSinceWatchdog++;
+                lastCheckAt = Date.now();
+                if (updated.status === "operational") okSinceWatchdog++;
+                else if (updated.status === "unknown") unknownSinceWatchdog++;
+                else issueSinceWatchdog++;
 
-                  const before = statusCache.get(cfg.id);
-                  await onServiceUpdated(updated, before, "issue");
+                const before = statusCache.get(cfg.id);
+                await onServiceUpdated(updated, before, "issue");
 
-                  if (updated.status === "operational" || updated.status === "unknown") {
-                    const h = issueIntervals.get(cfg.id);
-                    if (h) clearInterval(h);
-                    issueIntervals.delete(cfg.id);
-                  }
-                } catch (e) {
-                  checkFailSinceWatchdog++;
-                  lastCheckAt = Date.now();
-                  logWarn(`Polling failed for ${cfg.id}: ${(e as Error).message}`);
+                if (updated.status === "operational" || updated.status === "unknown") {
+                  const h = issueIntervals.get(cfg.id);
+                  if (h) clearInterval(h);
+                  issueIntervals.delete(cfg.id);
                 }
-              },
-              5 * 60 * 1000
-            );
-            issueIntervals.set(cfg.id, handle);
+              } catch (e) {
+                checkFailSinceWatchdog++;
+                lastCheckAt = Date.now();
+                logWarn(`Polling failed for ${cfg.id}: ${(e as Error).message}`);
+              }
+            };
+
+            const alignDelayRaw = msUntilNextAlignedTick(FIVE_MIN, 0) - POLL_AHEAD_MS;
+            const alignDelay = alignDelayRaw >= 0 ? alignDelayRaw : alignDelayRaw + FIVE_MIN;
+            const startT = setTimeout(async () => {
+              issueStartTimeouts.delete(cfg.id);
+              await pollOnce();
+              const h = setInterval(pollOnce, FIVE_MIN);
+              issueIntervals.set(cfg.id, h);
+            }, alignDelay);
+            issueStartTimeouts.set(cfg.id, startT);
           }
         }
       }
@@ -1441,6 +1491,10 @@ export async function startApiStatusReporting(channel: TextChannel) {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
     }
+    if (heartbeatAlignTimeout) {
+      clearTimeout(heartbeatAlignTimeout);
+      heartbeatAlignTimeout = null;
+    }
     heartbeatMsCurrent = null;
 
     // Clear Retry Processor
@@ -1458,6 +1512,8 @@ export async function startApiStatusReporting(channel: TextChannel) {
     // Clear Per-Service issue polling intervals
     for (const h of issueIntervals.values()) clearInterval(h);
     issueIntervals.clear();
+    for (const t of issueStartTimeouts.values()) clearTimeout(t);
+    issueStartTimeouts.clear();
 
     // Clear any pending debounced update timer
     if (updateSoonTimer) {
