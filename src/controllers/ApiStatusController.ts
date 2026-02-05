@@ -652,7 +652,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
   let lastHadIssues = false;
   const statusCache = new Map<string, ServiceStatus>(); // serviceId -> last known status
   const issueIntervals = new Map<string, ReturnType<typeof setInterval>>(); // serviceId -> interval handle
-  let nonIssueTimeouts: Array<ReturnType<typeof setTimeout>> = []; // scheduled one-offs over 15 minutes (default sweep)
+  let nonIssueTimeouts: Array<ReturnType<typeof setTimeout>> = []; // scheduled one-offs over 30 minutes (default sweep)
   let nonIssueTimeoutsAws: Array<ReturnType<typeof setTimeout>> = []; // AWS sweep
   // Heartbeat to ensure embeds refresh periodically; interval adapts based on whether issues exist
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -1406,7 +1406,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
       }
     }
 
-    // Stagger checks for non-issue services over 15 minutes
+    // Stagger checks for non-issue services over 30 minutes
     scheduleNonIssueSweep();
     // Run AWS checks in a parallel sweep so large AWS feed sets don't block others
     scheduleAwsSweep();

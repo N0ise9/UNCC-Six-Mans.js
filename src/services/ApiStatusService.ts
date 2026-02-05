@@ -62,7 +62,7 @@ async function fetchWithTimeout(url: string, ms = 15000): Promise<Response> {
   }
 }
 
-// Decode common HTML entities and strip HTML tags to plain text for Discord embeds
+// Decode common HTML entities
 function decodeHtmlEntities(text: string): string {
   if (!text) return text;
   let result = text;
@@ -85,6 +85,7 @@ function decodeHtmlEntities(text: string): string {
   return result;
 }
 
+// Convert basic HTML content to plain text suitable for Discord embeds
 function htmlToText(html: string): string {
   if (!html) return "";
   // Normalize newlines first
