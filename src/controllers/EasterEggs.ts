@@ -1117,7 +1117,7 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
                     role: "user",
                   },
                 ],
-                model: "gpt-5.2",
+                model: "gpt-5",
                 parallel_tool_calls: true,
                 tool_choice: "auto",
                 tools: [
@@ -1135,7 +1135,7 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
               completion = await openai.responses.create({
                 conversation: convo.id,
                 input: `${interaction.user.id} ${interaction.user.username}: ${prompt}`,
-                model: "gpt-5.2",
+                model: "gpt-5",
                 parallel_tool_calls: true,
                 tool_choice: "auto",
                 tools: [
