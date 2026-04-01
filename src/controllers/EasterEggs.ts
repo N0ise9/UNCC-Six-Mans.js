@@ -1117,7 +1117,7 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
                     role: "user",
                   },
                 ],
-                model: "gpt-5",
+                model: "gpt-5.4",
                 parallel_tool_calls: true,
                 tool_choice: "auto",
                 tools: [
@@ -1135,14 +1135,14 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
               completion = await openai.responses.create({
                 conversation: convo.id,
                 input: `${interaction.user.id} ${interaction.user.username}: ${prompt}`,
-                model: "gpt-5",
+                model: "gpt-5.4",
                 parallel_tool_calls: true,
                 tool_choice: "auto",
                 tools: [
                   { type: "web_search" },
                   {
                     input_fidelity: "high",
-                    model: "gpt-image-1",
+                    model: "gpt-image-1.5",
                     moderation: "low",
                     output_format: "png",
                     type: "image_generation",
@@ -1307,7 +1307,7 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
         }
 
         let completion = await openai.videos.create({
-          model: "sora-2",
+          model: "sora-2-2025-12-08",
           prompt: prompt,
           // @ts-expect-error OpenAI SDK uses a branded type; valid values are "4" | "8" | "12"
           seconds: secondsStr,
