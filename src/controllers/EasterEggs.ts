@@ -1124,7 +1124,7 @@ export async function handleEasterEggsInteraction(interaction: CommandInteractio
                   { type: "web_search" },
                   {
                     input_fidelity: "high",
-                    model: "gpt-image-1",
+                    model: "gpt-image-1.5",
                     moderation: "low",
                     output_format: "png",
                     type: "image_generation",
