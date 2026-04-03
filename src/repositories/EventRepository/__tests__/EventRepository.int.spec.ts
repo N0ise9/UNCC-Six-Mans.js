@@ -1,4 +1,4 @@
-import { PrismaClient, createPrismaClient } from "../../../prisma";
+import { PrismaClient, createPrismaClientFromEnv } from "../../../prisma";
 import { Event } from "../types";
 import * as faker from "faker";
 import { EventRepository } from "../EventRepository";
@@ -12,7 +12,7 @@ beforeEach(async () => {
 });
 
 beforeAll(async () => {
-  prisma = createPrismaClient(process.env["DATABASE_URL"]);
+  prisma = createPrismaClientFromEnv();
   await prisma.$connect();
   await prisma.event.deleteMany();
 });

@@ -3,7 +3,7 @@ import { ActiveMatchBuilder, BallChaserQueueBuilder } from "../../../../.jest/Bu
 import { ActiveMatchRepository } from "../ActiveMatchRepository";
 import { PlayerInActiveMatch } from "../types";
 import { Team } from "../../../types/common";
-import { ActiveMatch, BallChaser, PrismaClient, createPrismaClient } from "../../../prisma";
+import { ActiveMatch, BallChaser, PrismaClient, createPrismaClientFromEnv } from "../../../prisma";
 import { waitForAllPromises } from "../../../utils";
 import { LeaderboardRepository } from "../../LeaderboardRepository";
 import { EventRepository } from "../../EventRepository";
@@ -21,7 +21,7 @@ beforeEach(async () => {
 });
 
 beforeAll(async () => {
-  prisma = createPrismaClient(process.env["DATABASE_URL"]);
+  prisma = createPrismaClientFromEnv();
   await prisma.$connect();
   await prisma.leaderboard.deleteMany();
   await prisma.activeMatch.deleteMany();

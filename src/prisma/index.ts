@@ -4,14 +4,18 @@ import { PrismaClient } from "../generated/prisma/client";
 
 export * from "../generated/prisma/client";
 
-export function resolveDatabaseUrl(databaseUrl?: string): string {
-  return databaseUrl ?? getEnvVariable("DATABASE_URL");
+export function resolveDatabaseUrl(envVariableName = "DATABASE_URL"): string {
+  return getEnvVariable(envVariableName);
 }
 
-export function createPrismaClient(databaseUrl?: string): PrismaClient {
+export function createPrismaClient(databaseUrl: string): PrismaClient {
   const adapter = new PrismaPg({
-    connectionString: resolveDatabaseUrl(databaseUrl),
+    connectionString: databaseUrl,
   });
 
   return new PrismaClient({ adapter });
+}
+
+export function createPrismaClientFromEnv(envVariableName = "DATABASE_URL"): PrismaClient {
+  return createPrismaClient(resolveDatabaseUrl(envVariableName));
 }

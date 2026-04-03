@@ -1,4 +1,4 @@
-import { BallChaser, PrismaClient, createPrismaClient } from "../../../prisma";
+import { BallChaser, PrismaClient, createPrismaClientFromEnv } from "../../../prisma";
 import * as faker from "faker";
 import { LeaderboardBuilder } from "../../../../.jest/Builder";
 import { waitForAllPromises } from "../../../utils";
@@ -18,7 +18,7 @@ beforeEach(async () => {
 });
 
 beforeAll(async () => {
-  prisma = createPrismaClient(process.env["DATABASE_URL"]);
+  prisma = createPrismaClientFromEnv();
   await prisma.$connect();
   await prisma.leaderboard.deleteMany();
   await prisma.event.deleteMany();

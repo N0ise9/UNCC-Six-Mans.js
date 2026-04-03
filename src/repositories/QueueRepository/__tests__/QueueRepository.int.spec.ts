@@ -2,7 +2,7 @@ import * as faker from "faker";
 import { PlayerInQueue } from "../types";
 import { QueueRepository } from "../QueueRepository";
 import { BallChaserQueueBuilder } from "../../../../.jest/Builder";
-import { PrismaClient, createPrismaClient } from "../../../prisma";
+import { PrismaClient, createPrismaClientFromEnv } from "../../../prisma";
 import { DateTime } from "luxon";
 import { Team } from "../../../types/common";
 import { LeaderboardRepository } from "../../LeaderboardRepository";
@@ -32,7 +32,7 @@ beforeEach(async () => {
 });
 
 beforeAll(async () => {
-  prisma = createPrismaClient(process.env["DATABASE_URL"]);
+  prisma = createPrismaClientFromEnv();
   await prisma.$connect();
   await prisma.leaderboard.deleteMany();
   await prisma.activeMatch.deleteMany();
