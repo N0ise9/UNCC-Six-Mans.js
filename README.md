@@ -8,11 +8,11 @@ Each guild is isolated from the others:
 - its own tracked Discord messages
 - its own OpenAI conversation state
 
-The bot uses one shared Discord client and one shared outbound Discord work scheduler, which helps keep button updates, embed edits, and follow-up messages coordinated when multiple guilds are active at once. OpenAI features are slash-command-only through `/norm` and optional `/sora`.
+The bot uses one shared Discord client and one shared outbound Discord work scheduler so queue updates, embed edits, and follow-up messages stay coordinated when multiple guilds are active at once. OpenAI features are slash-command-only through `/norm` and optional `/sora`.
 
 ## How Norm Works
 
-Norm boots once and then loads guild-specific configuration from `.guild-instance-config.json`.
+Norm boots once and loads guild-specific configuration from `.guild-instance-config.json`.
 
 Per-guild configuration is created inside Discord with `/setup set`, not by editing `.env`.
 
@@ -26,7 +26,7 @@ If one guild has a bad database URL or an unreachable Docker-backed Postgres end
 
 ## Requirements
 
-- Node.js 18.18+ minimum
+- Node.js 22.12+ recommended
 - npm
 - A Discord bot application and token
 - An OpenAI API key for `/norm`
@@ -74,13 +74,14 @@ What these do:
 - `openai`: OpenAI API key
 - `CONFIG_ENCRYPTION_KEY`: used to encrypt and decrypt stored per-guild database URLs
 - `ENVIRONMENT`: optional runtime mode; `dev` enables dev-only behavior in a few helper paths
-- `conversation_token_limit`: optional input-token threshold for rotating a guild’s stored OpenAI conversation
+- `conversation_token_limit`: optional input-token threshold for rotating a guild's stored OpenAI conversation
 - `ENABLE_SORA`: enables the `/sora` slash command
 - `SORA_MODEL`: required only when `ENABLE_SORA=true`
 
 Important:
 - Do not rotate `CONFIG_ENCRYPTION_KEY` casually. If it changes, existing stored guild database URLs can no longer be decrypted.
 - Old `.env` values like `queue_channel_id`, `leaderboard_channel_id`, `guild_id`, `conversation_id`, and per-guild `DATABASE_URL` are legacy and are not the active per-guild setup path anymore.
+- `DATABASE_URL` is only needed for one-off Prisma CLI commands like `npx prisma db push`; the bot runtime itself reads per-guild database URLs from `.guild-instance-config.json`.
 
 ## Database Setup
 
@@ -139,7 +140,7 @@ After the bot is online in a guild, run `/setup set` in that server.
 Current required setup fields:
 - `queue_channel`
 - `leaderboard_channel`
-- `voice_channel`
+- `chat_channel`
 - `database_url`
 
 Optional setup fields:
@@ -152,7 +153,7 @@ Example:
 /setup set
 queue_channel: #six-mans-queue
 leaderboard_channel: #leaderboard
-voice_channel: Six Mans VC
+chat_channel: #norm-chat
 api_status_channel: #api-status
 database_url: postgresql://Norm:NormTheNiner@localhost:5432/SixMansGuildA
 conversation_id: conv_1234567890abcdef
@@ -178,6 +179,7 @@ Use `/setup disable` to disable the guild runtime entry without deleting the sto
 OpenAI behavior:
 - `/norm` uses a stored conversation per guild
 - `/norm` supports optional image attachments
+- `/norm` and `/sora` only work in the configured `chat_channel`
 - `/sora` uses the OpenAI Videos API through the current SDK
 - generated images and videos are written under `data/generated-media`
 
@@ -186,6 +188,7 @@ OpenAI behavior:
 - Norm does not use `!norm` message triggers anymore. OpenAI interactions are slash-command-only.
 - Per-guild configuration is saved in `.guild-instance-config.json`.
 - The bot does not write guild setup back into `.env`.
+- If a guild was configured before `chat_channel` was required, rerun `/setup set` to enable `/norm` and `/sora` for that server.
 - Old generated source assets should not be committed; runtime media lives under `data/generated-media`.
 - The bot uses stale-interaction protection so outdated queued button/select interactions are ignored when the authoritative queue or match state has already changed.
 
@@ -233,6 +236,10 @@ If a guild fails to initialize:
 - verify the schema has been pushed to that database
 - verify the configured Discord channels still exist
 - verify `CONFIG_ENCRYPTION_KEY` has not changed since the guild config was saved
+
+If `/norm` or `/sora` refuse to run:
+- make sure you are in the configured `chat_channel`
+- rerun `/setup set` if this guild was configured before `chat_channel` was added
 
 If Sora fails at startup:
 - set `ENABLE_SORA=false`, or

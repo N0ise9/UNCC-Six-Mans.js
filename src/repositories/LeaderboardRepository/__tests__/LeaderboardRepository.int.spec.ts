@@ -2,19 +2,23 @@ import { BallChaser, PrismaClient, createPrismaClient } from "../../../prisma";
 import * as faker from "faker";
 import { LeaderboardBuilder } from "../../../../.jest/Builder";
 import { waitForAllPromises } from "../../../utils";
-import LeaderboardRepository from "../LeaderboardRepository";
-import EventRepository from "../../EventRepository";
+import { LeaderboardRepository } from "../LeaderboardRepository";
+import { EventRepository } from "../../EventRepository";
 import { PlayerStats } from "../types";
 
 let prisma: PrismaClient;
 let eventId: number = 1;
+let eventRepository: EventRepository;
+let leaderboardRepository: LeaderboardRepository;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  eventRepository = new EventRepository(prisma);
+  leaderboardRepository = new LeaderboardRepository(prisma, eventRepository);
 });
 
 beforeAll(async () => {
-  prisma = createPrismaClient();
+  prisma = createPrismaClient(process.env["DATABASE_URL"]);
   await prisma.$connect();
   await prisma.leaderboard.deleteMany();
   await prisma.event.deleteMany();
@@ -48,7 +52,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  await Promise.all([LeaderboardRepository.disconnect(), EventRepository.disconnect(), prisma.$disconnect()]);
+  await prisma.$disconnect();
 });
 
 const validatePlayerStats = (expected: PlayerStats, actual: PlayerStats | null) => {
@@ -97,13 +101,13 @@ describe("LeaderboardRepository tests", () => {
     const mockPlayerStats = LeaderboardBuilder.single();
     await manuallyAddPlayerStatsToLeaderboard(mockPlayerStats);
 
-    const result = await LeaderboardRepository.getPlayerStats(mockPlayerStats.id);
+    const result = await leaderboardRepository.getPlayerStats(mockPlayerStats.id);
 
     validatePlayerStats(mockPlayerStats, result);
   });
 
   it("returns null when looking for player that does not exist", async () => {
-    const result = await LeaderboardRepository.getPlayerStats(faker.datatype.uuid());
+    const result = await leaderboardRepository.getPlayerStats(faker.datatype.uuid());
     expect(result).toBeNull();
   });
 
@@ -113,7 +117,7 @@ describe("LeaderboardRepository tests", () => {
 
     const mockPlayerUpdates = LeaderboardBuilder.single({ id: mockPlayerStats.id, name: mockPlayerStats.name });
 
-    await LeaderboardRepository.updatePlayersStats([mockPlayerUpdates]);
+    await leaderboardRepository.updatePlayersStats([mockPlayerUpdates]);
 
     const actual = await prisma.leaderboard.findUnique({
       include: {
@@ -143,7 +147,7 @@ describe("LeaderboardRepository tests", () => {
     const mockPlayerStats = LeaderboardBuilder.single();
     await manuallyAddBallChaser(mockPlayerStats);
 
-    await LeaderboardRepository.updatePlayersStats([mockPlayerStats]);
+    await leaderboardRepository.updatePlayersStats([mockPlayerStats]);
 
     const actual = await prisma.leaderboard.findUnique({
       include: {
@@ -178,7 +182,7 @@ describe("LeaderboardRepository tests", () => {
     const mockPlayerStats = LeaderboardBuilder.single();
     await manuallyAddBallChaser(mockPlayerStats);
 
-    await LeaderboardRepository.updatePlayersStats([mockPlayerStats]);
+    await leaderboardRepository.updatePlayersStats([mockPlayerStats]);
 
     const actual = await prisma.leaderboard.findUnique({
       include: {
@@ -199,7 +203,7 @@ describe("LeaderboardRepository tests", () => {
     const playersToAdd = LeaderboardBuilder.many(10);
     await manuallyAddPlayerStatsToLeaderboard(playersToAdd);
 
-    const allPlayers = await LeaderboardRepository.getPlayersStats(5);
+    const allPlayers = await leaderboardRepository.getPlayersStats(5);
 
     expect(allPlayers).toHaveLength(5);
     // 5 - 1 since you can't [i + 1] on the last item
@@ -212,7 +216,7 @@ describe("LeaderboardRepository tests", () => {
     const playersToAdd = LeaderboardBuilder.many(10);
     await manuallyAddPlayerStatsToLeaderboard(playersToAdd);
 
-    const allPlayers = await LeaderboardRepository.getPlayersStats();
+    const allPlayers = await leaderboardRepository.getPlayersStats();
 
     expect(allPlayers).toHaveLength(playersToAdd.length);
     // playersToAdd.length - 1 since you can't [i + 1] on the last item
@@ -225,7 +229,7 @@ describe("LeaderboardRepository tests", () => {
     const playersToAdd = LeaderboardBuilder.many(5, { mmr: 100 });
     await manuallyAddPlayerStatsToLeaderboard(playersToAdd);
 
-    const allPlayers = await LeaderboardRepository.getPlayersStats();
+    const allPlayers = await leaderboardRepository.getPlayersStats();
 
     expect(allPlayers).toHaveLength(playersToAdd.length);
     // playersToAdd.length - 1 since you can't [i + 1] on the last item

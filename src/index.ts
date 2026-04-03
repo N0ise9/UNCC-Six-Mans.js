@@ -11,7 +11,7 @@ import { startGeneratedMediaPruner } from "./runtime/generatedMediaRetention";
 import { getEnvVariable } from "./utils";
 
 const NormClient = new Client({
-  intents: ["Guilds", "GuildVoiceStates"],
+  intents: ["Guilds"],
 });
 
 const discordToken = getEnvVariable("token");

@@ -1,4 +1,4 @@
-import { Message, TextChannel, VoiceBasedChannel, Client } from "discord.js";
+import { Client, Message, TextChannel } from "discord.js";
 import OpenAI from "openai";
 import { PrismaClient } from "../prisma";
 import AsyncMutex from "../utils/AsyncMutex";
@@ -27,6 +27,7 @@ export interface EncryptedValue {
 
 export interface GuildInstanceStoredConfig {
   apiStatusChannelId?: string;
+  chatChannelId?: string;
   createdAt: string;
   databaseUrl: EncryptedValue;
   enabled: boolean;
@@ -37,11 +38,11 @@ export interface GuildInstanceStoredConfig {
   queueChannelId: string;
   queueMessageId?: string;
   updatedAt: string;
-  voiceChannelId: string;
 }
 
 export interface GuildInstanceConfig {
   apiStatusChannelId?: string;
+  chatChannelId?: string;
   createdAt: string;
   databaseUrl: string;
   enabled: boolean;
@@ -52,17 +53,16 @@ export interface GuildInstanceConfig {
   queueChannelId: string;
   queueMessageId?: string;
   updatedAt: string;
-  voiceChannelId: string;
 }
 
 export interface GuildConfigUpsertInput {
   apiStatusChannelId?: string;
+  chatChannelId: string;
   databaseUrl: string;
   guildId: string;
   leaderboardChannelId: string;
   openAiConversationId?: string;
   queueChannelId: string;
-  voiceChannelId: string;
 }
 
 export interface InteractiveSurfaceRecord {
@@ -82,9 +82,9 @@ export interface GuildVoteState {
 
 export interface GuildChannels {
   apiStatusChannel?: TextChannel | null;
+  chatChannel?: TextChannel | null;
   leaderboardChannel: TextChannel;
   queueChannel: TextChannel;
-  voiceChannel: VoiceBasedChannel;
 }
 
 export interface GuildContext {

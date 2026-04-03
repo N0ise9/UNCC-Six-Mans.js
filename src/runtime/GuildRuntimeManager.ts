@@ -8,7 +8,6 @@ import {
   PermissionFlagsBits,
   StringSelectMenuInteraction,
   TextChannel,
-  VoiceBasedChannel,
 } from "discord.js";
 import { DateTime } from "luxon";
 import OpenAI from "openai";
@@ -180,6 +179,23 @@ export class GuildRuntimeManager {
     }
 
     if (interaction.commandName === "norm" || interaction.commandName === "sora") {
+      if (!context.config.chatChannelId) {
+        await interaction.reply({
+          content:
+            "This guild is missing its OpenAI chat channel. A server admin needs to rerun /setup set.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (interaction.channelId !== context.config.chatChannelId) {
+        await interaction.reply({
+          content: `Use this command in <#${context.config.chatChannelId}>.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
       await interaction.deferReply();
       await handleEasterEggSlashInteraction(context, interaction);
     }
@@ -213,7 +229,7 @@ export class GuildRuntimeManager {
             `Queue channel: ${config.queueChannelId}`,
             `Leaderboard channel: ${config.leaderboardChannelId}`,
             `Leaderboard messages: ${config.leaderboardMessageIds?.join(", ") ?? "not created yet"}`,
-            `Voice channel: ${config.voiceChannelId}`,
+            `Chat channel: ${config.chatChannelId ?? "not configured; rerun /setup set"}`,
             `API status channel: ${config.apiStatusChannelId ?? "none"}`,
             `Database URL: ${maskSecret(config.databaseUrl)}`,
             `Queue message: ${config.queueMessageId ?? "not created yet"}`,
@@ -231,7 +247,7 @@ export class GuildRuntimeManager {
       case "set": {
         const queueChannel = interaction.options.getChannel("queue_channel", true);
         const leaderboardChannel = interaction.options.getChannel("leaderboard_channel", true);
-        const voiceChannel = interaction.options.getChannel("voice_channel", true);
+        const chatChannel = interaction.options.getChannel("chat_channel", true);
         const apiStatusChannel = interaction.options.getChannel("api_status_channel");
         const databaseUrl = interaction.options.getString("database_url", true);
         const conversationId = interaction.options.getString("conversation_id") ?? undefined;
@@ -244,8 +260,8 @@ export class GuildRuntimeManager {
           await responder.edit("Leaderboard channel must be a text channel.");
           return;
         }
-        if (voiceChannel.type !== ChannelType.GuildVoice && voiceChannel.type !== ChannelType.GuildStageVoice) {
-          await responder.edit("Voice channel must be voice-based.");
+        if (chatChannel.type !== ChannelType.GuildText) {
+          await responder.edit("Chat channel must be a text channel.");
           return;
         }
         if (apiStatusChannel && apiStatusChannel.type !== ChannelType.GuildText) {
@@ -255,12 +271,12 @@ export class GuildRuntimeManager {
 
         const input: GuildConfigUpsertInput = {
           apiStatusChannelId: apiStatusChannel?.id,
+          chatChannelId: chatChannel.id,
           databaseUrl,
           guildId: interaction.guildId,
           leaderboardChannelId: leaderboardChannel.id,
           openAiConversationId: conversationId,
           queueChannelId: queueChannel.id,
-          voiceChannelId: voiceChannel.id,
         };
 
         this.configStore.setGuildConfig(input);
@@ -389,16 +405,16 @@ export class GuildRuntimeManager {
   private async fetchChannels(config: GuildInstanceConfig): Promise<GuildChannels> {
     const queueChannel = await fetchTextChannel(this.client, config.queueChannelId);
     const leaderboardChannel = await fetchTextChannel(this.client, config.leaderboardChannelId);
-    const voiceChannel = await fetchVoiceChannel(this.client, config.voiceChannelId);
+    const chatChannel = config.chatChannelId ? await fetchTextChannel(this.client, config.chatChannelId) : null;
     const apiStatusChannel = config.apiStatusChannelId
       ? await fetchTextChannel(this.client, config.apiStatusChannelId).catch(() => null)
       : null;
 
     return {
       apiStatusChannel,
+      chatChannel,
       leaderboardChannel,
       queueChannel,
-      voiceChannel,
     };
   }
 
@@ -857,14 +873,6 @@ async function fetchTextChannel(client: Client, channelId: string): Promise<Text
   const channel = await client.channels.fetch(channelId);
   if (!channel || channel.type !== ChannelType.GuildText) {
     throw new Error(`Channel ${channelId} is not a guild text channel.`);
-  }
-  return channel;
-}
-
-async function fetchVoiceChannel(client: Client, channelId: string): Promise<VoiceBasedChannel> {
-  const channel = await client.channels.fetch(channelId);
-  if (!channel || !channel.isVoiceBased()) {
-    throw new Error(`Channel ${channelId} is not voice-based.`);
   }
   return channel;
 }

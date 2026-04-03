@@ -1,5 +1,6 @@
 import { Client, Message, TextChannel } from "discord.js";
 import OpenAI from "openai";
+import * as EasterEggsController from "../../controllers/EasterEggs";
 import { GuildConfigReadResult, GuildConfigStore } from "../GuildConfigStore";
 import { GuildRuntimeManager } from "../GuildRuntimeManager";
 import { DiscordWorkScheduler } from "../DiscordWorkScheduler";
@@ -7,6 +8,7 @@ import { GuildContext, GuildInstanceConfig } from "../types";
 
 function createConfig(guildId: string): GuildInstanceConfig {
   return {
+    chatChannelId: `${guildId}-chat`,
     createdAt: "2026-01-01T00:00:00.000Z",
     databaseUrl: `postgres:///${guildId}`,
     enabled: true,
@@ -14,7 +16,6 @@ function createConfig(guildId: string): GuildInstanceConfig {
     leaderboardChannelId: `${guildId}-leaderboard`,
     queueChannelId: `${guildId}-queue`,
     updatedAt: "2026-01-01T00:00:00.000Z",
-    voiceChannelId: `${guildId}-voice`,
   };
 }
 
@@ -257,6 +258,87 @@ describe("GuildRuntimeManager", () => {
     } finally {
       errorSpy.mockRestore();
       await manager.dispose();
+    }
+  });
+
+  it("rejects /norm outside the configured chat channel", async () => {
+    const manager = new GuildRuntimeManager(
+      {} as Client,
+      {} as OpenAI,
+      {} as GuildConfigStore,
+      new DiscordWorkScheduler(1, 0)
+    );
+    const context = createContext("guild-1");
+    const interaction = {
+      channelId: "wrong-channel",
+      commandName: "norm",
+      guildId: "guild-1",
+      reply: jest.fn(async () => undefined),
+    } as unknown as Parameters<GuildRuntimeManager["handleSlashCommand"]>[0];
+
+    jest.spyOn(manager, "ensureContext").mockResolvedValue(context);
+
+    await manager.handleSlashCommand(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Use this command in <#guild-1-chat>.",
+      ephemeral: true,
+    });
+  });
+
+  it("rejects /sora when the guild has not configured an OpenAI chat channel yet", async () => {
+    const manager = new GuildRuntimeManager(
+      {} as Client,
+      {} as OpenAI,
+      {} as GuildConfigStore,
+      new DiscordWorkScheduler(1, 0)
+    );
+    const context = createContext("guild-1");
+    context.config.chatChannelId = undefined;
+    const interaction = {
+      channelId: "guild-1-chat",
+      commandName: "sora",
+      guildId: "guild-1",
+      reply: jest.fn(async () => undefined),
+    } as unknown as Parameters<GuildRuntimeManager["handleSlashCommand"]>[0];
+
+    jest.spyOn(manager, "ensureContext").mockResolvedValue(context);
+
+    await manager.handleSlashCommand(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "This guild is missing its OpenAI chat channel. A server admin needs to rerun /setup set.",
+      ephemeral: true,
+    });
+  });
+
+  it("allows /norm in the configured chat channel", async () => {
+    const manager = new GuildRuntimeManager(
+      {} as Client,
+      {} as OpenAI,
+      {} as GuildConfigStore,
+      new DiscordWorkScheduler(1, 0)
+    );
+    const context = createContext("guild-1");
+    const interaction = {
+      channelId: "guild-1-chat",
+      commandName: "norm",
+      deferReply: jest.fn(async () => undefined),
+      guildId: "guild-1",
+    } as unknown as Parameters<GuildRuntimeManager["handleSlashCommand"]>[0];
+    const handlerSpy = jest
+      .spyOn(EasterEggsController, "handleEasterEggSlashInteraction")
+      .mockResolvedValue(undefined);
+
+    try {
+      jest.spyOn(manager, "ensureContext").mockResolvedValue(context);
+
+      await manager.handleSlashCommand(interaction);
+
+      expect(interaction.deferReply).toHaveBeenCalledTimes(1);
+      expect(handlerSpy).toHaveBeenCalledWith(context, interaction);
+    } finally {
+      handlerSpy.mockRestore();
     }
   });
 });

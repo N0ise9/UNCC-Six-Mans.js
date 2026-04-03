@@ -1,16 +1,18 @@
 import { PrismaClient, createPrismaClient } from "../../../prisma";
 import { Event } from "../types";
 import * as faker from "faker";
-import EventRepository from "../EventRepository";
+import { EventRepository } from "../EventRepository";
 
 let prisma: PrismaClient;
+let eventRepository: EventRepository;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  eventRepository = new EventRepository(prisma);
 });
 
 beforeAll(async () => {
-  prisma = createPrismaClient();
+  prisma = createPrismaClient(process.env["DATABASE_URL"]);
   await prisma.$connect();
   await prisma.event.deleteMany();
 });
@@ -20,7 +22,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  await Promise.all([EventRepository.disconnect(), prisma.$disconnect()]);
+  await prisma.$disconnect();
 });
 
 describe("EventRepository tests", () => {
@@ -33,7 +35,7 @@ describe("EventRepository tests", () => {
       },
     });
 
-    await expect(EventRepository.getCurrentEvent()).rejects.toThrow();
+    await expect(eventRepository.getCurrentEvent()).rejects.toThrow();
   });
 
   it("returns the correct current event", async () => {
@@ -50,7 +52,7 @@ describe("EventRepository tests", () => {
       ],
     });
 
-    const actual = await EventRepository.getCurrentEvent();
+    const actual = await eventRepository.getCurrentEvent();
     expect(actual).toEqual<Event>({
       id: expect.any(Number),
       name: "Actual Current Season",

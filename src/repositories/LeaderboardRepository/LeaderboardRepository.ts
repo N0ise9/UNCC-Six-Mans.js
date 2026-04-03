@@ -1,22 +1,13 @@
-import { PrismaClient, createPrismaClient } from "../../prisma";
+import { PrismaClient } from "../../prisma";
 import { LeaderboardWithBallChaser, PlayerStats, UpdatePlayerStatsInput } from "./types";
-import EventRepository from "../EventRepository";
+import { EventRepository } from "../EventRepository";
 import { waitForAllPromises } from "../../utils";
 
 export class LeaderboardRepository {
-  #Prisma: PrismaClient | null;
-
-  constructor() {
-    this.#Prisma = null;
-  }
-
-  #getPrismaClient(): PrismaClient {
-    if (!this.#Prisma) {
-      this.#Prisma = createPrismaClient();
-    }
-
-    return this.#Prisma;
-  }
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly eventRepository: Pick<EventRepository, "getCurrentEvent">
+  ) {}
 
   #calculatePlayerStats(playerStats: LeaderboardWithBallChaser): PlayerStats {
     return {
@@ -36,9 +27,9 @@ export class LeaderboardRepository {
    * @returns returns the player's stats if they exist, otherwise null
    */
   async getPlayerStats(id: string): Promise<Readonly<PlayerStats> | null> {
-    const { id: currentEventId } = await EventRepository.getCurrentEvent();
+    const { id: currentEventId } = await this.eventRepository.getCurrentEvent();
 
-    const playerStats = await this.#getPrismaClient().leaderboard.findUnique({
+    const playerStats = await this.prisma.leaderboard.findUnique({
       include: {
         player: true,
       },
@@ -63,9 +54,9 @@ export class LeaderboardRepository {
    * @returns An array of the top 'n' players in the leaderboard
    */
   async getPlayersStats(n?: number): Promise<ReadonlyArray<Readonly<PlayerStats>>> {
-    const { id: currentEventId } = await EventRepository.getCurrentEvent();
+    const { id: currentEventId } = await this.eventRepository.getCurrentEvent();
 
-    const playersStats = await this.#getPrismaClient().leaderboard.findMany({
+    const playersStats = await this.prisma.leaderboard.findMany({
       include: {
         player: true,
       },
@@ -85,10 +76,10 @@ export class LeaderboardRepository {
    * @param playersUpdates An array of player stats to update the leaderboard with.
    */
   async updatePlayersStats(playersUpdates: Array<UpdatePlayerStatsInput>): Promise<void> {
-    const { id: currentEventId } = await EventRepository.getCurrentEvent();
+    const { id: currentEventId } = await this.eventRepository.getCurrentEvent();
 
     await waitForAllPromises(playersUpdates, async (playerUpdates) => {
-      await this.#getPrismaClient().leaderboard.upsert({
+      await this.prisma.leaderboard.upsert({
         create: {
           eventId: currentEventId,
           losses: playerUpdates.losses,
@@ -110,15 +101,4 @@ export class LeaderboardRepository {
       });
     });
   }
-
-  async disconnect(): Promise<void> {
-    if (!this.#Prisma) {
-      return;
-    }
-
-    await this.#Prisma.$disconnect();
-    this.#Prisma = null;
-  }
 }
-
-export default new LeaderboardRepository();

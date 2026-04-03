@@ -84,9 +84,9 @@ export async function registerAllSlashCommands(clientId: string, token: string) 
         )
         .addChannelOption((option) =>
           option
-            .setName("voice_channel")
-            .setDescription("Voice channel for guild-specific Norm features")
-            .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
+            .setName("chat_channel")
+            .setDescription("Chat channel where /norm and /sora may be used")
+            .addChannelTypes(ChannelType.GuildText)
             .setRequired(true)
         )
         .addChannelOption((option) =>

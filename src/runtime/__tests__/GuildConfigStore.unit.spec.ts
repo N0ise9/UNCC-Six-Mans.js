@@ -37,11 +37,11 @@ describe("GuildConfigStore", () => {
 
     try {
       store.setGuildConfig({
+        chatChannelId: "chat-1",
         databaseUrl: "postgres://user:pass@localhost:5432/guild_one",
         guildId: "guild-1",
         leaderboardChannelId: "leaderboard-1",
         queueChannelId: "queue-1",
-        voiceChannelId: "voice-1",
       });
 
       const raw = fs.readFileSync(filePath, "utf8");
@@ -49,6 +49,7 @@ describe("GuildConfigStore", () => {
 
       expect(raw).not.toContain("postgres://user:pass@localhost:5432/guild_one");
       expect(config).not.toBeNull();
+      expect(config?.chatChannelId).toBe("chat-1");
       expect(config?.databaseUrl).toBe("postgres://user:pass@localhost:5432/guild_one");
       expect(config?.queueChannelId).toBe("queue-1");
       expect(config?.enabled).toBe(true);
@@ -62,18 +63,18 @@ describe("GuildConfigStore", () => {
 
     try {
       store.setGuildConfig({
+        chatChannelId: "chat-1",
         databaseUrl: "postgres://guild-one",
         guildId: "guild-1",
         leaderboardChannelId: "leaderboard-1",
         queueChannelId: "queue-1",
-        voiceChannelId: "voice-1",
       });
       store.setGuildConfig({
+        chatChannelId: "chat-2",
         databaseUrl: "postgres://guild-two",
         guildId: "guild-2",
         leaderboardChannelId: "leaderboard-2",
         queueChannelId: "queue-2",
-        voiceChannelId: "voice-2",
       });
 
       store.updateGuildRuntimeFields("guild-1", {
@@ -102,12 +103,12 @@ describe("GuildConfigStore", () => {
 
     try {
       store.setGuildConfig({
+        chatChannelId: "chat-1",
         databaseUrl: "postgres://guild-one",
         guildId: "guild-1",
         leaderboardChannelId: "leaderboard-1",
         openAiConversationId: "seed-conversation",
         queueChannelId: "queue-1",
-        voiceChannelId: "voice-1",
       });
 
       store.updateGuildRuntimeFields("guild-1", {
@@ -134,11 +135,11 @@ describe("GuildConfigStore", () => {
 
     try {
       store.setGuildConfig({
+        chatChannelId: "chat-1",
         databaseUrl: "postgres://guild-one",
         guildId: "guild-1",
         leaderboardChannelId: "leaderboard-1",
         queueChannelId: "queue-1",
-        voiceChannelId: "voice-1",
       });
 
       process.env["CONFIG_ENCRYPTION_KEY"] = "different-unit-test-key";
@@ -158,53 +159,35 @@ describe("GuildConfigStore", () => {
     }
   });
 
-  it("reads legacy guild configs with chatChannelId and rewrites them to the active schema", () => {
+  it("reads legacy guild configs without chatChannelId and rewrites away old voiceChannelId", () => {
     const { filePath, store } = createStore();
 
     try {
-      fs.writeFileSync(
-        filePath,
-        JSON.stringify(
-          {
-            guilds: [
-              {
-                apiStatusChannelId: "status-1",
-                chatChannelId: "chat-legacy",
-                createdAt: "2026-01-01T00:00:00.000Z",
-                databaseUrl: {
-                  authTag: "placeholder",
-                  ciphertext: "placeholder",
-                  iv: "placeholder",
-                },
-                enabled: true,
-                guildId: "guild-1",
-                leaderboardChannelId: "leaderboard-1",
-                queueChannelId: "queue-1",
-                updatedAt: "2026-01-01T00:00:00.000Z",
-                voiceChannelId: "voice-1",
-              },
-            ],
-            version: 1,
-          },
-          null,
-          2
-        ),
-        "utf8"
-      );
-
       store.setGuildConfig({
+        chatChannelId: "chat-1",
         databaseUrl: "postgres://guild-one",
         guildId: "guild-1",
         leaderboardChannelId: "leaderboard-1",
         queueChannelId: "queue-1",
-        voiceChannelId: "voice-1",
       });
+
+      const rawConfig = JSON.parse(fs.readFileSync(filePath, "utf8")) as {
+        guilds: Array<Record<string, unknown>>;
+      };
+      delete rawConfig.guilds[0]?.["chatChannelId"];
+      rawConfig.guilds[0]!["voiceChannelId"] = "voice-legacy";
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify(rawConfig, null, 2),
+        "utf8"
+      );
 
       const config = store.getGuildConfig("guild-1");
       const raw = fs.readFileSync(filePath, "utf8");
 
       expect(config?.databaseUrl).toBe("postgres://guild-one");
-      expect(raw).not.toContain("chatChannelId");
+      expect(config?.chatChannelId).toBeUndefined();
+      expect(raw).not.toContain("voiceChannelId");
       expect(raw).toContain("\"queueChannelId\": \"queue-1\"");
     } finally {
       cleanup(filePath);

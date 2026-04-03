@@ -1,42 +1,18 @@
 import { AddBallChaserToQueueInput, PlayerInQueue, QueueWithBallChaser, UpdateBallChaserInQueueInput } from "./types";
-import { PrismaClient, createPrismaClient } from "../../prisma";
+import { PrismaClient } from "../../prisma";
 import { DateTime } from "luxon";
-import LeaderboardRepository from "../LeaderboardRepository";
+import { LeaderboardRepository } from "../LeaderboardRepository";
 import { waitForAllPromises } from "../../utils";
 import { Team } from "../../types/common";
-import { ButtonInteraction } from "discord.js";
-import { ButtonCustomID } from "../../utils/MessageHelper/CustomButtons";
-
-let twosEnabled = false;
-
-const playersMap = new Map<string, string>();
-interface CaptainsRandomVotes {
-  captains: number;
-  random: number;
-}
-
-const twosMap = new Map<string, string>();
-interface TwosVotes {
-  twos: number;
-}
 
 export class QueueRepository {
-  #Prisma: PrismaClient | null;
-
-  constructor() {
-    this.#Prisma = null;
-  }
-
-  #getPrismaClient(): PrismaClient {
-    if (!this.#Prisma) {
-      this.#Prisma = createPrismaClient();
-    }
-
-    return this.#Prisma;
-  }
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly leaderboardRepository: Pick<LeaderboardRepository, "getPlayerStats">
+  ) {}
 
   async #getPlayerMmr(playerInQueue: QueueWithBallChaser): Promise<PlayerInQueue> {
-    const lb = await LeaderboardRepository.getPlayerStats(playerInQueue.player.id);
+    const lb = await this.leaderboardRepository.getPlayerStats(playerInQueue.player.id);
     return {
       id: playerInQueue.player.id,
       isCap: playerInQueue.isCap,
@@ -47,71 +23,13 @@ export class QueueRepository {
     };
   }
 
-  async count2v2Votes(buttonInteraction: ButtonInteraction): Promise<TwosVotes> {
-    twosMap.set(buttonInteraction.user.id, buttonInteraction.customId);
-    let twosCounter = 0;
-    for (const value of twosMap.values()) {
-      if (value == ButtonCustomID.Twos) {
-        twosCounter += 1;
-      }
-    }
-    return {
-      twos: twosCounter,
-    };
-  }
-
-  async getTwosVoters(): Promise<Map<string, string>> {
-    return twosMap;
-  }
-
-  async resetTwosVoters(): Promise<void> {
-    twosMap.clear();
-  }
-
-  getTwosEnabled(): boolean {
-    return twosEnabled;
-  }
-
-  setTwosEnabled(enabled: boolean): void {
-    twosEnabled = enabled;
-  }
-
-  resetTwosEnabled(): void {
-    twosEnabled = false;
-  }
-
-  async countCaptainsRandomVote(buttonInteraction: ButtonInteraction): Promise<CaptainsRandomVotes> {
-    playersMap.set(buttonInteraction.user.id, buttonInteraction.customId);
-    let captainsCounter = 0;
-    let randomCounter = 0;
-    for (const value of playersMap.values()) {
-      if (value == ButtonCustomID.ChooseTeam) {
-        captainsCounter += 1;
-      } else {
-        randomCounter += 1;
-      }
-    }
-    return {
-      captains: captainsCounter,
-      random: randomCounter,
-    };
-  }
-
-  async getCaptainsRandomVoters(): Promise<Map<string, string>> {
-    return playersMap;
-  }
-
-  async resetCaptainsRandomVoters(): Promise<void> {
-    playersMap.clear();
-  }
-
   /**
    * Retrieves a BallChaser with a specific Discord ID
    * @param id Discord ID of the BallChaser to retrieve
    * @returns A BallChaser object if the player is found, otherwise null
    */
   async getBallChaserInQueue(id: string): Promise<Readonly<PlayerInQueue> | null> {
-    const playerInQueue = await this.#getPrismaClient().queue.findUnique({
+    const playerInQueue = await this.prisma.queue.findUnique({
       include: {
         player: true,
       },
@@ -131,7 +49,7 @@ export class QueueRepository {
    * @returns A list of all BallChasers currently in the queue
    */
   async getAllBallChasersInQueue(): Promise<ReadonlyArray<Readonly<PlayerInQueue>>> {
-    const allPlayersInQueue = await this.#getPrismaClient().queue.findMany({
+    const allPlayersInQueue = await this.prisma.queue.findMany({
       include: {
         player: true,
       },
@@ -151,19 +69,16 @@ export class QueueRepository {
    * @param id Discord ID of the BallChaser to remove from the queue
    */
   async removeBallChaserFromQueue(id: string): Promise<void> {
-    await this.#getPrismaClient().queue.delete({ where: { playerId: id } }).catch(() => {
+    await this.prisma.queue.delete({ where: { playerId: id } }).catch(() => {
       // Leaving when not queued should be a safe no-op for the active runtime.
     });
-    this.resetCaptainsRandomVoters();
-    this.resetTwosVoters();
-    this.resetTwosEnabled();
   }
 
   /**
    * Removes all BallChasers currently in the queue.
    */
   async removeAllBallChasersFromQueue(): Promise<void> {
-    await this.#getPrismaClient().queue.deleteMany();
+    await this.prisma.queue.deleteMany();
   }
 
   /**
@@ -171,7 +86,7 @@ export class QueueRepository {
    * @param options BallChaser fields to update. ID field is required for retrieving the BallChaser object to update.
    */
   async updateBallChaserInQueue({ id, ...updates }: UpdateBallChaserInQueueInput): Promise<void> {
-    await this.#getPrismaClient().queue.update({
+    await this.prisma.queue.update({
       data: {
         isCap: updates.isCap,
         queueTime: updates.queueTime?.toISO()?.toString(),
@@ -186,7 +101,7 @@ export class QueueRepository {
    * @param ballChaserToAdd New BallChaser object to add to the queue.
    */
   async addBallChaserToQueue(ballChaserToAdd: AddBallChaserToQueueInput): Promise<void> {
-    await this.#getPrismaClient().ballChaser.upsert({
+    await this.prisma.ballChaser.upsert({
       create: {
         id: ballChaserToAdd.id,
         name: ballChaserToAdd.name,
@@ -211,7 +126,7 @@ export class QueueRepository {
   }
 
   async isPlayerInQueue(ballChaserToCheck: string): Promise<boolean> {
-    const playerInMatch = await this.#getPrismaClient().queue.count({
+    const playerInMatch = await this.prisma.queue.count({
       where: {
         playerId: ballChaserToCheck,
       },
@@ -221,7 +136,7 @@ export class QueueRepository {
   }
 
   async isTeamCaptain(ballChaserToCheck: string, teamToCheck: Team): Promise<boolean> {
-    const isCaptain = await this.#getPrismaClient().queue.count({
+    const isCaptain = await this.prisma.queue.count({
       where: {
         playerId: ballChaserToCheck,
         team: teamToCheck,
@@ -230,15 +145,4 @@ export class QueueRepository {
 
     return isCaptain > 0;
   }
-
-  async disconnect(): Promise<void> {
-    if (!this.#Prisma) {
-      return;
-    }
-
-    await this.#Prisma.$disconnect();
-    this.#Prisma = null;
-  }
 }
-
-export default new QueueRepository();

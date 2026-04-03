@@ -10,7 +10,7 @@ interface GuildConfigFile {
 }
 
 type LegacyGuildConfigEntry = GuildInstanceStoredConfig & {
-  chatChannelId?: string;
+  voiceChannelId?: string;
 };
 
 export interface GuildConfigReadResult {
@@ -86,6 +86,7 @@ export class GuildConfigStore {
 
     const updated: GuildInstanceStoredConfig = {
       apiStatusChannelId: input.apiStatusChannelId,
+      chatChannelId: input.chatChannelId,
       createdAt: previous?.createdAt ?? now,
       databaseUrl: this.encryptValue(input.databaseUrl),
       enabled: true,
@@ -96,7 +97,6 @@ export class GuildConfigStore {
       queueChannelId: input.queueChannelId,
       queueMessageId: previous?.queueMessageId,
       updatedAt: now,
-      voiceChannelId: input.voiceChannelId,
     };
 
     if (index >= 0) {
@@ -267,11 +267,11 @@ function toError(error: unknown): Error {
 }
 
 function hasLegacyGuildConfigEntries(entries: LegacyGuildConfigEntry[]): boolean {
-  return entries.some((entry) => "chatChannelId" in entry);
+  return entries.some((entry) => "voiceChannelId" in entry);
 }
 
 function normalizeLegacyGuildEntry(entry: LegacyGuildConfigEntry): GuildInstanceStoredConfig {
   const normalized = { ...entry };
-  delete normalized.chatChannelId;
+  delete normalized.voiceChannelId;
   return normalized;
 }
