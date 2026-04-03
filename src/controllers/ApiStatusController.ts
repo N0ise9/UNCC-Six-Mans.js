@@ -610,7 +610,6 @@ async function upsertMainStatusEmbeds(
       logWarn(`Main edit failed: page#${i + 1} err=${(err as Error).message}`);
       if (onEditFailure) {
         onEditFailure(`Main edit failed page#${i + 1}: ${(err as Error).message}`);
-        allOk = false;
         return false;
       }
       try {
@@ -778,7 +777,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
               incidentRetryDelete.delete(sid);
               // Also ensure local mapping is cleared
               incidentMessages.delete(sid);
-            } catch (e) {
+            } catch {
               // keep for next round
             }
           }
@@ -800,7 +799,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
                 mainStatusMessages[idx] = sent;
               }
               mainRetryUpsert.delete(idx);
-            } catch (e) {
+            } catch {
               // keep for next round
             }
           }
@@ -821,7 +820,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
               const pos = mainStatusMessages.findIndex((m) => m.id === msgId);
               if (pos !== -1) mainStatusMessages.splice(pos, 1);
               mainRetryDelete.delete(msgId);
-            } catch (e) {
+            } catch {
               // keep for next round
             }
           }
@@ -1022,7 +1021,7 @@ export async function startApiStatusReporting(channel: TextChannel) {
       const embeds = buildMainEmbeds(cats);
       const okMain = await upsertMainStatusEmbeds(channel, embeds, requestHardRestart);
       if (hardRestartPending) return;
-      let okInc = true;
+      let okInc: boolean;
       try {
         okInc = await upsertIncidentEmbeds(channel, cats);
       } catch (err) {

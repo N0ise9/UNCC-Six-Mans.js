@@ -1,13 +1,21 @@
-import { Prisma, PrismaClient } from "@prisma/client";
+import { PrismaClient, createPrismaClient } from "../../prisma";
 import { LeaderboardWithBallChaser, PlayerStats, UpdatePlayerStatsInput } from "./types";
 import EventRepository from "../EventRepository";
 import { waitForAllPromises } from "../../utils";
 
 export class LeaderboardRepository {
-  #Leaderboard: Prisma.LeaderboardDelegate<Prisma.RejectOnNotFound | Prisma.RejectPerOperation | undefined>;
+  #Prisma: PrismaClient | null;
 
   constructor() {
-    this.#Leaderboard = new PrismaClient().leaderboard;
+    this.#Prisma = null;
+  }
+
+  #getPrismaClient(): PrismaClient {
+    if (!this.#Prisma) {
+      this.#Prisma = createPrismaClient();
+    }
+
+    return this.#Prisma;
   }
 
   #calculatePlayerStats(playerStats: LeaderboardWithBallChaser): PlayerStats {
@@ -30,7 +38,7 @@ export class LeaderboardRepository {
   async getPlayerStats(id: string): Promise<Readonly<PlayerStats> | null> {
     const { id: currentEventId } = await EventRepository.getCurrentEvent();
 
-    const playerStats = await this.#Leaderboard.findUnique({
+    const playerStats = await this.#getPrismaClient().leaderboard.findUnique({
       include: {
         player: true,
       },
@@ -57,7 +65,7 @@ export class LeaderboardRepository {
   async getPlayersStats(n?: number): Promise<ReadonlyArray<Readonly<PlayerStats>>> {
     const { id: currentEventId } = await EventRepository.getCurrentEvent();
 
-    const playersStats = await this.#Leaderboard.findMany({
+    const playersStats = await this.#getPrismaClient().leaderboard.findMany({
       include: {
         player: true,
       },
@@ -80,7 +88,7 @@ export class LeaderboardRepository {
     const { id: currentEventId } = await EventRepository.getCurrentEvent();
 
     await waitForAllPromises(playersUpdates, async (playerUpdates) => {
-      await this.#Leaderboard.upsert({
+      await this.#getPrismaClient().leaderboard.upsert({
         create: {
           eventId: currentEventId,
           losses: playerUpdates.losses,
@@ -101,6 +109,15 @@ export class LeaderboardRepository {
         },
       });
     });
+  }
+
+  async disconnect(): Promise<void> {
+    if (!this.#Prisma) {
+      return;
+    }
+
+    await this.#Prisma.$disconnect();
+    this.#Prisma = null;
   }
 }
 

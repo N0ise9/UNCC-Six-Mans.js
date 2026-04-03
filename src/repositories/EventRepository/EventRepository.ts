@@ -1,13 +1,21 @@
-import { Prisma, PrismaClient } from "@prisma/client";
+import { PrismaClient, createPrismaClient } from "../../prisma";
 import { Event } from "./types";
 
 class EventRepository {
-  #Event: Prisma.EventDelegate<Prisma.RejectOnNotFound | Prisma.RejectPerOperation | undefined>;
+  #Prisma: PrismaClient | null;
   #CurrentEventCache: Event | null;
 
   constructor() {
-    this.#Event = new PrismaClient().event;
+    this.#Prisma = null;
     this.#CurrentEventCache = null;
+  }
+
+  #getPrismaClient(): PrismaClient {
+    if (!this.#Prisma) {
+      this.#Prisma = createPrismaClient();
+    }
+
+    return this.#Prisma;
   }
 
   async getCurrentEvent(): Promise<Event> {
@@ -15,7 +23,7 @@ class EventRepository {
       return this.#CurrentEventCache;
     }
 
-    const currentEventResult = await this.#Event.findFirst({
+    const currentEventResult = await this.#getPrismaClient().event.findFirst({
       where: {
         endDate: null,
       },
@@ -36,6 +44,15 @@ class EventRepository {
     this.#CurrentEventCache = currentEvent;
 
     return currentEvent;
+  }
+
+  async disconnect(): Promise<void> {
+    if (!this.#Prisma) {
+      return;
+    }
+
+    await this.#Prisma.$disconnect();
+    this.#Prisma = null;
   }
 }
 

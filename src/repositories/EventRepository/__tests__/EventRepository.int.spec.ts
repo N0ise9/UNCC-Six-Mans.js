@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, createPrismaClient } from "../../../prisma";
 import { Event } from "../types";
 import * as faker from "faker";
 import EventRepository from "../EventRepository";
@@ -10,7 +10,7 @@ beforeEach(async () => {
 });
 
 beforeAll(async () => {
-  prisma = new PrismaClient();
+  prisma = createPrismaClient();
   await prisma.$connect();
   await prisma.event.deleteMany();
 });
@@ -20,7 +20,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  await prisma.$disconnect();
+  await Promise.all([EventRepository.disconnect(), prisma.$disconnect()]);
 });
 
 describe("EventRepository tests", () => {
@@ -33,7 +33,7 @@ describe("EventRepository tests", () => {
       },
     });
 
-    await expect(EventRepository.getCurrentEvent()).rejects.toThrowError();
+    await expect(EventRepository.getCurrentEvent()).rejects.toThrow();
   });
 
   it("returns the correct current event", async () => {

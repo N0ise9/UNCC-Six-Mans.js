@@ -27,15 +27,15 @@ describe("Team Assignment Service tests", () => {
 
       await setCaptains(mockBallChasers);
 
-      expect(QueueRepository.updateBallChaserInQueue).toBeCalledTimes(2);
-      expect(QueueRepository.updateBallChaserInQueue).toBeCalledWith(
+      expect(QueueRepository.updateBallChaserInQueue).toHaveBeenCalledTimes(2);
+      expect(QueueRepository.updateBallChaserInQueue).toHaveBeenCalledWith(
         expect.objectContaining({
           id: mockBallChasers[0].id,
           isCap: true,
           team: Team.Orange,
         })
       );
-      expect(QueueRepository.updateBallChaserInQueue).toBeCalledWith(
+      expect(QueueRepository.updateBallChaserInQueue).toHaveBeenCalledWith(
         expect.objectContaining({
           id: mockBallChasers[1].id,
           isCap: true,
@@ -50,27 +50,27 @@ describe("Team Assignment Service tests", () => {
       const mockBallChasers = BallChaserQueueBuilder.many(6);
       jest.mocked(QueueRepository.getAllBallChasersInQueue).mockResolvedValueOnce(mockBallChasers);
 
-      expect(QueueRepository.updateBallChaserInQueue).toBeCalledTimes(1);
-      expect(QueueRepository.updateBallChaserInQueue).toBeCalledWith(
+      expect(QueueRepository.updateBallChaserInQueue).toHaveBeenCalledTimes(1);
+      expect(QueueRepository.updateBallChaserInQueue).toHaveBeenCalledWith(
         expect.objectContaining({
           id: playerId,
           team: Team.Blue,
         })
       );
-      expect(QueueRepository.getAllBallChasersInQueue).toBeCalled();
+      expect(QueueRepository.getAllBallChasersInQueue).toHaveBeenCalled();
     });
     it("orange player is set after being chosen", async () => {
       const playerIds = [faker.datatype.uuid(), faker.datatype.uuid()];
       await orangePlayerChosen(playerIds);
 
-      expect(QueueRepository.updateBallChaserInQueue).toBeCalledTimes(2);
-      expect(QueueRepository.updateBallChaserInQueue).toBeCalledWith(
+      expect(QueueRepository.updateBallChaserInQueue).toHaveBeenCalledTimes(2);
+      expect(QueueRepository.updateBallChaserInQueue).toHaveBeenCalledWith(
         expect.objectContaining({
           id: playerIds[0],
           team: Team.Orange,
         })
       );
-      expect(QueueRepository.updateBallChaserInQueue).toBeCalledWith(
+      expect(QueueRepository.updateBallChaserInQueue).toHaveBeenCalledWith(
         expect.objectContaining({
           id: playerIds[1],
           team: Team.Orange,

@@ -18,8 +18,8 @@ interface ScheduledTask<T> {
 
 const PRIORITY_ORDER: Record<TaskPriority, number> = {
   high: 0,
-  normal: 1,
   low: 2,
+  normal: 1,
 };
 
 export class DiscordWorkScheduler {

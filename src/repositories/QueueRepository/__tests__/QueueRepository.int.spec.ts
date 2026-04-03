@@ -2,9 +2,11 @@ import * as faker from "faker";
 import { PlayerInQueue } from "../types";
 import QueueRepository from "../QueueRepository";
 import { BallChaserQueueBuilder } from "../../../../.jest/Builder";
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, createPrismaClient } from "../../../prisma";
 import { DateTime } from "luxon";
 import { Team } from "../../../types/common";
+import LeaderboardRepository from "../../LeaderboardRepository";
+import EventRepository from "../../EventRepository";
 
 function verifyBallChasersAreEqual(expectedBallChaser: PlayerInQueue, actualBallChaser: PlayerInQueue): void {
   expect(actualBallChaser).not.toBeNull();
@@ -24,7 +26,7 @@ beforeEach(async () => {
 });
 
 beforeAll(async () => {
-  prisma = new PrismaClient();
+  prisma = createPrismaClient();
   await prisma.$connect();
   await prisma.leaderboard.deleteMany();
   await prisma.activeMatch.deleteMany();
@@ -48,7 +50,12 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  await prisma.$disconnect();
+  await Promise.all([
+    QueueRepository.disconnect(),
+    LeaderboardRepository.disconnect(),
+    EventRepository.disconnect(),
+    prisma.$disconnect(),
+  ]);
 });
 
 async function manuallyAddBallChaserToQueue(ballChaser: PlayerInQueue) {
@@ -132,13 +139,13 @@ describe("Queue Repository tests", () => {
     const mockBallChaser = BallChaserQueueBuilder.single();
     await manuallyAddBallChaserToQueue(mockBallChaser);
 
-    await expect(QueueRepository.removeBallChaserFromQueue(mockBallChaser.id)).resolves.not.toThrowError();
+    await expect(QueueRepository.removeBallChaserFromQueue(mockBallChaser.id)).resolves.not.toThrow();
     const count = await prisma.queue.count();
     expect(count).toBe(0);
   });
 
   it("no-ops when trying to remove BallChaser when not found in queue", async () => {
-    await expect(QueueRepository.removeBallChaserFromQueue(faker.datatype.uuid())).resolves.not.toThrowError();
+    await expect(QueueRepository.removeBallChaserFromQueue(faker.datatype.uuid())).resolves.not.toThrow();
     const count = await prisma.queue.count();
     expect(count).toBe(0);
   });
@@ -149,7 +156,7 @@ describe("Queue Repository tests", () => {
     const expectedBallChaser2 = BallChaserQueueBuilder.single();
     await manuallyAddBallChaserToQueue(expectedBallChaser2);
 
-    await expect(QueueRepository.removeAllBallChasersFromQueue()).resolves.not.toThrowError();
+    await expect(QueueRepository.removeAllBallChasersFromQueue()).resolves.not.toThrow();
     const count = await prisma.queue.count();
     expect(count).toBe(0);
   });
@@ -186,7 +193,7 @@ describe("Queue Repository tests", () => {
   });
 
   it("throws when player to update is not found", async () => {
-    await expect(QueueRepository.updateBallChaserInQueue({ id: faker.datatype.uuid() })).rejects.toThrowError();
+    await expect(QueueRepository.updateBallChaserInQueue({ id: faker.datatype.uuid() })).rejects.toThrow();
   });
 
   it("adds BallChaser to queue", async () => {

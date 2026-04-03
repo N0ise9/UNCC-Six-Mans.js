@@ -3,8 +3,10 @@ import { ActiveMatchBuilder, BallChaserQueueBuilder } from "../../../../.jest/Bu
 import ActiveMatchRepository from "../ActiveMatchRepository";
 import { PlayerInActiveMatch } from "../types";
 import { Team } from "../../../types/common";
-import { ActiveMatch, BallChaser, PrismaClient } from "@prisma/client";
+import { ActiveMatch, BallChaser, PrismaClient, createPrismaClient } from "../../../prisma";
 import { waitForAllPromises } from "../../../utils";
+import LeaderboardRepository from "../../LeaderboardRepository";
+import EventRepository from "../../EventRepository";
 
 let prisma: PrismaClient;
 
@@ -13,7 +15,7 @@ beforeEach(async () => {
 });
 
 beforeAll(async () => {
-  prisma = new PrismaClient();
+  prisma = createPrismaClient();
   await prisma.$connect();
   await prisma.leaderboard.deleteMany();
   await prisma.activeMatch.deleteMany();
@@ -29,7 +31,12 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  await prisma.$disconnect();
+  await Promise.all([
+    ActiveMatchRepository.disconnect(),
+    LeaderboardRepository.disconnect(),
+    EventRepository.disconnect(),
+    prisma.$disconnect(),
+  ]);
 });
 
 async function manuallyAddActiveMatch(activeMatch: PlayerInActiveMatch | Array<PlayerInActiveMatch>) {
@@ -112,7 +119,7 @@ describe("ActiveMatchRepository Tests", () => {
     it("throws when trying to remove a player not in an active match", async () => {
       await expect(
         ActiveMatchRepository.removeAllPlayersInActiveMatch(BallChaserQueueBuilder.single().id)
-      ).rejects.toThrowError();
+      ).rejects.toThrow();
     });
 
     it("retreives all players part of an active match", async () => {
@@ -185,13 +192,13 @@ describe("ActiveMatchRepository Tests", () => {
     it("throws if trying to add a ballchaser to an active match with no team", async () => {
       await expect(
         ActiveMatchRepository.addActiveMatch([BallChaserQueueBuilder.single({ team: null }) as any])
-      ).rejects.toThrowError();
+      ).rejects.toThrow();
     });
 
     it("throws when trying to update a player not in an active match", async () => {
       await expect(
         ActiveMatchRepository.updatePlayerInActiveMatch(BallChaserQueueBuilder.single().id, { reportedTeam: Team.Blue })
-      ).rejects.toThrowError();
+      ).rejects.toThrow();
     });
   });
 });

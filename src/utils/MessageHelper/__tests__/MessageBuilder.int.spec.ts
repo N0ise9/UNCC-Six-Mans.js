@@ -1,5 +1,5 @@
 import { BallChaserQueueBuilder } from "../../../../.jest/Builder";
-import { ActiveMatchCreated } from "../../../services/MatchService";
+import { ActiveMatchCreated } from "../../../domain/match";
 import MessageBuilder from "../MessageBuilder";
 import { PlayerInActiveMatch } from "../../../repositories/ActiveMatchRepository/types";
 import { Team } from "../../../types/common";
@@ -80,5 +80,15 @@ describe("Building Buttons", () => {
       ],
       type: 1,
     });
+  });
+
+  it("splits leaderboard embeds into Discord-safe payload batches", () => {
+    const leaderboardSections = Array.from({ length: 12 }, (_, index) => `Player block ${index + 1}`);
+
+    const payloads = MessageBuilder.leaderboardMessage(leaderboardSections);
+
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0].embeds).toHaveLength(10);
+    expect(payloads[1].embeds).toHaveLength(2);
   });
 });

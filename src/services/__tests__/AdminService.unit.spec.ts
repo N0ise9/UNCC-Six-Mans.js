@@ -18,7 +18,7 @@ describe("AdminService tests", () => {
       const leaveQueueMock = jest.mocked(leaveQueue);
       jest.mocked(QueueRepository.getAllBallChasersInQueue).mockResolvedValue([]);
 
-      await expect(kickPlayerFromQueue(faker.datatype.uuid())).rejects.toThrowError(InvalidCommand);
+      await expect(kickPlayerFromQueue(faker.datatype.uuid())).rejects.toThrow(InvalidCommand);
       await expect(leaveQueueMock).not.toHaveBeenCalled();
     });
 
@@ -28,7 +28,7 @@ describe("AdminService tests", () => {
       const otherPlayers = BallChaserQueueBuilder.many(4, { isCap: false });
       jest.mocked(QueueRepository.getAllBallChasersInQueue).mockResolvedValue([...otherPlayers, ...captains]);
 
-      await expect(kickPlayerFromQueue(faker.datatype.uuid())).rejects.toThrowError(InvalidCommand);
+      await expect(kickPlayerFromQueue(faker.datatype.uuid())).rejects.toThrow(InvalidCommand);
       expect(leaveQueueMock).not.toHaveBeenCalled();
     });
 

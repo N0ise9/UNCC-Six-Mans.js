@@ -1,4 +1,4 @@
-import { BallChaser, Leaderboard } from "@prisma/client";
+import { BallChaser, Leaderboard } from "../../prisma";
 
 export interface PlayerStats {
   id: string;

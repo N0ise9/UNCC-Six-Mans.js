@@ -1,20 +1,12 @@
 import { createRandomTeams } from "../services/TeamAssignmentService";
 import ActiveMatchRepository from "../repositories/ActiveMatchRepository";
 import QueueRepository from "../repositories/QueueRepository";
-import { NewActiveMatchInput, PlayerInActiveMatch } from "../repositories/ActiveMatchRepository/types";
+import { NewActiveMatchInput } from "../repositories/ActiveMatchRepository/types";
+import { ActiveMatchCreated } from "../domain/match";
 import { Team } from "../types/common";
 import { calculateMMR, calculateProbability, calculateProbabilityDecimal } from "./MatchReportService";
 
-interface ActiveMatchTeamDetails {
-  mmrStake: number;
-  players: ReadonlyArray<PlayerInActiveMatch>;
-  winProbability: number;
-}
-
-export interface ActiveMatchCreated {
-  orange: ActiveMatchTeamDetails;
-  blue: ActiveMatchTeamDetails;
-}
+export type { ActiveMatchCreated } from "../domain/match";
 
 async function startMatch(createdTeams: Array<NewActiveMatchInput>): Promise<ActiveMatchCreated> {
   await Promise.all([

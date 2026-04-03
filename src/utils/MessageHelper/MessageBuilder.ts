@@ -1,23 +1,22 @@
 import {
   ButtonInteraction,
-  EmbedField,
   ActionRowBuilder,
-  ButtonBuilder as MessageButton,
-  EmbedBuilder as MessageEmbed,
   BaseMessageOptions as MessageOptions,
+  ButtonBuilder as MessageButton,
+  ButtonStyle,
+  EmbedField,
+  EmbedBuilder as MessageEmbed,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
-  ButtonStyle,
 } from "discord.js";
-import { ActiveMatchCreated } from "../../services/MatchService";
+import { ActiveMatchCreated } from "../../domain/match";
 import { Team } from "../../types/common";
-import { ColorCodes, getEnvVariable } from "../utils";
+import { ColorCodes } from "../utils";
 import { PlayerInQueue } from "../../repositories/QueueRepository/types";
 import EmbedBuilder, { BaseEmbed } from "./EmbedBuilder";
 import ButtonBuilder from "./ButtonBuilder";
 import CustomButton, { ButtonCustomID } from "./CustomButtons";
 import { ActiveMatchTeams } from "../../repositories/ActiveMatchRepository/types";
-import EventRepository from "../../repositories/EventRepository/EventRepository";
 
 export const enum MenuCustomID {
   BlueSelect = "blueSelect",
@@ -27,20 +26,21 @@ export const enum MenuCustomID {
 export default class MessageBuilder {
   private static readonly normIconURL =
     "https://raw.githubusercontent.com/N0ise9/UNCC-Six-Mans.js/main/media/norm_still.png";
-  private static readonly isDev = getEnvVariable("ENVIRONMENT") === "dev";
 
   private static fourQueue = 4;
 
-  static leaderboardMessage(leaderboardInfo: string[]): MessageOptions {
+  private static isDevEnvironment(): boolean {
+    return process.env["ENVIRONMENT"] === "dev";
+  }
+
+  static leaderboardMessage(leaderboardInfo: string[]): MessageOptions[] {
     const embeds = leaderboardInfo.map((content, index) => {
       const embedCtr = leaderboardInfo.length > 1 ? `(${index + 1}/${leaderboardInfo.length})` : "";
 
       return EmbedBuilder.leaderboardEmbed("```" + content + "```", `UNCC 6 Mans | Leaderboard ${embedCtr}`.trim());
     });
 
-    return {
-      embeds,
-    };
+    return MessageBuilder.chunkEmbeds(embeds);
   }
 
   static queueMessage(ballchasers: ReadonlyArray<Readonly<PlayerInQueue>>): MessageOptions {
@@ -131,7 +131,7 @@ export default class MessageBuilder {
       .setDescription("Vote for Captains or Random teams to get started! \n\n" + ballChaserList);
 
     return {
-      components: this.isDev
+      components: this.isDevEnvironment()
         ? [
             new ActionRowBuilder<ButtonBuilder>({
               components: [pickCaptainsButton, randomTeamsButton, leaveButton, removeAllButton],
@@ -142,7 +142,10 @@ export default class MessageBuilder {
     };
   }
 
-  static async activeMatchMessage({ blue, orange }: ActiveMatchCreated, mmrMultiplier?: number): Promise<MessageOptions> {
+  static async activeMatchMessage(
+    { blue, orange }: ActiveMatchCreated,
+    mmrMultiplier = 1
+  ): Promise<MessageOptions> {
     //const embed = await EmbedBuilder.activeMatchEmbed({ blue, orange });
     const blueTeam: Array<string> = blue.players.map((player) => "<@" + player.id + ">");
     const orangeTeam: Array<string> = orange.players.map((player) => "<@" + player.id + ">");
@@ -169,7 +172,7 @@ export default class MessageBuilder {
       winner = "Both teams are";
     }
 
-    const eventMultiplier = mmrMultiplier ?? (await EventRepository.getCurrentEvent()).mmrMult;
+    const eventMultiplier = mmrMultiplier;
     const blueMMR = blue.mmrStake * eventMultiplier;
     const orangeMMR = orange.mmrStake * eventMultiplier;
 
@@ -263,7 +266,7 @@ export default class MessageBuilder {
     ]);
 
     const components = [new ActionRowBuilder<ButtonBuilder>({ components: [playerChoices] })];
-    if (this.isDev) {
+    if (this.isDevEnvironment()) {
       components.push(ButtonBuilder.breakMatchButtons());
     }
     return {
@@ -276,7 +279,7 @@ export default class MessageBuilder {
     { blue, orange }: ActiveMatchCreated,
     brokenQueuePlayers: ActiveMatchTeams,
     brokenQueueVotes: number,
-    mmrMultiplier?: number
+    mmrMultiplier = 1
   ): Promise<MessageOptions> {
     const brokenHeart = "\uD83D\uDC94";
     const blueTeam = blue.players.map((player) => {
@@ -328,7 +331,7 @@ export default class MessageBuilder {
       winner = "Both teams are";
     }
 
-    const eventMultiplier = mmrMultiplier ?? (await EventRepository.getCurrentEvent()).mmrMult;
+    const eventMultiplier = mmrMultiplier;
     const blueMMR = blue.mmrStake * eventMultiplier;
     const orangeMMR = orange.mmrStake * eventMultiplier;
 
@@ -422,7 +425,7 @@ export default class MessageBuilder {
       .setDescription("All four players must vote for 2v2's in order to proceed with the match! \n\n" + ballChaserList);
 
     return {
-      components: this.isDev
+      components: this.isDevEnvironment()
         ? [
             new ActionRowBuilder<ButtonBuilder>({
               components: [joinButton, leaveButton, vote2v2Button, removeAllButton],
@@ -490,7 +493,7 @@ export default class MessageBuilder {
       .setDescription("Vote for Captains or Random teams to get started! \n\n" + ballChaserList);
 
     return {
-      components: this.isDev
+      components: this.isDevEnvironment()
         ? [
             new ActionRowBuilder<ButtonBuilder>({
               components: [pickCaptainsButton, randomTeamsButton, leaveButton, removeAllButton],
@@ -560,7 +563,7 @@ export default class MessageBuilder {
       .setDescription("Vote for Captains or Random teams to get started! \n\n" + ballChaserList);
 
     return {
-      components: this.isDev
+      components: this.isDevEnvironment()
         ? [
             new ActionRowBuilder<ButtonBuilder>({
               components: [pickCaptainsButton, randomTeamsButton, leaveButton, removeAllButton],
@@ -615,5 +618,17 @@ export default class MessageBuilder {
       components: [new ActionRowBuilder<ButtonBuilder>({ components: [reportBlue, reportOrange] })],
       embeds: [embed],
     };
+  }
+
+  private static chunkEmbeds(embeds: MessageEmbed[]): MessageOptions[] {
+    const payloads: MessageOptions[] = [];
+
+    for (let index = 0; index < embeds.length; index += 10) {
+      payloads.push({
+        embeds: embeds.slice(index, index + 10),
+      });
+    }
+
+    return payloads;
   }
 }

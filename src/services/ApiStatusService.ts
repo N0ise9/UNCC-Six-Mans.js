@@ -296,7 +296,7 @@ async function fetchStatuspage(service: ServiceConfig): Promise<ServiceStatus> {
       incidents,
       status,
     });
-  } catch (e) {
+  } catch {
     return errorStatus(service, "Unreachable");
   }
 }
@@ -309,7 +309,7 @@ async function fetchGeneric(service: ServiceConfig): Promise<ServiceStatus> {
       description: ok ? "" : `HTTP ${status}`,
       status: ok ? "operational" : "major_outage",
     });
-  } catch (e) {
+  } catch {
     return errorStatus(service, "Unreachable");
   }
 }
@@ -763,7 +763,7 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
       incidents,
       status: incidents.length > 0 ? topStatus : "operational",
     });
-  } catch (e) {
+  } catch {
     return errorStatus(service, "Unreachable");
   }
 }
@@ -920,7 +920,7 @@ async function fetchSteamStatus(service: ServiceConfig): Promise<ServiceStatus> 
       incidents,
       status: overall,
     });
-  } catch (e) {
+  } catch {
     return errorStatus(service, "Unreachable", "major_outage");
   }
 }
@@ -1054,7 +1054,7 @@ async function fetchAuth0Status(service: ServiceConfig): Promise<ServiceStatus> 
     else if (overall === "under_maintenance") description = "Maintenance in progress";
 
     return buildStatus(service, { description, incidents, status: overall });
-  } catch (e) {
+  } catch {
     return errorStatus(service, "Unreachable", "major_outage");
   }
 }

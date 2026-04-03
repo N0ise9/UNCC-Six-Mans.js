@@ -1,4 +1,4 @@
-import { ActiveMatch, PrismaClient } from "@prisma/client";
+import { ActiveMatch, PrismaClient } from "../prisma";
 import { DateTime } from "luxon";
 import { Team } from "../types/common";
 import { generateRandomId, splitArray, waitForAllPromises } from "../utils";
@@ -9,7 +9,11 @@ import {
   UpdatePlayerInActiveMatchInput,
 } from "../repositories/ActiveMatchRepository/types";
 import { Event } from "../repositories/EventRepository/types";
-import { LeaderboardWithBallChaser, PlayerStats, UpdatePlayerStatsInput } from "../repositories/LeaderboardRepository/types";
+import {
+  LeaderboardWithBallChaser,
+  PlayerStats,
+  UpdatePlayerStatsInput,
+} from "../repositories/LeaderboardRepository/types";
 import {
   AddBallChaserToQueueInput,
   PlayerInQueue,
@@ -18,13 +22,14 @@ import {
 } from "../repositories/QueueRepository/types";
 
 class GuildEventRepository {
-  private currentEventCache: Event | null = null;
+  private static readonly cacheTtlMs = 60 * 1000;
+  private currentEventCache: { event: Event; expiresAt: number } | null = null;
 
   constructor(private readonly prisma: PrismaClient) {}
 
   async getCurrentEvent(): Promise<Event> {
-    if (this.currentEventCache) {
-      return this.currentEventCache;
+    if (this.currentEventCache && this.currentEventCache.expiresAt > Date.now()) {
+      return this.currentEventCache.event;
     }
 
     const currentEventResult = await this.prisma.event.findFirst({
@@ -45,7 +50,10 @@ class GuildEventRepository {
       startDate: currentEventResult.startDate,
     };
 
-    this.currentEventCache = currentEvent;
+    this.currentEventCache = {
+      event: currentEvent,
+      expiresAt: Date.now() + GuildEventRepository.cacheTtlMs,
+    };
     return currentEvent;
   }
 }

@@ -1,8 +1,9 @@
-import { BallChaser, PrismaClient } from "@prisma/client";
+import { BallChaser, PrismaClient, createPrismaClient } from "../../../prisma";
 import * as faker from "faker";
 import { LeaderboardBuilder } from "../../../../.jest/Builder";
 import { waitForAllPromises } from "../../../utils";
 import LeaderboardRepository from "../LeaderboardRepository";
+import EventRepository from "../../EventRepository";
 import { PlayerStats } from "../types";
 
 let prisma: PrismaClient;
@@ -13,7 +14,7 @@ beforeEach(async () => {
 });
 
 beforeAll(async () => {
-  prisma = new PrismaClient();
+  prisma = createPrismaClient();
   await prisma.$connect();
   await prisma.leaderboard.deleteMany();
   await prisma.event.deleteMany();
@@ -47,7 +48,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  await prisma.$disconnect();
+  await Promise.all([LeaderboardRepository.disconnect(), EventRepository.disconnect(), prisma.$disconnect()]);
 });
 
 const validatePlayerStats = (expected: PlayerStats, actual: PlayerStats | null) => {
@@ -276,6 +277,6 @@ describe("Leaderboard schema tests", () => {
           },
         },
       })
-    ).resolves.not.toThrowError();
+    ).resolves.not.toThrow();
   });
 });

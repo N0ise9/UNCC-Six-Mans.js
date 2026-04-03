@@ -1,8 +1,9 @@
 import { ActionRowBuilder, ButtonBuilder } from "discord.js";
-import { getEnvVariable } from "../utils";
 import CustomButton, { ButtonCustomID } from "./CustomButtons";
 
-const isDev = getEnvVariable("ENVIRONMENT") === "dev";
+function isDevEnvironment(): boolean {
+  return process.env["ENVIRONMENT"] === "dev";
+}
 
 const joinButton = new CustomButton({ customId: ButtonCustomID.JoinQueue });
 const leaveButton = new CustomButton({ customId: ButtonCustomID.LeaveQueue });
@@ -18,7 +19,7 @@ const brokenQueueButton = new CustomButton({ customId: ButtonCustomID.BrokenQueu
 export default class MessageButtons extends ButtonBuilder {
   static queueButtons(): ActionRowBuilder<ButtonBuilder> {
     const components = [joinButton, leaveButton];
-    if (isDev) {
+    if (isDevEnvironment()) {
       components.push(fillTeamButton, removeAllButton);
     }
     return new ActionRowBuilder({ components: components });
@@ -27,7 +28,7 @@ export default class MessageButtons extends ButtonBuilder {
   static fullQueueButtons(): ActionRowBuilder<ButtonBuilder> {
     const components = [chooseTeamsButton, randomTeamsButton, leaveButton];
 
-    if (isDev) {
+    if (isDevEnvironment()) {
       components.push(removeAllButton);
     }
     return new ActionRowBuilder({ components: components });
@@ -35,7 +36,7 @@ export default class MessageButtons extends ButtonBuilder {
 
   static activeMatchButtons(): ActionRowBuilder<ButtonBuilder> {
     const components = [brokenQueueButton, reportBlueWonButton, reportOrangeWonButton];
-    if (isDev) {
+    if (isDevEnvironment()) {
       components.push(breakMatchButton);
     }
     return new ActionRowBuilder({ components: components });

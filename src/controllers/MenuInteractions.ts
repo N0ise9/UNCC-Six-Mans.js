@@ -4,7 +4,6 @@ import { PlayerInQueue } from "../repositories/QueueRepository/types";
 import { createMatchFromChosenTeams } from "../services/MatchService";
 import { bluePlayerChosen, orangePlayerChosen } from "../services/TeamAssignmentService";
 import { Team } from "../types/common";
-import { getEnvVariable } from "../utils";
 import MessageBuilder, { MenuCustomID } from "../utils/MessageHelper/MessageBuilder";
 import AsyncMutex from "../utils/AsyncMutex";
 import { messageEditScheduler } from "../utils/MessageEditScheduler";
@@ -15,7 +14,7 @@ export async function handleMenuInteraction(menuInteraction: StringSelectMenuInt
   const { message } = menuInteraction;
   if (!(message instanceof Message)) return;
 
-  const isDev = getEnvVariable("ENVIRONMENT") === "dev";
+  const isDev = process.env["ENVIRONMENT"] === "dev";
 
   switch (menuInteraction.customId) {
     case MenuCustomID.BlueSelect: {

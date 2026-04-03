@@ -6,5 +6,7 @@ import MessageBuilder from "../utils/MessageHelper/MessageBuilder";
 export async function updateLeaderboardChannel(leaderboardChannel: TextChannel): Promise<void> {
   const leaderboardContent = await LeaderboardToString();
   await deleteAllMessagesInTextChannel(leaderboardChannel);
-  await leaderboardChannel.send(MessageBuilder.leaderboardMessage(leaderboardContent));
+  for (const payload of MessageBuilder.leaderboardMessage(leaderboardContent)) {
+    await leaderboardChannel.send(payload);
+  }
 }
