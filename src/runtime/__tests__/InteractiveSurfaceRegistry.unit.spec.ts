@@ -8,11 +8,7 @@ describe("InteractiveSurfaceRegistry", () => {
     const messageId = "queue-message";
 
     const openRevision = registry.upsert(messageId, "queue", {
-      allowedActions: new Set<string>([
-        ButtonCustomID.JoinQueue,
-        ButtonCustomID.LeaveQueue,
-        ButtonCustomID.Twos,
-      ]),
+      allowedActions: new Set<string>([ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue, ButtonCustomID.Twos]),
       state: "queue_open",
     });
 

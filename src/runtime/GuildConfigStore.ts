@@ -107,10 +107,7 @@ export class GuildConfigStore {
     return this.decryptGuildConfig(updated);
   }
 
-  updateGuildRuntimeFields(
-    guildId: string,
-    fields: GuildRuntimeFieldUpdates
-  ): GuildInstanceConfig {
+  updateGuildRuntimeFields(guildId: string, fields: GuildRuntimeFieldUpdates): GuildInstanceConfig {
     const file = this.readFile();
     const index = file.guilds.findIndex((entry) => entry.guildId === guildId);
     if (index < 0) {
@@ -125,10 +122,7 @@ export class GuildConfigStore {
         fields.leaderboardMessageIds,
         existing.leaderboardMessageIds
       ),
-      openAiConversationId: this.resolveOptionalStringField(
-        fields.openAiConversationId,
-        existing.openAiConversationId
-      ),
+      openAiConversationId: this.resolveOptionalStringField(fields.openAiConversationId, existing.openAiConversationId),
       queueMessageId: this.resolveOptionalStringField(fields.queueMessageId, existing.queueMessageId),
       updatedAt: new Date().toISOString(),
     };
@@ -185,16 +179,9 @@ export class GuildConfigStore {
   }
 
   private decryptValue(value: EncryptedValue): string {
-    const decipher = crypto.createDecipheriv(
-      "aes-256-gcm",
-      this.getEncryptionKey(),
-      Buffer.from(value.iv, "base64")
-    );
+    const decipher = crypto.createDecipheriv("aes-256-gcm", this.getEncryptionKey(), Buffer.from(value.iv, "base64"));
     decipher.setAuthTag(Buffer.from(value.authTag, "base64"));
-    const plaintext = Buffer.concat([
-      decipher.update(Buffer.from(value.ciphertext, "base64")),
-      decipher.final(),
-    ]);
+    const plaintext = Buffer.concat([decipher.update(Buffer.from(value.ciphertext, "base64")), decipher.final()]);
     return plaintext.toString("utf8");
   }
 

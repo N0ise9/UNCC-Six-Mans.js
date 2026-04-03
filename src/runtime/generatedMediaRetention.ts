@@ -7,11 +7,7 @@ export const GENERATED_MEDIA_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 type GeneratedMediaKind = "images" | "videos";
 
-export function buildGeneratedMediaPath(
-  kind: GeneratedMediaKind,
-  baseName: string,
-  extension: string
-): string {
+export function buildGeneratedMediaPath(kind: GeneratedMediaKind, baseName: string, extension: string): string {
   const directory = path.join(getGeneratedMediaRootPath(), kind);
   ensureDirectory(directory);
   return path.join(directory, `${sanitizeFileSegment(baseName)}-${Date.now()}.${extension}`);
@@ -59,12 +55,7 @@ function runPrune(log: Pick<Console, "info" | "error">): void {
   }
 }
 
-function pruneDirectory(
-  directory: string,
-  now: number,
-  retentionMs: number,
-  removeIfEmpty: boolean
-): number {
+function pruneDirectory(directory: string, now: number, retentionMs: number, removeIfEmpty: boolean): number {
   let deletedCount = 0;
 
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {

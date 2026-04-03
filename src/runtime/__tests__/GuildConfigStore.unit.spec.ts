@@ -176,11 +176,7 @@ describe("GuildConfigStore", () => {
       };
       delete rawConfig.guilds[0]?.["chatChannelId"];
       rawConfig.guilds[0]!["voiceChannelId"] = "voice-legacy";
-      fs.writeFileSync(
-        filePath,
-        JSON.stringify(rawConfig, null, 2),
-        "utf8"
-      );
+      fs.writeFileSync(filePath, JSON.stringify(rawConfig, null, 2), "utf8");
 
       const config = store.getGuildConfig("guild-1");
       const raw = fs.readFileSync(filePath, "utf8");
@@ -188,7 +184,7 @@ describe("GuildConfigStore", () => {
       expect(config?.databaseUrl).toBe("postgres://guild-one");
       expect(config?.chatChannelId).toBeUndefined();
       expect(raw).not.toContain("voiceChannelId");
-      expect(raw).toContain("\"queueChannelId\": \"queue-1\"");
+      expect(raw).toContain('"queueChannelId": "queue-1"');
     } finally {
       cleanup(filePath);
     }

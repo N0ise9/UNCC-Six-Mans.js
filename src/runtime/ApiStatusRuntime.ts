@@ -256,10 +256,7 @@ function buildIncidentPayloads(categories: StatusCategory[]): BaseMessageOptions
   return incidentEmbeds;
 }
 
-function createSummaryEmbed(
-  summary: ReturnType<typeof summarizeIssues>,
-  pageNumber: number
-): EmbedBuilder {
+function createSummaryEmbed(summary: ReturnType<typeof summarizeIssues>, pageNumber: number): EmbedBuilder {
   return new EmbedBuilder()
     .setColor(summary.critical > 0 ? 0xb91c1c : summary.issues > 0 ? 0xea580c : 0x16a34a)
     .setDescription(

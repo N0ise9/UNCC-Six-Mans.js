@@ -181,8 +181,7 @@ export class GuildRuntimeManager {
     if (interaction.commandName === "norm" || interaction.commandName === "sora") {
       if (!context.config.chatChannelId) {
         await interaction.reply({
-          content:
-            "This guild is missing its OpenAI chat channel. A server admin needs to rerun /setup set.",
+          content: "This guild is missing its OpenAI chat channel. A server admin needs to rerun /setup set.",
           ephemeral: true,
         });
         return;
@@ -282,9 +281,7 @@ export class GuildRuntimeManager {
         this.configStore.setGuildConfig(input);
         const reloadFailure = await this.reloadContext(interaction.guildId);
         if (reloadFailure) {
-          await responder.edit(
-            `Guild configuration saved, but the runtime failed to load: ${reloadFailure.message}`
-          );
+          await responder.edit(`Guild configuration saved, but the runtime failed to load: ${reloadFailure.message}`);
           return;
         }
 
@@ -323,10 +320,7 @@ export class GuildRuntimeManager {
     }
 
     if (configResult.error) {
-      console.error(
-        `[${guildId}] Failed to decrypt stored guild configuration during reload.`,
-        configResult.error
-      );
+      console.error(`[${guildId}] Failed to decrypt stored guild configuration during reload.`, configResult.error);
       return {
         code: "config",
         message: "stored configuration could not be decrypted",

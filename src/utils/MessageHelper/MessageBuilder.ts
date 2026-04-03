@@ -142,10 +142,7 @@ export default class MessageBuilder {
     };
   }
 
-  static async activeMatchMessage(
-    { blue, orange }: ActiveMatchCreated,
-    mmrMultiplier = 1
-  ): Promise<MessageOptions> {
+  static async activeMatchMessage({ blue, orange }: ActiveMatchCreated, mmrMultiplier = 1): Promise<MessageOptions> {
     //const embed = await EmbedBuilder.activeMatchEmbed({ blue, orange });
     const blueTeam: Array<string> = blue.players.map((player) => "<@" + player.id + ">");
     const orangeTeam: Array<string> = orange.players.map((player) => "<@" + player.id + ">");

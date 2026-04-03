@@ -55,14 +55,10 @@ export async function registerAllSlashCommands(clientId: string, token: string) 
     .setDescription("Configure this guild for the single-instance bot runtime.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .addSubcommand((subcommand) => {
-      return subcommand
-        .setName("show")
-        .setDescription("Show the current guild configuration.");
+      return subcommand.setName("show").setDescription("Show the current guild configuration.");
     })
     .addSubcommand((subcommand) => {
-      return subcommand
-        .setName("disable")
-        .setDescription("Disable this guild configuration.");
+      return subcommand.setName("disable").setDescription("Disable this guild configuration.");
     })
     .addSubcommand((subcommand) => {
       return subcommand
@@ -90,10 +86,7 @@ export async function registerAllSlashCommands(clientId: string, token: string) 
             .setRequired(true)
         )
         .addStringOption((option) =>
-          option
-            .setName("database_url")
-            .setDescription("Per-guild database URL")
-            .setRequired(true)
+          option.setName("database_url").setDescription("Per-guild database URL").setRequired(true)
         )
         .addChannelOption((option) =>
           option
