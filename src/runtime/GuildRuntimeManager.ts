@@ -11,19 +11,26 @@ import {
   VoiceBasedChannel,
 } from "discord.js";
 import { DateTime } from "luxon";
-import { PrismaClient } from "@prisma/client";
 import OpenAI from "openai";
+import { createPrismaClient } from "../prisma";
 import AsyncMutex from "../utils/AsyncMutex";
-import { generateRandomId, splitArray, waitForAllPromises } from "../utils";
+import { waitForAllPromises } from "../utils";
+import { ActiveMatchCreated } from "../domain/match";
 import { handleEasterEggSlashInteraction, handleNormMessage } from "../controllers/EasterEggs";
 import { Team } from "../types/common";
 import MessageBuilder, { MenuCustomID } from "../utils/MessageHelper/MessageBuilder";
 import { ButtonCustomID } from "../utils/MessageHelper/CustomButtons";
+import { ApiStatusRuntime } from "./ApiStatusRuntime";
 import { GuildConfigStore, maskSecret } from "./GuildConfigStore";
 import { DiscordWorkScheduler } from "./DiscordWorkScheduler";
 import { GuildRepositories } from "./GuildRepositories";
 import { InteractiveSurfaceRegistry } from "./InteractiveSurfaceRegistry";
-import { ActiveMatchTeams, NewActiveMatchInput, PlayerInActiveMatch } from "../repositories/ActiveMatchRepository/types";
+import { reconcileTrackedMessages } from "./reconcileTrackedMessages";
+import {
+  ActiveMatchTeams,
+  NewActiveMatchInput,
+  PlayerInActiveMatch,
+} from "../repositories/ActiveMatchRepository/types";
 import { AddBallChaserToQueueInput, PlayerInQueue } from "../repositories/QueueRepository/types";
 import { ActiveSurfaceState, GuildChannels, GuildConfigUpsertInput, GuildContext, GuildInstanceConfig } from "./types";
 
@@ -33,28 +40,40 @@ type QueueRender = {
   view: Awaited<ReturnType<typeof MessageBuilder.activeMatchMessage>> | ReturnType<typeof MessageBuilder.queueMessage>;
 };
 
-export interface ActiveMatchCreated {
-  blue: {
-    mmrStake: number;
-    players: ReadonlyArray<PlayerInActiveMatch>;
-    winProbability: number;
-  };
-  orange: {
-    mmrStake: number;
-    players: ReadonlyArray<PlayerInActiveMatch>;
-    winProbability: number;
-  };
+type GuildRuntimeFailureCode = "bootstrap" | "channels" | "config" | "database" | "unknown";
+
+type GuildRuntimeLoadFailure = {
+  code: GuildRuntimeFailureCode;
+  message: string;
+};
+
+type GuildRuntimeLoadResult = {
+  context: GuildContext | null;
+  failure: GuildRuntimeLoadFailure | null;
+};
+
+class GuildRuntimeInitializationError extends Error {
+  constructor(
+    readonly code: Exclude<GuildRuntimeFailureCode, "config" | "unknown">,
+    message: string,
+    readonly cause: unknown
+  ) {
+    super(message);
+    this.name = "GuildRuntimeInitializationError";
+  }
 }
 
 export class GuildRuntimeManager {
   private readonly contexts = new Map<string, GuildContext>();
+  private readonly contextLoads = new Map<string, Promise<GuildContext | null>>();
   private readonly queueTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(
     private readonly client: Client,
     private readonly openai: OpenAI,
     private readonly configStore: GuildConfigStore,
-    private readonly scheduler: DiscordWorkScheduler
+    private readonly scheduler: DiscordWorkScheduler,
+    private readonly apiStatusRuntime?: ApiStatusRuntime
   ) {}
 
   async dispose(): Promise<void> {
@@ -62,9 +81,11 @@ export class GuildRuntimeManager {
       clearInterval(timer);
     }
     this.queueTimers.clear();
+    this.contextLoads.clear();
 
     for (const context of this.contexts.values()) {
-      await context.prisma.$disconnect();
+      this.apiStatusRuntime?.unregisterGuild(context.guildId);
+      await context.prisma.$disconnect().catch(() => undefined);
     }
     this.contexts.clear();
   }
@@ -73,15 +94,37 @@ export class GuildRuntimeManager {
     const existing = this.contexts.get(guildId);
     if (existing) return existing;
 
-    const config = this.configStore.getGuildConfig(guildId);
+    const existingLoad = this.contextLoads.get(guildId);
+    if (existingLoad) {
+      return await existingLoad;
+    }
+
+    const configResult = this.configStore.getGuildConfigResult(guildId);
+    if (!configResult) {
+      return null;
+    }
+
+    if (configResult.error) {
+      console.error(
+        `[${guildId}] Failed to decrypt stored guild configuration. ` +
+          "Check CONFIG_ENCRYPTION_KEY and config file integrity.",
+        configResult.error
+      );
+      return null;
+    }
+
+    const config = configResult.config;
     if (!config || !config.enabled) {
       return null;
     }
 
-    const context = await this.createContext(config);
-    this.contexts.set(guildId, context);
-    await this.bootstrapContext(context);
-    return context;
+    const load = this.loadContext(config).then((result) => result.context);
+    this.contextLoads.set(guildId, load);
+    try {
+      return await load;
+    } finally {
+      this.contextLoads.delete(guildId);
+    }
   }
 
   async handleMessage(message: Message): Promise<void> {
@@ -97,7 +140,10 @@ export class GuildRuntimeManager {
 
   async handleSlashCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "This command only works inside a server.", ephemeral: true });
+      await interaction.reply({
+        content: "This command only works inside a server.",
+        ephemeral: true,
+      });
       return;
     }
 
@@ -109,6 +155,27 @@ export class GuildRuntimeManager {
 
     const context = await this.ensureContext(interaction.guildId);
     if (!context) {
+      const configResult = this.configStore.getGuildConfigResult(interaction.guildId);
+      if (configResult?.error) {
+        await interaction.reply({
+          content:
+            "This guild is configured, but I couldn't read its stored configuration. " +
+            "Check CONFIG_ENCRYPTION_KEY and rerun /setup set.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (configResult?.config?.enabled) {
+        await interaction.reply({
+          content:
+            "This guild is configured, but the runtime failed to load. Check the configured channels " +
+            "and database URL, then rerun /setup set.",
+          ephemeral: true,
+        });
+        return;
+      }
+
       await interaction.reply({
         content: "This guild has not been configured yet. Run /setup set first.",
         ephemeral: true,
@@ -153,6 +220,7 @@ export class GuildRuntimeManager {
             `Enabled: ${config.enabled}`,
             `Queue channel: ${config.queueChannelId}`,
             `Leaderboard channel: ${config.leaderboardChannelId}`,
+            `Leaderboard messages: ${config.leaderboardMessageIds?.join(", ") ?? "not created yet"}`,
             `Chat channel: ${config.chatChannelId}`,
             `Voice channel: ${config.voiceChannelId}`,
             `API status channel: ${config.apiStatusChannelId ?? "none"}`,
@@ -211,7 +279,14 @@ export class GuildRuntimeManager {
         };
 
         this.configStore.setGuildConfig(input);
-        await this.reloadContext(interaction.guildId);
+        const reloadFailure = await this.reloadContext(interaction.guildId);
+        if (reloadFailure) {
+          await interaction.editReply(
+            `Guild configuration saved, but the runtime failed to load: ${reloadFailure.message}`
+          );
+          return;
+        }
+
         await interaction.editReply("Guild configuration saved and runtime refreshed.");
         return;
       }
@@ -219,52 +294,88 @@ export class GuildRuntimeManager {
   }
 
   async initializeConfiguredGuilds(): Promise<void> {
-    const configs = this.configStore.getGuildConfigs().filter((config) => config.enabled);
-    for (const config of configs) {
-      const context = await this.createContext(config);
-      this.contexts.set(config.guildId, context);
-      await this.bootstrapContext(context);
+    const configs = this.configStore.getGuildConfigResults();
+    for (const configResult of configs) {
+      if (configResult.error) {
+        console.error(
+          `[${configResult.guildId}] Failed to decrypt stored guild configuration during startup.`,
+          configResult.error
+        );
+        continue;
+      }
+
+      if (!configResult.config?.enabled) {
+        continue;
+      }
+
+      await this.loadContext(configResult.config);
     }
   }
 
-  async reloadContext(guildId: string): Promise<void> {
-    const existing = this.contexts.get(guildId);
-    if (existing) {
-      const timer = this.queueTimers.get(guildId);
-      if (timer) {
-        clearInterval(timer);
-        this.queueTimers.delete(guildId);
-      }
-      await existing.prisma.$disconnect();
-      this.contexts.delete(guildId);
+  async reloadContext(guildId: string): Promise<GuildRuntimeLoadFailure | null> {
+    await this.teardownContext(guildId);
+    this.contextLoads.delete(guildId);
+
+    const configResult = this.configStore.getGuildConfigResult(guildId);
+    if (!configResult) {
+      return null;
     }
 
-    const config = this.configStore.getGuildConfig(guildId);
+    if (configResult.error) {
+      console.error(
+        `[${guildId}] Failed to decrypt stored guild configuration during reload.`,
+        configResult.error
+      );
+      return {
+        code: "config",
+        message: "stored configuration could not be decrypted",
+      };
+    }
+
+    const config = configResult.config;
     if (!config || !config.enabled) {
-      return;
+      return null;
     }
 
-    const context = await this.createContext(config);
-    this.contexts.set(guildId, context);
-    await this.bootstrapContext(context);
+    const result = await this.loadContext(config);
+    return result.failure;
   }
 
   private async bootstrapContext(context: GuildContext): Promise<void> {
     await this.refreshLeaderboard(context);
     await this.refreshQueueSurface(context);
+    if (context.channels.apiStatusChannel) {
+      await this.apiStatusRuntime?.registerGuild(context.guildId, context.channels.apiStatusChannel);
+    } else {
+      this.apiStatusRuntime?.unregisterGuild(context.guildId);
+    }
     this.startQueueTimer(context);
   }
 
   private async createContext(config: GuildInstanceConfig): Promise<GuildContext> {
-    const channels = await this.fetchChannels(config);
-    const prisma = new PrismaClient({
-      datasources: {
-        db: {
-          url: config.databaseUrl,
-        },
-      },
-    });
-    await prisma.$connect();
+    let channels: GuildChannels;
+    try {
+      channels = await this.fetchChannels(config);
+    } catch (error) {
+      throw new GuildRuntimeInitializationError(
+        "channels",
+        "one or more configured Discord channels could not be fetched",
+        error
+      );
+    }
+
+    const prisma = createPrismaClient(config.databaseUrl);
+    try {
+      await prisma.$connect();
+      await prisma.$queryRawUnsafe("SELECT 1");
+    } catch (error) {
+      await prisma.$disconnect().catch(() => undefined);
+      throw new GuildRuntimeInitializationError(
+        "database",
+        "the configured Postgres database URL could not be reached",
+        error
+      );
+    }
 
     return {
       channels,
@@ -272,6 +383,7 @@ export class GuildRuntimeManager {
       config,
       configStore: this.configStore,
       guildId: config.guildId,
+      leaderboardMessages: await this.restoreLeaderboardMessages(config, channels.leaderboardChannel),
       normProcessing: false,
       normQueue: [],
       openai: this.openai,
@@ -281,7 +393,6 @@ export class GuildRuntimeManager {
       repositories: new GuildRepositories(prisma),
       scheduler: this.scheduler,
       surfaceRegistry: new InteractiveSurfaceRegistry(),
-      trackedMatchMessageIds: new Set<string>(),
       voteState: {
         captainsRandomVotes: new Map<string, string>(),
         twosEnabled: false,
@@ -315,11 +426,93 @@ export class GuildRuntimeManager {
 
     try {
       return await queueChannel.messages.fetch(config.queueMessageId);
-    } catch (error) {
+    } catch {
       console.warn(`[${config.guildId}] Stored queue message ${config.queueMessageId} no longer exists; recreating.`);
-      this.configStore.updateGuildRuntimeFields(config.guildId, { queueMessageId: undefined });
+      this.configStore.updateGuildRuntimeFields(config.guildId, { queueMessageId: null });
       return null;
     }
+  }
+
+  private async restoreLeaderboardMessages(
+    config: GuildInstanceConfig,
+    leaderboardChannel: TextChannel
+  ): Promise<Message[]> {
+    const leaderboardMessageIds = config.leaderboardMessageIds ?? [];
+    if (leaderboardMessageIds.length === 0) {
+      return [];
+    }
+
+    const restoredMessages: Message[] = [];
+    let missingMessages = false;
+
+    for (const messageId of leaderboardMessageIds) {
+      try {
+        restoredMessages.push(await leaderboardChannel.messages.fetch(messageId));
+      } catch {
+        missingMessages = true;
+        console.warn(`[${config.guildId}] Stored leaderboard message ${messageId} no longer exists; recreating.`);
+      }
+    }
+
+    if (missingMessages) {
+      this.configStore.updateGuildRuntimeFields(config.guildId, {
+        leaderboardMessageIds: restoredMessages.length > 0 ? restoredMessages.map((message) => message.id) : null,
+      });
+    }
+
+    return restoredMessages;
+  }
+
+  private async loadContext(config: GuildInstanceConfig): Promise<GuildRuntimeLoadResult> {
+    let context: GuildContext | null = null;
+
+    try {
+      context = await this.createContext(config);
+      try {
+        await this.bootstrapContext(context);
+      } catch (error) {
+        throw new GuildRuntimeInitializationError(
+          "bootstrap",
+          "the guild runtime loaded but failed during bootstrap",
+          error
+        );
+      }
+
+      this.contexts.set(config.guildId, context);
+      return {
+        context,
+        failure: null,
+      };
+    } catch (error) {
+      const failure = classifyGuildRuntimeFailure(error);
+      console.error(`[${config.guildId}] Failed to initialize guild runtime: ${failure.message}`, error);
+      this.apiStatusRuntime?.unregisterGuild(config.guildId);
+      if (context) {
+        await context.prisma.$disconnect().catch(() => undefined);
+      }
+      return {
+        context: null,
+        failure,
+      };
+    }
+  }
+
+  private async teardownContext(guildId: string): Promise<void> {
+    const timer = this.queueTimers.get(guildId);
+    if (timer) {
+      clearInterval(timer);
+      this.queueTimers.delete(guildId);
+    }
+
+    const existing = this.contexts.get(guildId);
+    if (!existing) {
+      this.apiStatusRuntime?.unregisterGuild(guildId);
+      return;
+    }
+
+    this.apiStatusRuntime?.unregisterGuild(guildId);
+    await existing.prisma.$disconnect().catch(() => undefined);
+    this.contexts.delete(guildId);
   }
 
   async handleAdminCommand(context: GuildContext, interaction: ChatInputCommandInteraction): Promise<void> {
@@ -466,7 +659,9 @@ export class GuildRuntimeManager {
       brokenQueue: vote,
     });
 
-    const brokenQueueVotes = await context.repositories.activeMatch.getAllBrokenQueueVotesInActiveMatch(interaction.user.id);
+    const brokenQueueVotes = await context.repositories.activeMatch.getAllBrokenQueueVotesInActiveMatch(
+      interaction.user.id
+    );
     if (brokenQueueVotes >= 4) {
       context.surfaceRegistry.close(message.id, "match");
       await context.repositories.activeMatch.removeAllPlayersInActiveMatch(interaction.user.id);
@@ -483,7 +678,10 @@ export class GuildRuntimeManager {
     const revision = context.surfaceRegistry.upsert(message.id, "match", matchSurfaceState());
 
     await this.scheduler.enqueue(
-      async () => await message.edit(await MessageBuilder.voteBrokenQueueMessage(currentMatch, teams, brokenQueueVotes, event.mmrMult)),
+      async () =>
+        await message.edit(
+          await MessageBuilder.voteBrokenQueueMessage(currentMatch, teams, brokenQueueVotes, event.mmrMult)
+        ),
       {
         coalesce: "replace",
         dedupeKey: `message-edit:${message.id}`,
@@ -571,7 +769,11 @@ export class GuildRuntimeManager {
     await this.refreshQueueSurface(context);
   }
 
-  private async publishActiveMatch(context: GuildContext, sourceMessage: Message, activeMatch: ActiveMatchCreated): Promise<void> {
+  private async publishActiveMatch(
+    context: GuildContext,
+    sourceMessage: Message,
+    activeMatch: ActiveMatchCreated
+  ): Promise<void> {
     const event = await context.repositories.event.getCurrentEvent();
     const activeMatchMessage = await this.scheduler.enqueue(
       async () => await sourceMessage.reply(await MessageBuilder.activeMatchMessage(activeMatch, event.mmrMult)),
@@ -582,7 +784,6 @@ export class GuildRuntimeManager {
     );
 
     if (activeMatchMessage) {
-      context.trackedMatchMessageIds.add(activeMatchMessage.id);
       context.surfaceRegistry.upsert(activeMatchMessage.id, "match", matchSurfaceState());
     }
 
@@ -592,22 +793,19 @@ export class GuildRuntimeManager {
 
   private async refreshLeaderboard(context: GuildContext): Promise<void> {
     const strings = await leaderboardToStrings(context);
-    const payload = MessageBuilder.leaderboardMessage(strings);
-
-    await this.scheduler.enqueue(
-      async () => {
-        const messages = await context.channels.leaderboardChannel.messages.fetch({ limit: 99 });
-        if (messages.size > 0) {
-          await context.channels.leaderboardChannel.bulkDelete(messages, true).catch(() => undefined);
-        }
-        await context.channels.leaderboardChannel.send(payload);
-      },
-      {
-        dedupeKey: `leaderboard-refresh:${context.guildId}`,
-        label: "leaderboard-refresh",
-        priority: "low",
-      }
-    );
+    const payloads = MessageBuilder.leaderboardMessage(strings);
+    context.leaderboardMessages = await reconcileTrackedMessages({
+      channel: context.channels.leaderboardChannel,
+      labelPrefix: `leaderboard:${context.guildId}`,
+      payloads,
+      priority: "low",
+      scheduler: this.scheduler,
+      trackedMessages: context.leaderboardMessages,
+    });
+    context.config = context.configStore.updateGuildRuntimeFields(context.guildId, {
+      leaderboardMessageIds:
+        context.leaderboardMessages.length > 0 ? context.leaderboardMessages.map((message) => message.id) : null,
+    });
   }
 
   private async refreshQueueSurface(
@@ -648,19 +846,25 @@ export class GuildRuntimeManager {
   }
 
   private startQueueTimer(context: GuildContext): void {
-    const timer = setInterval(async () => {
-      const release = await context.queueMutex.acquire();
-      try {
-        const updatedList = await checkQueueTimes(context);
-        if (!updatedList) return;
-        resetVoteState(context);
-        await this.refreshQueueSurface(context, updatedList);
-      } finally {
-        release();
-      }
+    const timer = setInterval(() => {
+      void this.runQueueTimer(context);
     }, 60 * 1000);
 
     this.queueTimers.set(context.guildId, timer);
+  }
+
+  private async runQueueTimer(context: GuildContext): Promise<void> {
+    const release = await context.queueMutex.acquire();
+    try {
+      const updatedList = await checkQueueTimes(context);
+      if (!updatedList) return;
+      resetVoteState(context);
+      await this.refreshQueueSurface(context, updatedList);
+    } catch (error) {
+      console.error(`[${context.guildId}] Queue timer refresh failed:`, error);
+    } finally {
+      release();
+    }
   }
 }
 
@@ -878,7 +1082,10 @@ async function checkQueueTimes(context: GuildContext): Promise<ReadonlyArray<Pla
   return await context.repositories.queue.getAllBallChasersInQueue();
 }
 
-async function kickPlayerFromQueue(context: GuildContext, playerIdToRemove: string): Promise<ReadonlyArray<PlayerInQueue>> {
+async function kickPlayerFromQueue(
+  context: GuildContext,
+  playerIdToRemove: string
+): Promise<ReadonlyArray<PlayerInQueue>> {
   const playersInQueue = await context.repositories.queue.getAllBallChasersInQueue();
   if (playersInQueue.length === 0) {
     throw new Error("Queue is empty, who are you trying to remove?");
@@ -987,7 +1194,10 @@ function calculateProbability(calculatedProbabilityDecimal: number): number {
   return Math.round(calculatedProbabilityDecimal * 100);
 }
 
-async function startMatch(context: GuildContext, createdTeams: Array<NewActiveMatchInput>): Promise<ActiveMatchCreated> {
+async function startMatch(
+  context: GuildContext,
+  createdTeams: Array<NewActiveMatchInput>
+): Promise<ActiveMatchCreated> {
   await Promise.all([
     context.repositories.activeMatch.addActiveMatch(createdTeams),
     context.repositories.queue.removeAllBallChasersFromQueue(),
@@ -1151,11 +1361,47 @@ async function leaderboardToStrings(context: GuildContext): Promise<Array<string
     const segment = playersSegment.reduce((previous, player, index) => {
       return (
         previous +
-        `Rank: ${i + index + 1}\n\tName: ${player.name}\n\tMMR: ${player.mmr}\n\tWins: ${player.wins}\n\tLosses: ${player.losses}\n\tMatches Played: ${player.matchesPlayed}\n\tWin Perc: ${Math.round(player.winPerc * 100)}%\n\n`
+        [
+          `Rank: ${i + index + 1}`,
+          `\tName: ${player.name}`,
+          `\tMMR: ${player.mmr}`,
+          `\tWins: ${player.wins}`,
+          `\tLosses: ${player.losses}`,
+          `\tMatches Played: ${player.matchesPlayed}`,
+          `\tWin Perc: ${Math.round(player.winPerc * 100)}%`,
+          "",
+          "",
+        ].join("\n")
       );
     }, "");
     result.push(segment);
   }
 
   return result;
+}
+
+function classifyGuildRuntimeFailure(error: unknown): GuildRuntimeLoadFailure {
+  if (error instanceof GuildRuntimeInitializationError) {
+    return {
+      code: error.code,
+      message: error.message,
+    };
+  }
+
+  return {
+    code: "unknown",
+    message: toErrorMessage(error),
+  };
+}
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  if (typeof error === "string" && error.trim().length > 0) {
+    return error;
+  }
+
+  return "an unknown error occurred";
 }

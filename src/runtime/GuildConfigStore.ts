@@ -9,7 +9,20 @@ interface GuildConfigFile {
   version: 1;
 }
 
+export interface GuildConfigReadResult {
+  enabled: boolean;
+  error?: Error;
+  guildId: string;
+  config: GuildInstanceConfig | null;
+}
+
 const CONFIG_FILE_NAME = ".guild-instance-config.json";
+
+type GuildRuntimeFieldUpdates = {
+  leaderboardMessageIds?: string[] | null;
+  openAiConversationId?: string | null;
+  queueMessageId?: string | null;
+};
 
 export class GuildConfigStore {
   private readonly filePath: string;
@@ -28,8 +41,22 @@ export class GuildConfigStore {
     return guild ? this.decryptGuildConfig(guild) : null;
   }
 
+  getGuildConfigResult(guildId: string): GuildConfigReadResult | null {
+    const file = this.readFile();
+    const guild = file.guilds.find((entry) => entry.guildId === guildId);
+    if (!guild) {
+      return null;
+    }
+
+    return this.decryptGuildConfigResult(guild);
+  }
+
   getGuildConfigs(): GuildInstanceConfig[] {
     return this.readFile().guilds.map((entry) => this.decryptGuildConfig(entry));
+  }
+
+  getGuildConfigResults(): GuildConfigReadResult[] {
+    return this.readFile().guilds.map((entry) => this.decryptGuildConfigResult(entry));
   }
 
   disableGuild(guildId: string): GuildInstanceConfig | null {
@@ -61,6 +88,7 @@ export class GuildConfigStore {
       enabled: true,
       guildId: input.guildId,
       leaderboardChannelId: input.leaderboardChannelId,
+      leaderboardMessageIds: previous?.leaderboardMessageIds,
       openAiConversationId: input.openAiConversationId ?? previous?.openAiConversationId,
       queueChannelId: input.queueChannelId,
       queueMessageId: previous?.queueMessageId,
@@ -80,7 +108,7 @@ export class GuildConfigStore {
 
   updateGuildRuntimeFields(
     guildId: string,
-    fields: Partial<Pick<GuildInstanceConfig, "openAiConversationId" | "queueMessageId">>
+    fields: GuildRuntimeFieldUpdates
   ): GuildInstanceConfig {
     const file = this.readFile();
     const index = file.guilds.findIndex((entry) => entry.guildId === guildId);
@@ -88,11 +116,19 @@ export class GuildConfigStore {
       throw new Error(`No stored guild config for ${guildId}.`);
     }
 
+    const existing = file.guilds[index];
+
     const updated: GuildInstanceStoredConfig = {
-      ...file.guilds[index],
-      openAiConversationId:
-        fields.openAiConversationId === undefined ? file.guilds[index].openAiConversationId : fields.openAiConversationId,
-      queueMessageId: fields.queueMessageId === undefined ? file.guilds[index].queueMessageId : fields.queueMessageId,
+      ...existing,
+      leaderboardMessageIds: this.resolveOptionalArrayField(
+        fields.leaderboardMessageIds,
+        existing.leaderboardMessageIds
+      ),
+      openAiConversationId: this.resolveOptionalStringField(
+        fields.openAiConversationId,
+        existing.openAiConversationId
+      ),
+      queueMessageId: this.resolveOptionalStringField(fields.queueMessageId, existing.queueMessageId),
       updatedAt: new Date().toISOString(),
     };
 
@@ -106,6 +142,45 @@ export class GuildConfigStore {
       ...config,
       databaseUrl: this.decryptValue(config.databaseUrl),
     };
+  }
+
+  private decryptGuildConfigResult(config: GuildInstanceStoredConfig): GuildConfigReadResult {
+    try {
+      return {
+        config: this.decryptGuildConfig(config),
+        enabled: config.enabled,
+        guildId: config.guildId,
+      };
+    } catch (error) {
+      return {
+        config: null,
+        enabled: config.enabled,
+        error: toError(error),
+        guildId: config.guildId,
+      };
+    }
+  }
+
+  private resolveOptionalArrayField(
+    nextValue: string[] | null | undefined,
+    currentValue: string[] | undefined
+  ): string[] | undefined {
+    if (nextValue === undefined) {
+      return currentValue;
+    }
+
+    return nextValue === null ? undefined : nextValue;
+  }
+
+  private resolveOptionalStringField(
+    nextValue: string | null | undefined,
+    currentValue: string | undefined
+  ): string | undefined {
+    if (nextValue === undefined) {
+      return currentValue;
+    }
+
+    return nextValue === null ? undefined : nextValue;
   }
 
   private decryptValue(value: EncryptedValue): string {
@@ -171,4 +246,12 @@ export class GuildConfigStore {
 export function maskSecret(value: string): string {
   if (value.length <= 8) return "********";
   return `${value.slice(0, 4)}***${value.slice(-4)}`;
+}
+
+function toError(error: unknown): Error {
+  if (error instanceof Error) {
+    return error;
+  }
+
+  return new Error(typeof error === "string" ? error : "Unknown guild config error");
 }

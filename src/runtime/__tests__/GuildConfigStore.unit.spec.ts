@@ -80,6 +80,7 @@ describe("GuildConfigStore", () => {
       });
 
       store.updateGuildRuntimeFields("guild-1", {
+        leaderboardMessageIds: ["leaderboard-message-1", "leaderboard-message-2"],
         openAiConversationId: "conv-1",
         queueMessageId: "queue-message-1",
       });
@@ -88,11 +89,75 @@ describe("GuildConfigStore", () => {
       const first = store.getGuildConfig("guild-1");
       const second = store.getGuildConfig("guild-2");
 
+      expect(first?.leaderboardMessageIds).toEqual(["leaderboard-message-1", "leaderboard-message-2"]);
       expect(first?.openAiConversationId).toBe("conv-1");
       expect(first?.queueMessageId).toBe("queue-message-1");
       expect(first?.databaseUrl).toBe("postgres://guild-one");
       expect(second?.databaseUrl).toBe("postgres://guild-two");
       expect(second?.enabled).toBe(false);
+    } finally {
+      cleanup(filePath);
+    }
+  });
+
+  it("treats omitted runtime fields as unchanged and null as cleared", () => {
+    const { filePath, store } = createStore();
+
+    try {
+      store.setGuildConfig({
+        chatChannelId: "chat-1",
+        databaseUrl: "postgres://guild-one",
+        guildId: "guild-1",
+        leaderboardChannelId: "leaderboard-1",
+        openAiConversationId: "seed-conversation",
+        queueChannelId: "queue-1",
+        voiceChannelId: "voice-1",
+      });
+
+      store.updateGuildRuntimeFields("guild-1", {
+        leaderboardMessageIds: ["leaderboard-message-1"],
+        queueMessageId: "queue-message-1",
+      });
+      store.updateGuildRuntimeFields("guild-1", {
+        leaderboardMessageIds: null,
+        openAiConversationId: null,
+      });
+
+      const config = store.getGuildConfig("guild-1");
+
+      expect(config?.leaderboardMessageIds).toBeUndefined();
+      expect(config?.openAiConversationId).toBeUndefined();
+      expect(config?.queueMessageId).toBe("queue-message-1");
+    } finally {
+      cleanup(filePath);
+    }
+  });
+
+  it("returns a per-guild read error instead of crashing startup when a config cannot be decrypted", () => {
+    const { filePath, store } = createStore();
+
+    try {
+      store.setGuildConfig({
+        chatChannelId: "chat-1",
+        databaseUrl: "postgres://guild-one",
+        guildId: "guild-1",
+        leaderboardChannelId: "leaderboard-1",
+        queueChannelId: "queue-1",
+        voiceChannelId: "voice-1",
+      });
+
+      process.env["CONFIG_ENCRYPTION_KEY"] = "different-unit-test-key";
+
+      const configResult = store.getGuildConfigResult("guild-1");
+      const allResults = store.getGuildConfigResults();
+
+      expect(configResult).not.toBeNull();
+      expect(configResult?.config).toBeNull();
+      expect(configResult?.error).toBeInstanceOf(Error);
+      expect(allResults).toHaveLength(1);
+      expect(allResults[0]?.guildId).toBe("guild-1");
+      expect(allResults[0]?.config).toBeNull();
+      expect(allResults[0]?.error).toBeInstanceOf(Error);
     } finally {
       cleanup(filePath);
     }
