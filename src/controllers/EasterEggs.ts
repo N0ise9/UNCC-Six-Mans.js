@@ -1,10 +1,11 @@
 /* eslint-disable max-len */
 import { ChatInputCommandInteraction, Message, TextChannel } from "discord.js";
 import OpenAI from "openai";
+import type { Video, VideoCreateParams, Videos } from "openai/resources/videos";
 import * as fs from "fs";
-import path from "path";
 import { GuildContext } from "../runtime/types";
 import { createScheduledCommandResponder } from "../runtime/createScheduledCommandResponder";
+import { buildGeneratedMediaPath } from "../runtime/generatedMediaRetention";
 
 export const EASTER_EGG_SLASH_COMMANDS = {
   Norm: "norm",
@@ -31,22 +32,11 @@ type OpenAIResponsePayload = {
   };
 };
 
-type SoraVideoCompletion = {
-  error?: {
-    message?: string;
-  };
-  id: string;
-  progress?: number;
-  status: "completed" | "failed" | "in_progress" | "queued";
-};
-
-type SoraVideoClient = {
-  downloadContent: (id: string) => Promise<Response | null>;
-  retrieve: (id: string) => Promise<SoraVideoCompletion>;
-  create: (payload: { model: string; prompt: string; seconds: string }) => Promise<SoraVideoCompletion>;
-};
-
-const GENERATED_MEDIA_ROOT = path.resolve(process.cwd(), "data", "generated-media");
+type SoraVideoClient = Pick<Videos, "create" | "downloadContent" | "retrieve">;
+type SoraVideoSeconds = NonNullable<VideoCreateParams["seconds"]>;
+const VALID_SORA_DURATIONS = new Set<SoraVideoSeconds>(["4", "8", "12"]);
+const SORA_POLL_INTERVAL_MS = 2_000;
+const SORA_MAX_POLL_ATTEMPTS = 150;
 
 function isSoraEnabled(): boolean {
   return (process.env["ENABLE_SORA"] ?? "false").toLowerCase() === "true";
@@ -62,43 +52,17 @@ function getSoraModel(): string {
 }
 
 function getSoraVideoClient(openai: OpenAI): SoraVideoClient | null {
-  const candidate = openai as OpenAI & { videos?: SoraVideoClient };
-  if (candidate.videos) {
-    return candidate.videos;
+  const candidate = openai as OpenAI & { videos?: Partial<SoraVideoClient> };
+  if (
+    candidate.videos &&
+    typeof candidate.videos.create === "function" &&
+    typeof candidate.videos.downloadContent === "function" &&
+    typeof candidate.videos.retrieve === "function"
+  ) {
+    return candidate.videos as SoraVideoClient;
   }
 
-  if (typeof openai.get !== "function" || typeof openai.post !== "function") {
-    return null;
-  }
-
-  return {
-    create: async (payload) =>
-      await openai.post<SoraVideoCompletion>("/videos", {
-        body: payload,
-      }),
-    downloadContent: async (id) =>
-      await openai.get<Response>(`/videos/${id}/content`, {
-        __binaryResponse: true,
-        headers: {
-          Accept: "application/binary",
-        },
-      }),
-    retrieve: async (id) => await openai.get<SoraVideoCompletion>(`/videos/${id}`),
-  };
-}
-
-function ensureDirectory(directory: string): void {
-  fs.mkdirSync(directory, { recursive: true });
-}
-
-function sanitizeFileSegment(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 48) || "norm";
-}
-
-function buildGeneratedMediaPath(kind: "images" | "videos", baseName: string, extension: string): string {
-  const directory = path.join(GENERATED_MEDIA_ROOT, kind);
-  ensureDirectory(directory);
-  return path.join(directory, `${sanitizeFileSegment(baseName)}-${Date.now()}.${extension}`);
+  return null;
 }
 
 export function assertSoraRuntimeSupport(openai: OpenAI): void {
@@ -214,6 +178,26 @@ async function sendChannelParts(context: GuildContext, channel: TextChannel, par
       }
     );
   }
+}
+
+async function waitForSoraCompletion(videoClient: SoraVideoClient, video: Video): Promise<Video> {
+  let currentVideo = video;
+  let attempt = 0;
+
+  while (
+    (currentVideo.status === "in_progress" || currentVideo.status === "queued") &&
+    attempt < SORA_MAX_POLL_ATTEMPTS
+  ) {
+    attempt += 1;
+    await new Promise((resolve) => setTimeout(resolve, SORA_POLL_INTERVAL_MS));
+    currentVideo = await videoClient.retrieve(currentVideo.id);
+  }
+
+  if (currentVideo.status === "in_progress" || currentVideo.status === "queued") {
+    throw new Error("Sora generation timed out before the video completed.");
+  }
+
+  return currentVideo;
 }
 
 async function runNormPrompt(
@@ -397,9 +381,9 @@ export async function handleEasterEggSlashInteraction(
 
       const prompt = interaction.options.getString("prompt");
       const durationStr = interaction.options.getString("duration") ?? "8";
-      const validDurations = new Set(["4", "8", "12"]);
-      const secondsStr = validDurations.has(durationStr) ? durationStr : "8";
-      const duration = Number(secondsStr);
+      const seconds = VALID_SORA_DURATIONS.has(durationStr as SoraVideoSeconds)
+        ? (durationStr as SoraVideoSeconds)
+        : "8";
 
       if (!prompt) {
         await responder.edit("Prompt was empty.");
@@ -414,36 +398,27 @@ export async function handleEasterEggSlashInteraction(
 
         const soraModel = getSoraModel();
 
-        let completion = await videoClient.create({
+        const completion = await videoClient.create({
           model: soraModel,
           prompt,
-          seconds: secondsStr,
+          seconds,
         });
+        const completedVideo = await waitForSoraCompletion(videoClient, completion);
 
-        while (completion.status === "in_progress" || completion.status === "queued") {
-          completion = await videoClient.retrieve(completion.id);
-          await new Promise((resolve) => setTimeout(resolve, 2000));
-        }
-
-        if (completion.status === "failed") {
-          const reason = completion.error?.message ? ` ${completion.error.message}` : "";
+        if (completedVideo.status === "failed") {
+          const reason = completedVideo.error?.message ? ` ${completedVideo.error.message}` : "";
           await responder.edit(`<@${interaction.user.id}> I couldn't create a video right now.${reason}`);
           return;
         }
 
-        const video = await videoClient.downloadContent(completion.id);
-        if (!video) {
-          await responder.edit(`<@${interaction.user.id}> I couldn't create a video right now.`);
-          return;
-        }
-
+        const video = await videoClient.downloadContent(completedVideo.id);
         const body = await video.arrayBuffer();
         const buffer = Buffer.from(body);
         const filePath = buildGeneratedMediaPath("videos", `${interaction.user.username}-sora`, "mp4");
         fs.writeFileSync(filePath, buffer);
 
         await responder.edit({
-          content: `<@${interaction.user.id}> Estimated cost: $${(duration * 0.1).toFixed(2)}.`,
+          content: `<@${interaction.user.id}> Here's your Sora video.`,
           files: [{ attachment: filePath }],
         });
       } catch (error) {
