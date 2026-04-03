@@ -16,7 +16,7 @@ import { createPrismaClient } from "../prisma";
 import AsyncMutex from "../utils/AsyncMutex";
 import { waitForAllPromises } from "../utils";
 import { ActiveMatchCreated } from "../domain/match";
-import { handleEasterEggSlashInteraction, handleNormMessage } from "../controllers/EasterEggs";
+import { handleEasterEggSlashInteraction } from "../controllers/EasterEggs";
 import { Team } from "../types/common";
 import MessageBuilder, { MenuCustomID } from "../utils/MessageHelper/MessageBuilder";
 import { ButtonCustomID } from "../utils/MessageHelper/CustomButtons";
@@ -128,17 +128,6 @@ export class GuildRuntimeManager {
     }
   }
 
-  async handleMessage(message: Message): Promise<void> {
-    if (!message.guildId || message.author.bot) return;
-
-    const context = await this.ensureContext(message.guildId);
-    if (!context || message.channelId !== context.config.chatChannelId) {
-      return;
-    }
-
-    await handleNormMessage(context, message);
-  }
-
   async handleSlashCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
       await interaction.reply({
@@ -224,7 +213,6 @@ export class GuildRuntimeManager {
             `Queue channel: ${config.queueChannelId}`,
             `Leaderboard channel: ${config.leaderboardChannelId}`,
             `Leaderboard messages: ${config.leaderboardMessageIds?.join(", ") ?? "not created yet"}`,
-            `Chat channel: ${config.chatChannelId}`,
             `Voice channel: ${config.voiceChannelId}`,
             `API status channel: ${config.apiStatusChannelId ?? "none"}`,
             `Database URL: ${maskSecret(config.databaseUrl)}`,
@@ -243,7 +231,6 @@ export class GuildRuntimeManager {
       case "set": {
         const queueChannel = interaction.options.getChannel("queue_channel", true);
         const leaderboardChannel = interaction.options.getChannel("leaderboard_channel", true);
-        const chatChannel = interaction.options.getChannel("chat_channel", true);
         const voiceChannel = interaction.options.getChannel("voice_channel", true);
         const apiStatusChannel = interaction.options.getChannel("api_status_channel");
         const databaseUrl = interaction.options.getString("database_url", true);
@@ -257,10 +244,6 @@ export class GuildRuntimeManager {
           await responder.edit("Leaderboard channel must be a text channel.");
           return;
         }
-        if (chatChannel.type !== ChannelType.GuildText) {
-          await responder.edit("Chat channel must be a text channel.");
-          return;
-        }
         if (voiceChannel.type !== ChannelType.GuildVoice && voiceChannel.type !== ChannelType.GuildStageVoice) {
           await responder.edit("Voice channel must be voice-based.");
           return;
@@ -272,7 +255,6 @@ export class GuildRuntimeManager {
 
         const input: GuildConfigUpsertInput = {
           apiStatusChannelId: apiStatusChannel?.id,
-          chatChannelId: chatChannel.id,
           databaseUrl,
           guildId: interaction.guildId,
           leaderboardChannelId: leaderboardChannel.id,
@@ -407,7 +389,6 @@ export class GuildRuntimeManager {
   private async fetchChannels(config: GuildInstanceConfig): Promise<GuildChannels> {
     const queueChannel = await fetchTextChannel(this.client, config.queueChannelId);
     const leaderboardChannel = await fetchTextChannel(this.client, config.leaderboardChannelId);
-    const chatChannel = await fetchTextChannel(this.client, config.chatChannelId);
     const voiceChannel = await fetchVoiceChannel(this.client, config.voiceChannelId);
     const apiStatusChannel = config.apiStatusChannelId
       ? await fetchTextChannel(this.client, config.apiStatusChannelId).catch(() => null)
@@ -415,7 +396,6 @@ export class GuildRuntimeManager {
 
     return {
       apiStatusChannel,
-      chatChannel,
       leaderboardChannel,
       queueChannel,
       voiceChannel,

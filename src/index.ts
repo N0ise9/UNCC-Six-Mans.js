@@ -11,7 +11,7 @@ import { startGeneratedMediaPruner } from "./runtime/generatedMediaRetention";
 import { getEnvVariable } from "./utils";
 
 const NormClient = new Client({
-  intents: ["Guilds", "GuildMessages", "GuildVoiceStates", "MessageContent"],
+  intents: ["Guilds", "GuildVoiceStates"],
 });
 
 const discordToken = getEnvVariable("token");
@@ -68,12 +68,6 @@ NormClient.on("interactionCreate", async (interaction) => {
     if (interaction.isChatInputCommand()) {
       await runtimeManager.handleSlashCommand(interaction);
     }
-  });
-});
-
-NormClient.on("messageCreate", async (message) => {
-  await runSafely("messageCreate", async () => {
-    await runtimeManager.handleMessage(message);
   });
 });
 

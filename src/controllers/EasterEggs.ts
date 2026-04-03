@@ -1,5 +1,5 @@
 /* eslint-disable max-len */
-import { ChatInputCommandInteraction, Message, TextChannel } from "discord.js";
+import { ChatInputCommandInteraction } from "discord.js";
 import OpenAI from "openai";
 import type { Video, VideoCreateParams, Videos } from "openai/resources/videos";
 import * as fs from "fs";
@@ -10,10 +10,6 @@ import { buildGeneratedMediaPath } from "../runtime/generatedMediaRetention";
 export const EASTER_EGG_SLASH_COMMANDS = {
   Norm: "norm",
   Sora: "sora",
-} as const;
-
-const EASTER_EGG_MESSAGE_PREFIX = {
-  Norm: "!norm",
 } as const;
 
 const systemMessage =
@@ -162,22 +158,6 @@ async function maybeRotateConversation(
   });
 
   await notify("I've wiped my memory to limit contextual input, in order to keep costs lower.");
-}
-
-async function sendChannelParts(context: GuildContext, channel: TextChannel, parts: string[]): Promise<void> {
-  for (const part of parts) {
-    await context.scheduler.enqueue(
-      async () =>
-        await channel.send({
-          allowedMentions: { parse: [] },
-          content: sanitizeDiscordText(part),
-        }),
-      {
-        label: "chat-channel-send",
-        priority: "normal",
-      }
-    );
-  }
 }
 
 async function waitForSoraCompletion(videoClient: SoraVideoClient, video: Video): Promise<Video> {
@@ -428,52 +408,4 @@ export async function handleEasterEggSlashInteraction(
       break;
     }
   }
-}
-
-export async function handleNormMessage(context: GuildContext, message: Message): Promise<void> {
-  if (!message.content.toLowerCase().startsWith(EASTER_EGG_MESSAGE_PREFIX.Norm)) {
-    return;
-  }
-
-  await enqueueNormTask(context, async () => {
-    const prompt = message.content;
-    const attachments = Array.from(message.attachments.values()).map((attachment) => ({
-      contentType: attachment.contentType,
-      url: attachment.url,
-    }));
-
-    await runNormPrompt(
-      context,
-      prompt,
-      attachments,
-      {
-        edit: async (payload) => {
-          if (typeof payload === "string") {
-            await sendChannelParts(context, message.channel as TextChannel, [payload]);
-            return;
-          }
-
-          await context.scheduler.enqueue(
-            async () =>
-              await (message.channel as TextChannel).send({
-                allowedMentions: { parse: [] },
-                content: payload.content ? sanitizeDiscordText(payload.content) : undefined,
-                files: payload.files,
-              }),
-            {
-              label: "chat-channel-send",
-              priority: "normal",
-            }
-          );
-        },
-        followUp: async (payload) => {
-          await sendChannelParts(context, message.channel as TextChannel, [payload]);
-        },
-      },
-      {
-        id: message.author.id,
-        username: message.author.username,
-      }
-    );
-  });
 }

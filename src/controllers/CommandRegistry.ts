@@ -7,13 +7,19 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 
+function isSoraEnabled(): boolean {
+  return (process.env["ENABLE_SORA"] ?? "false").toLowerCase() === "true";
+}
+
 export async function registerAllSlashCommands(clientId: string, token: string) {
   const rest = new REST({ version: "10" }).setToken(token);
 
   const kickCommand = new SlashCommandBuilder()
     .setName("kick")
     .setDescription("Removes a player from the queue.")
-    .addUserOption((option) => option.setName("player").setDescription("The player you want to remove.").setRequired(true))
+    .addUserOption((option) =>
+      option.setName("player").setDescription("The player you want to remove.").setRequired(true)
+    )
     .toJSON();
 
   const clearCommand = new SlashCommandBuilder().setName("clear").setDescription("Clears the queue.").toJSON();
@@ -78,13 +84,6 @@ export async function registerAllSlashCommands(clientId: string, token: string) 
         )
         .addChannelOption((option) =>
           option
-            .setName("chat_channel")
-            .setDescription("Norm chat channel")
-            .addChannelTypes(ChannelType.GuildText)
-            .setRequired(true)
-        )
-        .addChannelOption((option) =>
-          option
             .setName("voice_channel")
             .setDescription("Voice channel for guild-specific Norm features")
             .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
@@ -109,6 +108,10 @@ export async function registerAllSlashCommands(clientId: string, token: string) 
     })
     .toJSON();
 
-  const commands: Array<RESTPostAPIApplicationCommandsJSONBody> = [setup, kickCommand, clearCommand, norm, sora];
+  const commands: Array<RESTPostAPIApplicationCommandsJSONBody> = [setup, kickCommand, clearCommand, norm];
+  if (isSoraEnabled()) {
+    commands.push(sora);
+  }
+
   await rest.put(Routes.applicationCommands(clientId), { body: commands });
 }

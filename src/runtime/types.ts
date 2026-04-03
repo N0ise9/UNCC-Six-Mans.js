@@ -1,6 +1,6 @@
 import { Message, TextChannel, VoiceBasedChannel, Client } from "discord.js";
 import OpenAI from "openai";
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient } from "../prisma";
 import AsyncMutex from "../utils/AsyncMutex";
 import { ButtonCustomID } from "../utils/MessageHelper/CustomButtons";
 import { MenuCustomID } from "../utils/MessageHelper/MessageBuilder";
@@ -27,12 +27,13 @@ export interface EncryptedValue {
 
 export interface GuildInstanceStoredConfig {
   apiStatusChannelId?: string;
-  chatChannelId: string;
+  chatChannelId?: string;
   createdAt: string;
   databaseUrl: EncryptedValue;
   enabled: boolean;
   guildId: string;
   leaderboardChannelId: string;
+  leaderboardMessageIds?: string[];
   openAiConversationId?: string;
   queueChannelId: string;
   queueMessageId?: string;
@@ -42,12 +43,13 @@ export interface GuildInstanceStoredConfig {
 
 export interface GuildInstanceConfig {
   apiStatusChannelId?: string;
-  chatChannelId: string;
+  chatChannelId?: string;
   createdAt: string;
   databaseUrl: string;
   enabled: boolean;
   guildId: string;
   leaderboardChannelId: string;
+  leaderboardMessageIds?: string[];
   openAiConversationId?: string;
   queueChannelId: string;
   queueMessageId?: string;
@@ -57,7 +59,7 @@ export interface GuildInstanceConfig {
 
 export interface GuildConfigUpsertInput {
   apiStatusChannelId?: string;
-  chatChannelId: string;
+  chatChannelId?: string;
   databaseUrl: string;
   guildId: string;
   leaderboardChannelId: string;
@@ -83,7 +85,6 @@ export interface GuildVoteState {
 
 export interface GuildChannels {
   apiStatusChannel?: TextChannel | null;
-  chatChannel: TextChannel;
   leaderboardChannel: TextChannel;
   queueChannel: TextChannel;
   voiceChannel: VoiceBasedChannel;
@@ -95,6 +96,7 @@ export interface GuildContext {
   config: GuildInstanceConfig;
   configStore: GuildConfigStore;
   guildId: string;
+  leaderboardMessages: Message[];
   normProcessing: boolean;
   normQueue: Array<() => Promise<void>>;
   openai: OpenAI;
@@ -104,7 +106,6 @@ export interface GuildContext {
   repositories: GuildRepositories;
   scheduler: DiscordWorkScheduler;
   surfaceRegistry: InteractiveSurfaceRegistry;
-  trackedMatchMessageIds: Set<string>;
   voteState: GuildVoteState;
 }
 

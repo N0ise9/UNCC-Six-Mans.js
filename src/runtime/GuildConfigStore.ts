@@ -82,7 +82,7 @@ export class GuildConfigStore {
 
     const updated: GuildInstanceStoredConfig = {
       apiStatusChannelId: input.apiStatusChannelId,
-      chatChannelId: input.chatChannelId,
+      chatChannelId: input.chatChannelId ?? previous?.chatChannelId,
       createdAt: previous?.createdAt ?? now,
       databaseUrl: this.encryptValue(input.databaseUrl),
       enabled: true,
