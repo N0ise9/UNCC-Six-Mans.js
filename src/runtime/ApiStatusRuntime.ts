@@ -15,6 +15,11 @@ type RegisteredChannel = {
 
 const SUMMARY_MARKER = "NormJS Status Summary";
 const INCIDENT_MARKER = "NormJS Status Incident";
+const MAX_EMBED_TOTAL_LENGTH = 6000;
+const MAX_EMBED_DESCRIPTION_LENGTH = 4096;
+const MAX_EMBED_FIELD_NAME_LENGTH = 256;
+const MAX_EMBED_FIELD_VALUE_LENGTH = 1024;
+const MAX_EMBED_FIELDS = 25;
 
 export class ApiStatusRuntime {
   private readonly registrations = new Map<string, RegisteredChannel>();
@@ -187,6 +192,7 @@ function buildSummaryPayloads(categories: StatusCategory[]): BaseMessageOptions[
   const pages: EmbedBuilder[] = [];
   let page = createSummaryEmbed(summary, 1);
   let fieldCount = 0;
+  let embedLength = calculateSummaryBaseLength(summary, 1);
   let pageNumber = 1;
 
   const pushPage = () => {
@@ -194,23 +200,35 @@ function buildSummaryPayloads(categories: StatusCategory[]): BaseMessageOptions[
     pageNumber += 1;
     page = createSummaryEmbed(summary, pageNumber);
     fieldCount = 0;
+    embedLength = calculateSummaryBaseLength(summary, pageNumber);
   };
 
   for (const category of categories) {
     const lines = category.services.map((service) => formatServiceLine(service));
-    const chunks = splitFieldLines(lines, 1024);
+    const chunks = splitFieldLines(lines, MAX_EMBED_FIELD_VALUE_LENGTH);
 
     for (const [index, chunk] of chunks.entries()) {
-      if (fieldCount >= 24) {
+      const fieldName = truncate(
+        index === 0 ? category.name : `${category.name} (cont. ${index})`,
+        MAX_EMBED_FIELD_NAME_LENGTH
+      );
+      const fieldValue = chunk.join("\n");
+      const fieldLength = fieldName.length + fieldValue.length;
+
+      if (
+        fieldCount >= MAX_EMBED_FIELDS ||
+        (fieldCount > 0 && embedLength + fieldLength > MAX_EMBED_TOTAL_LENGTH)
+      ) {
         pushPage();
       }
 
       page.addFields({
         inline: false,
-        name: index === 0 ? category.name : `${category.name} (cont. ${index})`,
-        value: chunk.join("\n"),
+        name: fieldName,
+        value: fieldValue,
       });
       fieldCount += 1;
+      embedLength += fieldLength;
     }
   }
 
@@ -235,21 +253,14 @@ function buildIncidentPayloads(categories: StatusCategory[]): BaseMessageOptions
             `- <t:${Math.floor(new Date(update.created_at).getTime() / 1000)}:R> ${truncate(update.body, 850)}`
         );
 
-      const embed = new EmbedBuilder()
-        .setColor(statusColor(service.status))
-        .setDescription(truncate(service.description || service.status, 500))
-        .setFooter({ text: INCIDENT_MARKER })
-        .setTitle(`${service.name} Incident`)
-        .setTimestamp(service.lastChecked)
-        .setURL(latestIncident.shortlink ?? service.pageUrl);
-
-      embed.addFields({
-        inline: false,
-        name: latestIncident.name,
-        value: updates.length > 0 ? updates.join("\n") : "No additional incident updates were provided.",
-      });
-
-      incidentEmbeds.push({ embeds: [embed] });
+      incidentEmbeds.push(
+        ...buildIncidentEmbeds({
+          incidentName: latestIncident.name,
+          incidentUrl: latestIncident.shortlink ?? service.pageUrl,
+          service,
+          updateLines: updates,
+        }).map((embed) => ({ embeds: [embed] }))
+      );
     }
   }
 
@@ -257,15 +268,27 @@ function buildIncidentPayloads(categories: StatusCategory[]): BaseMessageOptions
 }
 
 function createSummaryEmbed(summary: ReturnType<typeof summarizeIssues>, pageNumber: number): EmbedBuilder {
+  const description = buildSummaryDescription(summary);
   return new EmbedBuilder()
     .setColor(summary.critical > 0 ? 0xb91c1c : summary.issues > 0 ? 0xea580c : 0x16a34a)
-    .setDescription(
-      `Updated <t:${Math.floor(Date.now() / 1000)}:R>\nOperational: ${summary.operational} | Issues: ${summary.issues}${
-        summary.critical > 0 ? ` | Critical: ${summary.critical}` : ""
-      }`
-    )
+    .setDescription(description)
     .setFooter({ text: `${SUMMARY_MARKER} | Page ${pageNumber}` })
     .setTitle(`API and Platform Status | Page ${pageNumber}`);
+}
+
+function buildSummaryDescription(summary: ReturnType<typeof summarizeIssues>): string {
+  return truncate(
+    `Updated <t:${Math.floor(Date.now() / 1000)}:R>\nOperational: ${summary.operational} | Issues: ${summary.issues}${
+      summary.critical > 0 ? ` | Critical: ${summary.critical}` : ""
+    }`,
+    MAX_EMBED_DESCRIPTION_LENGTH
+  );
+}
+
+function calculateSummaryBaseLength(summary: ReturnType<typeof summarizeIssues>, pageNumber: number): number {
+  const title = `API and Platform Status | Page ${pageNumber}`;
+  const footer = `${SUMMARY_MARKER} | Page ${pageNumber}`;
+  return title.length + buildSummaryDescription(summary).length + footer.length;
 }
 
 function splitFieldLines(lines: string[], maxLength: number): string[][] {
@@ -292,6 +315,123 @@ function splitFieldLines(lines: string[], maxLength: number): string[][] {
   }
 
   return chunks;
+}
+
+function buildIncidentEmbeds({
+  incidentName,
+  incidentUrl,
+  service,
+  updateLines,
+}: {
+  incidentName: string;
+  incidentUrl: string;
+  service: ServiceStatus;
+  updateLines: string[];
+}): EmbedBuilder[] {
+  const description = truncate(service.description || service.status, 500);
+  const title = truncate(`${service.name} Incident`, MAX_EMBED_FIELD_NAME_LENGTH);
+  const updateChunks = splitFieldLines(
+    updateLines.length > 0 ? updateLines : ["No additional incident updates were provided."],
+    MAX_EMBED_FIELD_VALUE_LENGTH
+  );
+
+  const embeds: EmbedBuilder[] = [];
+  let pageNumber = 1;
+  let embed = createIncidentEmbed({
+    description,
+    incidentUrl,
+    pageNumber,
+    service,
+    title,
+  });
+  let fieldCount = 0;
+  let embedLength = calculateIncidentBaseLength({
+    description,
+    pageNumber,
+    serviceTitle: title,
+  });
+
+  const pushEmbed = () => {
+    embeds.push(embed);
+    pageNumber += 1;
+    embed = createIncidentEmbed({
+      description,
+      incidentUrl,
+      pageNumber,
+      service,
+      title,
+    });
+    fieldCount = 0;
+    embedLength = calculateIncidentBaseLength({
+      description,
+      pageNumber,
+      serviceTitle: title,
+    });
+  };
+
+  for (const [index, chunk] of updateChunks.entries()) {
+    const fieldName = truncate(
+      index === 0 ? incidentName : `${incidentName} (cont. ${index})`,
+      MAX_EMBED_FIELD_NAME_LENGTH
+    );
+    const fieldValue = chunk.join("\n");
+    const fieldLength = fieldName.length + fieldValue.length;
+
+    if (
+      fieldCount >= MAX_EMBED_FIELDS ||
+      (fieldCount > 0 && embedLength + fieldLength > MAX_EMBED_TOTAL_LENGTH)
+    ) {
+      pushEmbed();
+    }
+
+    embed.addFields({
+      inline: false,
+      name: fieldName,
+      value: fieldValue,
+    });
+    fieldCount += 1;
+    embedLength += fieldLength;
+  }
+
+  embeds.push(embed);
+  return embeds;
+}
+
+function createIncidentEmbed({
+  description,
+  incidentUrl,
+  pageNumber,
+  service,
+  title,
+}: {
+  description: string;
+  incidentUrl: string;
+  pageNumber: number;
+  service: ServiceStatus;
+  title: string;
+}): EmbedBuilder {
+  const footerText = pageNumber > 1 ? `${INCIDENT_MARKER} | Page ${pageNumber}` : INCIDENT_MARKER;
+
+  return new EmbedBuilder()
+    .setColor(statusColor(service.status))
+    .setDescription(description)
+    .setFooter({ text: footerText })
+    .setTitle(title)
+    .setTimestamp(service.lastChecked)
+    .setURL(incidentUrl);
+}
+
+function calculateIncidentBaseLength({
+  description,
+  pageNumber,
+  serviceTitle,
+}: {
+  description: string;
+  pageNumber: number;
+  serviceTitle: string;
+}): number {
+  const footerText = pageNumber > 1 ? `${INCIDENT_MARKER} | Page ${pageNumber}` : INCIDENT_MARKER;
+  return serviceTitle.length + description.length + footerText.length;
 }
 
 function formatServiceLine(service: ServiceStatus): string {

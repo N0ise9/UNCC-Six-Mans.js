@@ -78,6 +78,22 @@ function createChannel(id: string, existingMessages: Message[] = []): TextChanne
   } as unknown as TextChannel;
 }
 
+function estimateEmbedLength(embed: { toJSON?: () => any } | any): number {
+  const json = typeof embed?.toJSON === "function" ? embed.toJSON() : embed;
+  const titleLength = json.title?.length ?? 0;
+  const descriptionLength = json.description?.length ?? 0;
+  const footerLength = json.footer?.text?.length ?? 0;
+  const fieldLength = Array.isArray(json.fields)
+    ? json.fields.reduce(
+        (total: number, field: { name?: string; value?: string }) =>
+          total + (field.name?.length ?? 0) + (field.value?.length ?? 0),
+        0
+      )
+    : 0;
+
+  return titleLength + descriptionLength + footerLength + fieldLength;
+}
+
 describe("ApiStatusRuntime", () => {
   beforeEach(() => {
     mockedFetchAllStatuses.mockReset();
@@ -128,6 +144,86 @@ describe("ApiStatusRuntime", () => {
 
       expect(channel.send).not.toHaveBeenCalled();
       expect(existingMessage.edit).toHaveBeenCalledTimes(1);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("splits oversized summary pages so every embed stays within Discord's 6000 character limit", async () => {
+    mockedFetchAllStatuses.mockResolvedValue({
+      categories: [
+        {
+          name: "Huge Category",
+          services: Array.from({ length: 120 }, (_, index) => ({
+            description: `Service ${index} `.repeat(12),
+            id: `service-${index}`,
+            incidents: [],
+            lastChecked: new Date("2026-01-01T00:00:00.000Z"),
+            name: `Service ${index}`,
+            pageUrl: `https://example.com/${index}`,
+            status: "degraded_performance" as const,
+          })),
+        },
+      ],
+    });
+
+    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), 60_000, 60_000);
+    const channel = createChannel("channel-1");
+
+    try {
+      await runtime.registerGuild("guild-1", channel);
+
+      const sentEmbeds = (channel.send as jest.Mock).mock.calls.map((call) => call[0].embeds[0]);
+      expect(sentEmbeds.length).toBeGreaterThan(1);
+      for (const embed of sentEmbeds) {
+        expect(estimateEmbedLength(embed)).toBeLessThanOrEqual(6000);
+      }
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("splits oversized incident updates so every incident embed stays within Discord's 6000 character limit", async () => {
+    mockedFetchAllStatuses.mockResolvedValue({
+      categories: [
+        {
+          name: "Developer Tools",
+          services: [
+            {
+              description: "Partial outage affecting a large portion of the platform.",
+              id: "openai",
+              incidents: [
+                {
+                  id: "incident-1",
+                  incident_updates: Array.from({ length: 5 }, (_, index) => ({
+                    body: `Update ${index} ` + "x".repeat(1200),
+                    created_at: new Date("2026-01-01T00:00:00.000Z").toISOString(),
+                  })),
+                  name: "Major platform incident",
+                  shortlink: "https://status.example.com/incidents/1",
+                },
+              ],
+              lastChecked: new Date("2026-01-01T00:00:00.000Z"),
+              name: "OpenAI",
+              pageUrl: "https://status.openai.com/",
+              status: "major_outage" as const,
+            },
+          ],
+        },
+      ],
+    });
+
+    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), 60_000, 60_000);
+    const channel = createChannel("channel-1");
+
+    try {
+      await runtime.registerGuild("guild-1", channel);
+
+      const sentEmbeds = (channel.send as jest.Mock).mock.calls.map((call) => call[0].embeds[0]);
+      expect(sentEmbeds.length).toBeGreaterThan(1);
+      for (const embed of sentEmbeds) {
+        expect(estimateEmbedLength(embed)).toBeLessThanOrEqual(6000);
+      }
     } finally {
       await runtime.dispose();
     }
