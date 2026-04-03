@@ -10,13 +10,34 @@ describe("Building Buttons", () => {
   const mockBallChasers = BallChaserQueueBuilder.many(6);
   const mockMatchId = "1234";
 
+  const getActionRowJson = (result: { components?: ReadonlyArray<unknown> }): unknown => {
+    const actionRow = result.components?.[0] as { toJSON?: () => unknown } | undefined;
+    if (actionRow && typeof actionRow.toJSON === "function") {
+      return actionRow.toJSON();
+    }
+    return actionRow;
+  };
+
   it("return queue buttons", () => {
     const result = MessageBuilder.queueMessage(mockBallChasers);
-    expect(result.components).toMatchSnapshot();
+    expect(getActionRowJson(result)).toEqual({
+      components: [
+        expect.objectContaining({ custom_id: "joinQueue", label: "Join", style: 3, type: 2 }),
+        expect.objectContaining({ custom_id: "leaveQueue", label: "Leave", style: 4, type: 2 }),
+      ],
+      type: 1,
+    });
   });
   it("return full queue buttons", () => {
     const result = MessageBuilder.fullQueueMessage(mockBallChasers);
-    expect(result.components).toMatchSnapshot();
+    expect(getActionRowJson(result)).toEqual({
+      components: [
+        expect.objectContaining({ custom_id: "chooseTeam", label: "Captains (0)", style: 1, type: 2 }),
+        expect.objectContaining({ custom_id: "randomizeTeams", label: "Random (0)", style: 1, type: 2 }),
+        expect.objectContaining({ custom_id: "leaveQueue", label: "Leave", style: 4, type: 2 }),
+      ],
+      type: 1,
+    });
   });
   it("return active match buttons", async () => {
     const orangePlayer: PlayerInActiveMatch = {
@@ -50,7 +71,14 @@ describe("Building Buttons", () => {
       },
     };
 
-    const result = await MessageBuilder.activeMatchMessage(activeMatch);
-    expect(result.components).toMatchSnapshot();
+    const result = await MessageBuilder.activeMatchMessage(activeMatch, 1);
+    expect(getActionRowJson(result)).toEqual({
+      components: [
+        expect.objectContaining({ custom_id: "brokenQueue", label: "Broken Queue", style: 4, type: 2 }),
+        expect.objectContaining({ custom_id: "reportBlue", style: 2, type: 2 }),
+        expect.objectContaining({ custom_id: "reportOrange", style: 2, type: 2 }),
+      ],
+      type: 1,
+    });
   });
 });
