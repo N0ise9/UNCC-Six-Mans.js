@@ -27,7 +27,6 @@ export interface EncryptedValue {
 
 export interface GuildInstanceStoredConfig {
   apiStatusChannelId?: string;
-  chatChannelId?: string;
   createdAt: string;
   databaseUrl: EncryptedValue;
   enabled: boolean;
@@ -43,7 +42,6 @@ export interface GuildInstanceStoredConfig {
 
 export interface GuildInstanceConfig {
   apiStatusChannelId?: string;
-  chatChannelId?: string;
   createdAt: string;
   databaseUrl: string;
   enabled: boolean;
@@ -59,7 +57,6 @@ export interface GuildInstanceConfig {
 
 export interface GuildConfigUpsertInput {
   apiStatusChannelId?: string;
-  chatChannelId?: string;
   databaseUrl: string;
   guildId: string;
   leaderboardChannelId: string;

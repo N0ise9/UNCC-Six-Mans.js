@@ -152,12 +152,7 @@ export class QueueRepository {
    */
   async removeBallChaserFromQueue(id: string): Promise<void> {
     await this.#getPrismaClient().queue.delete({ where: { playerId: id } }).catch(() => {
-      // Commenting this out because if a player leaves while not in queue, the bot freezes and stops
-      // if (isRecordNotFoundError(err)) {
-      //   throw new InvalidCommand("Player not in queue.");
-      // } else {
-      //   console.error(err);
-      // }
+      // Leaving when not queued should be a safe no-op for the active runtime.
     });
     this.resetCaptainsRandomVoters();
     this.resetTwosVoters();

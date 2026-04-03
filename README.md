@@ -1,54 +1,239 @@
-# Getting Up and Running with NormJS
+# NormJS
 
-## Install NodeJS
+NormJS is a single-instance Discord bot for running Six Mans across multiple servers from one process.
 
-Discord.js requires Node 18.18.0 or newer. Go to [nodejs.org](https://nodejs.org/en/), download and install NodeJS 18.18.0 or newer. Be sure to include NPM and adding Node to your PATH during installation.
+Each guild is isolated from the others:
+- its own PostgreSQL database URL
+- its own queue, match, and leaderboard state
+- its own tracked Discord messages
+- its own OpenAI conversation state
 
-- NPM stands for Node Package Manager and is a command-line tool for managing dependencies of projects.
-- You can verify node is installed by opening a terminal and typing `node --version`. Verify the version matches the requirements above.
+The bot uses one shared Discord client and one shared outbound Discord work scheduler, which helps keep button updates, embed edits, and follow-up messages coordinated when multiple guilds are active at once. OpenAI features are slash-command-only through `/norm` and optional `/sora`.
 
-## Installing Dependencies
+## How Norm Works
 
-Once Node and NPM are installed, open a terminal and navigate to the root of this project. Run the command `npm install`. This will install all of the dependencies needed for running the project.
+Norm boots once and then loads guild-specific configuration from `.guild-instance-config.json`.
 
-- To see a list of the dependencies for this project open the `package.json` in the root of this project. You'll notice two sections called `dependencies` and `devDependencies`. Dependencies are the packages that will be included when building the app for production. Dev dependencies are only used during development. This helps keep the bundle size small when deploying to production.
-- You'll notice that a new folder is automatically added called `node_modules`. This folder holds the source for all of the project's dependencies. This folder should not be committed to source control.
+Per-guild configuration is created inside Discord with `/setup set`, not by editing `.env`.
 
-## Running the Code
+That means:
+- `.env` stores bot-wide secrets and runtime flags
+- `.guild-instance-config.json` stores per-guild configuration
+- each guild record stores its own encrypted `databaseUrl`
+- the `databaseUrl` is encrypted at rest with `CONFIG_ENCRYPTION_KEY`
 
-### Discord Token
-Discord bots require a token to authenticate with the Discord API. The token should **never** be put into source control. Create a file named `.env` in the root of the project. In this new file add `token=[Discord token]` where `[Discord token]` is the token for your bot.
+If one guild has a bad database URL or an unreachable Docker-backed Postgres endpoint, that guild can fail to load without taking down the rest of the bot.
 
-### Local Database
-This project uses [Prisma](https://www.prisma.io) with a [PostgreSQL](https://www.postgresql.org/) database to store all of the necessary data to operate six mans. You will need [Docker](https://www.docker.com/) installed on your machine. You can go [here](https://docs.docker.com/get-docker/) to download the latest version of Docker. Once you have Docker installed run the following command in a terminal/Powershell window:
+## Requirements
+
+- Node.js 18.18+ minimum
+- npm
+- A Discord bot application and token
+- An OpenAI API key for `/norm`
+- One PostgreSQL database endpoint per guild
+
+Docker is recommended for local hosting of those PostgreSQL databases, but the bot does not create or manage containers for you.
+
+## Installation
+
+1. Clone the repository.
+2. Install dependencies:
+
+```powershell
+npm install
 ```
-docker run --name uncc_six_mans -p 5432:5432 -e POSTGRES_USER=Norm  -e POSTGRES_PASSWORD=NormTheNiner -d postgres
+
+3. Generate the Prisma client:
+
+```powershell
+npm run generate
 ```
-This starts a new container using the [latest PostgreSQL image from Docker Hub](https://hub.docker.com/_/postgres) with the name "uncc_six_mans." In your local `.env` file. Add the following entry:
+
+4. Create a `.env` file in the project root.
+
+You can start from `.env.sample`.
+
+## Bot-Wide Configuration
+
+Only put bot-wide configuration in `.env`.
+
+Example:
+
+```env
+token=YOUR_DISCORD_BOT_TOKEN
+openai=YOUR_OPENAI_API_KEY
+CONFIG_ENCRYPTION_KEY=replace-this-with-a-long-random-secret
+ENVIRONMENT=dev
+conversation_token_limit=120000
+ENABLE_SORA=false
+SORA_MODEL=
 ```
-DATABASE_URL="postgresql://Norm:NormTheNiner@localhost:5432/SixMans"
+
+What these do:
+- `token`: Discord bot token
+- `openai`: OpenAI API key
+- `CONFIG_ENCRYPTION_KEY`: used to encrypt and decrypt stored per-guild database URLs
+- `ENVIRONMENT`: optional runtime mode; `dev` enables dev-only behavior in a few helper paths
+- `conversation_token_limit`: optional input-token threshold for rotating a guild’s stored OpenAI conversation
+- `ENABLE_SORA`: enables the `/sora` slash command
+- `SORA_MODEL`: required only when `ENABLE_SORA=true`
+
+Important:
+- Do not rotate `CONFIG_ENCRYPTION_KEY` casually. If it changes, existing stored guild database URLs can no longer be decrypted.
+- Old `.env` values like `queue_channel_id`, `leaderboard_channel_id`, `guild_id`, `conversation_id`, and per-guild `DATABASE_URL` are legacy and are not the active per-guild setup path anymore.
+
+## Database Setup
+
+Norm expects each guild to point at its own PostgreSQL database URL. Those URLs can be separate Docker containers, separate databases on one server, or any other reachable Postgres endpoints.
+
+Example Docker command for one guild database:
+
+```powershell
+docker run --name norm-guild-a-db `
+  -e POSTGRES_USER=Norm `
+  -e POSTGRES_PASSWORD=NormTheNiner `
+  -e POSTGRES_DB=SixMansGuildA `
+  -p 5432:5432 `
+  -d postgres:latest
 ```
-This is the connection string that Prisma will use to connect to the database. Next run `npx prisma db push`. This command compiles the Prisma schema, pushes it to the Postgre DB, and generates the types for development.
 
-To stop the container, run the command: `docker container stop uncc_six_mans`.
+Example connection string for that database:
 
-To start the container, run the command: `docker container start uncc_six_mans`.
+```text
+postgresql://Norm:NormTheNiner@localhost:5432/SixMansGuildA
+```
 
-Prisma also offers a tool for viewing the data in the database called Prisma Studio. To start it, run the command: `npx prisma studio`. This will output a localhost URL that you can paste into your browser and explore the database.
+Before using that URL in `/setup set`, initialize the schema against that database.
 
-### Start Norm
-Now that our dependencies are installed, our token is set, and our database is running we can run the code. Type `npm start` to start the bot. To stop the bot hit `CTRL + C` in the running terminal.
+PowerShell example:
 
+```powershell
+$env:DATABASE_URL="postgresql://Norm:NormTheNiner@localhost:5432/SixMansGuildA"
+npx prisma db push
+```
 
-## Linting and Formatting
-This project uses ESLint and Prettier to enforce code standards and consistency. To check to see if there are any issues run the command `npm run lint`. If the report concludes without any errors or warnings then there are no issues. Otherwise, it will include the error and file name to check.
+Bash example:
+
+```bash
+DATABASE_URL="postgresql://Norm:NormTheNiner@localhost:5432/SixMansGuildA" npx prisma db push
+```
+
+Repeat that for each guild database you plan to use.
+
+## Starting the Bot
+
+Start the bot with:
+
+```powershell
+npm start
+```
+
+The current start script runs `tsx watch src/index.ts`.
+
+When the bot starts successfully, it registers slash commands globally and logs the path to the per-guild config store.
+
+## Guild Setup
+
+After the bot is online in a guild, run `/setup set` in that server.
+
+Current required setup fields:
+- `queue_channel`
+- `leaderboard_channel`
+- `voice_channel`
+- `database_url`
+
+Optional setup fields:
+- `api_status_channel`
+- `conversation_id`
+
+Example:
+
+```text
+/setup set
+queue_channel: #six-mans-queue
+leaderboard_channel: #leaderboard
+voice_channel: Six Mans VC
+api_status_channel: #api-status
+database_url: postgresql://Norm:NormTheNiner@localhost:5432/SixMansGuildA
+conversation_id: conv_1234567890abcdef
+```
+
+Use `/setup show` to inspect the stored config for the current guild.
+
+Use `/setup disable` to disable the guild runtime entry without deleting the stored file manually.
+
+## Slash Commands
+
+### Queue/Admin
+- `/kick`
+- `/clear`
+- `/setup show`
+- `/setup set`
+- `/setup disable`
+
+### OpenAI
+- `/norm`
+- `/sora` when `ENABLE_SORA=true`
+
+OpenAI behavior:
+- `/norm` uses a stored conversation per guild
+- `/norm` supports optional image attachments
+- `/sora` uses the OpenAI Videos API through the current SDK
+- generated images and videos are written under `data/generated-media`
+
+## Operational Notes
+
+- Norm does not use `!norm` message triggers anymore. OpenAI interactions are slash-command-only.
+- Per-guild configuration is saved in `.guild-instance-config.json`.
+- The bot does not write guild setup back into `.env`.
+- Old generated source assets should not be committed; runtime media lives under `data/generated-media`.
+- The bot uses stale-interaction protection so outdated queued button/select interactions are ignored when the authoritative queue or match state has already changed.
+
+## Development Commands
+
+Lint:
+
+```powershell
+npm run lint
+```
+
+Build:
+
+```powershell
+npm run build
+```
+
+Generate Prisma client:
+
+```powershell
+npm run generate
+```
 
 ## Tests
 
-This project uses [Jest](https://jestjs.io/) and [ts-jest](https://www.npmjs.com/package/ts-jest) for writing and running tests. Test files are denoted by files with the `.spec.ts` extension. 
+Unit tests:
 
-### Unit tests
-To run unit tests use the command `npm run test`. This will run every unit test file found in the project. To run tests for a specific file use the command `npm run test [file name]`.
+```powershell
+npm run test
+```
 
-### Integration tests
-To run integration tests make sure the Postgres container is running and use the command `npm run integration`. This will run every integration test file found in the project. To run tests for a specific file use the command `npm run integration [file name]`.
+Integration tests:
+
+```powershell
+npm run integration
+```
+
+Integration tests require a reachable PostgreSQL server.
+
+## Troubleshooting
+
+If a guild fails to initialize:
+- verify the `database_url` provided in `/setup set`
+- verify that the Postgres endpoint is reachable from the machine running Norm
+- verify the schema has been pushed to that database
+- verify the configured Discord channels still exist
+- verify `CONFIG_ENCRYPTION_KEY` has not changed since the guild config was saved
+
+If Sora fails at startup:
+- set `ENABLE_SORA=false`, or
+- provide a valid `SORA_MODEL` and ensure your OpenAI project has access to the Videos API

@@ -7,7 +7,6 @@ import { GuildContext, GuildInstanceConfig } from "../types";
 
 function createConfig(guildId: string): GuildInstanceConfig {
   return {
-    chatChannelId: `${guildId}-chat`,
     createdAt: "2026-01-01T00:00:00.000Z",
     databaseUrl: `postgres:///${guildId}`,
     enabled: true,

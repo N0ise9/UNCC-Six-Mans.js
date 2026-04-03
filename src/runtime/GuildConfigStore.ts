@@ -9,6 +9,10 @@ interface GuildConfigFile {
   version: 1;
 }
 
+type LegacyGuildConfigEntry = GuildInstanceStoredConfig & {
+  chatChannelId?: string;
+};
+
 export interface GuildConfigReadResult {
   enabled: boolean;
   error?: Error;
@@ -82,7 +86,6 @@ export class GuildConfigStore {
 
     const updated: GuildInstanceStoredConfig = {
       apiStatusChannelId: input.apiStatusChannelId,
-      chatChannelId: input.chatChannelId ?? previous?.chatChannelId,
       createdAt: previous?.createdAt ?? now,
       databaseUrl: this.encryptValue(input.databaseUrl),
       enabled: true,
@@ -231,11 +234,18 @@ export class GuildConfigStore {
       };
     }
 
-    const parsed = JSON.parse(content) as GuildConfigFile;
-    return {
-      guilds: parsed.guilds ?? [],
+    const parsed = JSON.parse(content) as { guilds?: LegacyGuildConfigEntry[] };
+    const guilds = (parsed.guilds ?? []).map((entry) => normalizeLegacyGuildEntry(entry));
+    const normalizedFile: GuildConfigFile = {
+      guilds,
       version: 1,
     };
+
+    if (hasLegacyGuildConfigEntries(parsed.guilds ?? [])) {
+      this.writeFile(normalizedFile);
+    }
+
+    return normalizedFile;
   }
 
   private writeFile(file: GuildConfigFile): void {
@@ -254,4 +264,14 @@ function toError(error: unknown): Error {
   }
 
   return new Error(typeof error === "string" ? error : "Unknown guild config error");
+}
+
+function hasLegacyGuildConfigEntries(entries: LegacyGuildConfigEntry[]): boolean {
+  return entries.some((entry) => "chatChannelId" in entry);
+}
+
+function normalizeLegacyGuildEntry(entry: LegacyGuildConfigEntry): GuildInstanceStoredConfig {
+  const normalized = { ...entry };
+  delete normalized.chatChannelId;
+  return normalized;
 }

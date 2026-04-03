@@ -37,7 +37,6 @@ describe("GuildConfigStore", () => {
 
     try {
       store.setGuildConfig({
-        chatChannelId: "chat-1",
         databaseUrl: "postgres://user:pass@localhost:5432/guild_one",
         guildId: "guild-1",
         leaderboardChannelId: "leaderboard-1",
@@ -63,7 +62,6 @@ describe("GuildConfigStore", () => {
 
     try {
       store.setGuildConfig({
-        chatChannelId: "chat-1",
         databaseUrl: "postgres://guild-one",
         guildId: "guild-1",
         leaderboardChannelId: "leaderboard-1",
@@ -71,7 +69,6 @@ describe("GuildConfigStore", () => {
         voiceChannelId: "voice-1",
       });
       store.setGuildConfig({
-        chatChannelId: "chat-2",
         databaseUrl: "postgres://guild-two",
         guildId: "guild-2",
         leaderboardChannelId: "leaderboard-2",
@@ -105,7 +102,6 @@ describe("GuildConfigStore", () => {
 
     try {
       store.setGuildConfig({
-        chatChannelId: "chat-1",
         databaseUrl: "postgres://guild-one",
         guildId: "guild-1",
         leaderboardChannelId: "leaderboard-1",
@@ -138,7 +134,6 @@ describe("GuildConfigStore", () => {
 
     try {
       store.setGuildConfig({
-        chatChannelId: "chat-1",
         databaseUrl: "postgres://guild-one",
         guildId: "guild-1",
         leaderboardChannelId: "leaderboard-1",
@@ -158,6 +153,59 @@ describe("GuildConfigStore", () => {
       expect(allResults[0]?.guildId).toBe("guild-1");
       expect(allResults[0]?.config).toBeNull();
       expect(allResults[0]?.error).toBeInstanceOf(Error);
+    } finally {
+      cleanup(filePath);
+    }
+  });
+
+  it("reads legacy guild configs with chatChannelId and rewrites them to the active schema", () => {
+    const { filePath, store } = createStore();
+
+    try {
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify(
+          {
+            guilds: [
+              {
+                apiStatusChannelId: "status-1",
+                chatChannelId: "chat-legacy",
+                createdAt: "2026-01-01T00:00:00.000Z",
+                databaseUrl: {
+                  authTag: "placeholder",
+                  ciphertext: "placeholder",
+                  iv: "placeholder",
+                },
+                enabled: true,
+                guildId: "guild-1",
+                leaderboardChannelId: "leaderboard-1",
+                queueChannelId: "queue-1",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+                voiceChannelId: "voice-1",
+              },
+            ],
+            version: 1,
+          },
+          null,
+          2
+        ),
+        "utf8"
+      );
+
+      store.setGuildConfig({
+        databaseUrl: "postgres://guild-one",
+        guildId: "guild-1",
+        leaderboardChannelId: "leaderboard-1",
+        queueChannelId: "queue-1",
+        voiceChannelId: "voice-1",
+      });
+
+      const config = store.getGuildConfig("guild-1");
+      const raw = fs.readFileSync(filePath, "utf8");
+
+      expect(config?.databaseUrl).toBe("postgres://guild-one");
+      expect(raw).not.toContain("chatChannelId");
+      expect(raw).toContain("\"queueChannelId\": \"queue-1\"");
     } finally {
       cleanup(filePath);
     }
