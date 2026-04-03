@@ -153,6 +153,8 @@ That creates a portable folder under `release/windows-portable` containing:
 - `Norm.cmd`
 - `.env.sample`
 - `README.md`
+- `studio-tools/` for the bundled Prisma Studio runtime
+- `studio-workspace/` for the bundled Prisma Studio config and schema
 
 Before the first launch, copy `.env.sample` to `.env` in that same folder and fill in your bot-wide values there.
 
@@ -162,6 +164,7 @@ Portable runtime behavior:
 - `.env` is read from the executable folder by default
 - `.guild-instance-config.json` is written beside the executable by default
 - generated media is written under `data/generated-media` beside the executable by default
+- `/prisma` launches Prisma Studio from the bundled tooling on the host machine
 - set `NORM_HOME` if you want those runtime files somewhere else
 
 Important packaging notes:
@@ -204,6 +207,7 @@ Use `/setup disable` to disable the guild runtime entry without deleting the sto
 ### Queue/Admin
 - `/kick`
 - `/clear`
+- `/prisma`
 - `/setup show`
 - `/setup set`
 - `/setup disable`
@@ -218,6 +222,13 @@ OpenAI behavior:
 - `/norm` and `/sora` only work in the configured `chat_channel`
 - `/sora` uses the OpenAI Videos API through the current SDK
 - generated images and videos are written under `data/generated-media`
+
+Prisma Studio behavior:
+- `/prisma` is a host-side admin tool for opening Prisma Studio against the current guild's configured database
+- `/prisma` is only for users with the `Bot Admin` role
+- `/prisma` is not restricted to the configured `chat_channel`
+- `/prisma` opens the browser on the machine running Norm, not on the Discord user's machine
+- `/prisma` reuses one managed Studio process at a time and relaunches it when a different guild requests Studio
 
 ## Operational Notes
 
@@ -284,6 +295,11 @@ If a guild fails to initialize:
 If `/norm` or `/sora` refuse to run:
 - make sure you are in the configured `chat_channel`
 - rerun `/setup set` if this guild was configured before `chat_channel` was added
+
+If `/prisma` fails:
+- make sure this guild has already been configured with `/setup set`
+- make sure the user running `/prisma` has the `Bot Admin` role
+- check the bot console for Prisma Studio startup errors on the host machine
 
 If Sora fails at startup:
 - set `ENABLE_SORA=false`, or

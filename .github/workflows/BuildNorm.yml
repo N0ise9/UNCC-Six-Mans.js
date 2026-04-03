@@ -72,6 +72,28 @@ jobs:
           if (!(Test-Path ".\release\windows-portable\Norm.cmd")) {
             throw "Norm.cmd was not created."
           }
+          if (!(Test-Path ".\release\windows-portable\studio-tools\node.exe")) {
+            throw "Bundled Prisma Studio node runtime was not created."
+          }
+          if (!(Test-Path ".\release\windows-portable\studio-tools\node_modules\prisma\build\index.js")) {
+            throw "Bundled Prisma Studio CLI was not created."
+          }
+          if (!(Test-Path ".\release\windows-portable\studio-workspace\prisma.studio.config.ts")) {
+            throw "Bundled Prisma Studio config was not created."
+          }
+          if (!(Test-Path ".\release\windows-portable\studio-workspace\prisma\schema.prisma")) {
+            throw "Bundled Prisma Studio schema was not created."
+          }
+
+      - name: Smoke test bundled Prisma Studio CLI
+        shell: powershell
+        run: |
+          & ".\release\windows-portable\studio-tools\node.exe" `
+            ".\release\windows-portable\studio-tools\node_modules\prisma\build\index.js" `
+            studio --help
+          if ($LASTEXITCODE -ne 0) {
+            throw "Bundled Prisma Studio CLI failed to start."
+          }
 
       - name: Smoke test packaged executable
         shell: powershell

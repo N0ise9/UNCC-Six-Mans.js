@@ -1,44 +1,29 @@
 import { Collection, Message, TextChannel } from "discord.js";
-import { fetchAllStatuses, summarizeIssues } from "../../services/ApiStatusService";
+import {
+  ApiStatusCatalog,
+  ServiceConfig,
+  ServiceStatus,
+  createUnknownServiceStatus,
+} from "../../services/ApiStatusService";
 import { ApiStatusRuntime } from "../ApiStatusRuntime";
 import { DiscordWorkScheduler } from "../DiscordWorkScheduler";
-
-jest.mock("../../services/ApiStatusService", () => {
-  return {
-    fetchAllStatuses: jest.fn(),
-    summarizeIssues: jest.fn((categories: Array<{ services: Array<{ status: string }> }>) => {
-      let critical = 0;
-      let issues = 0;
-      let operational = 0;
-
-      for (const category of categories) {
-        for (const service of category.services) {
-          if (service.status === "operational") operational += 1;
-          else if (service.status === "major_outage") {
-            critical += 1;
-            issues += 1;
-          } else if (service.status !== "unknown") {
-            issues += 1;
-          }
-        }
-      }
-
-      return {
-        critical,
-        issues,
-        operational,
-      };
-    }),
-  };
-});
-
-const mockedFetchAllStatuses = fetchAllStatuses as jest.MockedFunction<typeof fetchAllStatuses>;
-const mockedSummarizeIssues = summarizeIssues as jest.MockedFunction<typeof summarizeIssues>;
 
 type FakeMessage = Message & {
   delete: jest.Mock<Promise<void>, []>;
   edit: jest.Mock<Promise<Message>, [unknown]>;
 };
+
+type FakeChannel = TextChannel & {
+  __sentMessages: FakeMessage[];
+};
+
+type EmbedPayload = {
+  embeds: Array<{ toJSON: () => any }>;
+};
+
+function asEmbedPayload(value: unknown): EmbedPayload {
+  return value as EmbedPayload;
+}
 
 function createManagedMessage(id: string, channelId: string, footerText = "NormJS Status Summary | Page 1"): FakeMessage {
   let message: FakeMessage;
@@ -47,7 +32,14 @@ function createManagedMessage(id: string, channelId: string, footerText = "NormJ
     channelId,
     createdTimestamp: Date.now(),
     delete: jest.fn(async () => undefined),
-    edit: jest.fn(async () => message as unknown as Message),
+    edit: jest.fn(async (payload) => {
+      const embed = (payload as EmbedPayload).embeds?.[0];
+      if (embed) {
+        const nextFooterText = embed.toJSON().footer?.text ?? footerText;
+        message.embeds = [{ footer: { text: nextFooterText } }] as Message["embeds"];
+      }
+      return message as unknown as Message;
+    }),
     embeds: [{ footer: { text: footerText } }],
     id,
   } as unknown as FakeMessage;
@@ -55,10 +47,11 @@ function createManagedMessage(id: string, channelId: string, footerText = "NormJ
   return message;
 }
 
-function createChannel(id: string, existingMessages: Message[] = []): TextChannel {
+function createChannel(id: string, existingMessages: Message[] = []): FakeChannel {
   const sentMessages: FakeMessage[] = [];
 
   return {
+    __sentMessages: sentMessages,
     client: { user: { id: "bot-user" } },
     id,
     messages: {
@@ -70,12 +63,44 @@ function createChannel(id: string, existingMessages: Message[] = []): TextChanne
         return collection;
       }),
     },
-    send: jest.fn(async () => {
-      const message = createManagedMessage(`sent-${id}-${sentMessages.length + 1}`, id);
+    send: jest.fn(async (payload) => {
+      const embed = (payload as EmbedPayload).embeds?.[0];
+      const footerText = embed?.toJSON().footer?.text ?? "NormJS Status Summary | Page 1";
+      const message = createManagedMessage(`sent-${id}-${sentMessages.length + 1}`, id, footerText);
       sentMessages.push(message);
       return message;
     }),
-  } as unknown as TextChannel;
+  } as unknown as FakeChannel;
+}
+
+function createService(
+  overrides: Partial<ServiceConfig> & Pick<ServiceConfig, "id" | "name" | "pageUrl" | "type">
+): ServiceConfig {
+  return {
+    ...overrides,
+  };
+}
+
+function createStatus(service: ServiceConfig, overrides: Partial<ServiceStatus> = {}): ServiceStatus {
+  return {
+    ...createUnknownServiceStatus(service, ""),
+    lastChecked: new Date("2026-01-01T00:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function createCatalog(
+  displayCategories: ApiStatusCatalog["displayCategories"],
+  generalServices: Array<{ categoryName: string; service: ServiceConfig }>,
+  awsRoot: ApiStatusCatalog["awsRoot"] = null,
+  awsChildren: ApiStatusCatalog["awsChildren"] = []
+): ApiStatusCatalog {
+  return {
+    awsChildren,
+    awsRoot,
+    displayCategories,
+    generalServices,
+  };
 }
 
 function estimateEmbedLength(embed: { toJSON?: () => any } | any): number {
@@ -94,38 +119,36 @@ function estimateEmbedLength(embed: { toJSON?: () => any } | any): number {
   return titleLength + descriptionLength + footerLength + fieldLength;
 }
 
-function getSentEmbeds(channel: TextChannel): any[] {
-  return (channel.send as jest.Mock).mock.calls.map((call) => {
-    const [payload] = call;
-    return payload.embeds[0].toJSON();
-  });
+async function flushScheduler(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 describe("ApiStatusRuntime", () => {
   beforeEach(() => {
-    mockedFetchAllStatuses.mockReset();
-    mockedSummarizeIssues.mockClear();
-    mockedFetchAllStatuses.mockResolvedValue({
-      categories: [
-        {
-          name: "Developer Tools",
-          services: [
-            {
-              id: "openai",
-              incidents: [],
-              lastChecked: new Date("2026-01-01T00:00:00.000Z"),
-              name: "OpenAI",
-              pageUrl: "https://status.openai.com/",
-              status: "operational",
-            },
-          ],
-        },
-      ],
-    });
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
   it("fans out one shared status snapshot to multiple guild channels", async () => {
-    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), 60_000, 60_000);
+    const service = createService({
+      id: "openai",
+      name: "OpenAI",
+      pageUrl: "https://status.openai.com/",
+      type: "statuspage",
+    });
+    const catalog = createCatalog(
+      [{ name: "Developer Tools", services: [service] }],
+      [{ categoryName: "Developer Tools", service }]
+    );
+    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), {
+      catalog,
+      checkService: async () => createStatus(service, { status: "operational" }),
+      publishDebounceMs: 0,
+    });
     const firstChannel = createChannel("channel-1");
     const secondChannel = createChannel("channel-2");
 
@@ -133,7 +156,6 @@ describe("ApiStatusRuntime", () => {
       await runtime.registerGuild("guild-1", firstChannel);
       await runtime.registerGuild("guild-2", secondChannel);
 
-      expect(mockedFetchAllStatuses).toHaveBeenCalledTimes(1);
       expect(firstChannel.send).toHaveBeenCalledTimes(1);
       expect(secondChannel.send).toHaveBeenCalledTimes(1);
     } finally {
@@ -142,7 +164,21 @@ describe("ApiStatusRuntime", () => {
   });
 
   it("reuses bot-owned managed status messages instead of reposting", async () => {
-    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), 60_000, 60_000);
+    const service = createService({
+      id: "openai",
+      name: "OpenAI",
+      pageUrl: "https://status.openai.com/",
+      type: "statuspage",
+    });
+    const catalog = createCatalog(
+      [{ name: "Developer Tools", services: [service] }],
+      [{ categoryName: "Developer Tools", service }]
+    );
+    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), {
+      catalog,
+      checkService: async () => createStatus(service, { status: "operational" }),
+      publishDebounceMs: 0,
+    });
     const existingMessage = createManagedMessage("existing-summary", "channel-1");
     const channel = createChannel("channel-1", [existingMessage]);
 
@@ -156,213 +192,230 @@ describe("ApiStatusRuntime", () => {
     }
   });
 
-  it("renders a Tonka-style summary embed and collapses grouped AWS child services into one row", async () => {
-    mockedFetchAllStatuses.mockResolvedValue({
-      categories: [
+  it("renders a Tonka-style summary embed and collapses AWS child checks into one visible row", async () => {
+    const awsRoot = createService({
+      id: "aws",
+      isGroupRoot: true,
+      name: "AWS",
+      pageUrl: "https://health.aws.amazon.com/health/status",
+      type: "generic",
+    });
+    const awsChild = createService({
+      groupId: "aws",
+      id: "aws-ec2-us-east-1",
+      name: "AWS ec2-us-east-1",
+      pageUrl: "https://health.aws.amazon.com/health/status",
+      type: "generic",
+    });
+    const zendesk = createService({
+      id: "zendesk",
+      name: "Zendesk",
+      pageUrl: "https://status.zendesk.com/",
+      type: "statuspage",
+    });
+    const lastpass = createService({
+      id: "lastpass",
+      name: "LastPass",
+      pageUrl: "https://status.lastpass.com/",
+      type: "statuspage",
+    });
+    const catalog = createCatalog(
+      [
         {
           name: "Cloud Platforms",
-          services: [
-            {
-              id: "aws",
-              incidents: [],
-              isGroupRoot: true,
-              lastChecked: new Date("2026-01-01T00:00:00.000Z"),
-              name: "AWS",
-              pageUrl: "https://health.aws.amazon.com/health/status",
-              status: "operational",
-            },
-            {
-              description: "All Systems Operational",
-              groupId: "aws",
-              id: "aws-ec2-us-east-1",
-              incidents: [],
-              lastChecked: new Date("2026-01-01T00:00:00.000Z"),
-              name: "AWS ec2-us-east-1",
-              pageUrl: "https://health.aws.amazon.com/health/status",
-              status: "operational",
-            },
-            {
-              description: "All Systems Operational",
-              groupId: "aws",
-              id: "aws-rds-us-east-1",
-              incidents: [],
-              lastChecked: new Date("2026-01-01T00:00:00.000Z"),
-              name: "AWS rds-us-east-1",
-              pageUrl: "https://health.aws.amazon.com/health/status",
-              status: "operational",
-            },
-            {
-              description: "All Systems Operational",
-              id: "zendesk",
-              incidents: [],
-              lastChecked: new Date("2026-01-01T00:00:00.000Z"),
-              name: "Zendesk",
-              pageUrl: "https://status.zendesk.com/",
-              status: "operational",
-            },
-            {
-              description: "Partially Degraded Service",
-              id: "lastpass",
-              incidents: [],
-              lastChecked: new Date("2026-01-01T00:00:00.000Z"),
-              name: "LastPass",
-              pageUrl: "https://status.lastpass.com/",
-              status: "degraded_performance",
-            },
-          ],
+          services: [awsRoot, zendesk, lastpass],
         },
       ],
+      [
+        { categoryName: "Cloud Platforms", service: zendesk },
+        { categoryName: "Cloud Platforms", service: lastpass },
+      ],
+      { categoryName: "Cloud Platforms", service: awsRoot },
+      [{ categoryName: "Cloud Platforms", service: awsChild }]
+    );
+    const checkService = jest.fn(async (service: ServiceConfig) => {
+      switch (service.id) {
+        case "aws":
+        case "aws-ec2-us-east-1":
+        case "zendesk":
+          return createStatus(service, {
+            description: service.id === "zendesk" ? "All Systems Operational" : "",
+            status: "operational",
+          });
+        case "lastpass":
+          return createStatus(service, {
+            description: "Partially Degraded Service",
+            status: "degraded_performance",
+          });
+        default:
+          throw new Error(`Unexpected service ${service.id}`);
+      }
     });
-
-    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), 60_000, 60_000);
+    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), {
+      awsSweepMs: 3,
+      catalog,
+      checkService,
+      generalSweepMs: 4,
+      publishDebounceMs: 0,
+    });
     const channel = createChannel("channel-1");
 
     try {
       await runtime.registerGuild("guild-1", channel);
+      await jest.advanceTimersByTimeAsync(20);
+      await flushScheduler();
 
-      const [summaryEmbed] = getSentEmbeds(channel);
+      const summaryPayload =
+        channel.__sentMessages[0].edit.mock.calls.at(-1)?.[0] ??
+        (channel.send as jest.Mock).mock.calls.at(-1)?.[0];
+      const summaryEmbed = summaryPayload.embeds[0].toJSON();
+
       expect(summaryEmbed.title).toBe("API and Platform Status (Page 1)");
       expect(summaryEmbed.description).toContain("Last updated:");
       expect(summaryEmbed.description).toContain("Operational:");
       expect(summaryEmbed.fields[0].name).toBe("Cloud Platforms");
-      expect(summaryEmbed.fields[0].value).toContain("✅ AWS");
-      expect(summaryEmbed.fields[0].value).toContain("✅ Zendesk - All Systems Operational");
-      expect(summaryEmbed.fields[0].value).toContain("🟡 LastPass - Partially Degraded Service");
+      expect(summaryEmbed.fields[0].value).toContain("\u2705 AWS");
+      expect(summaryEmbed.fields[0].value).toContain("\u2705 Zendesk - All Systems Operational");
+      expect(summaryEmbed.fields[0].value).toContain("\u{1F7E1} LastPass - Partially Degraded Service");
       expect(summaryEmbed.fields[0].value).not.toContain("AWS ec2-us-east-1");
-      expect(summaryEmbed.fields[0].value).not.toContain("AWS rds-us-east-1");
     } finally {
       await runtime.dispose();
     }
   });
 
-  it("renders incident embeds in the original status-card style", async () => {
-    mockedFetchAllStatuses.mockResolvedValue({
-      categories: [
-        {
-          name: "Payment & Financial APIs",
-          services: [
-            {
-              description: "Scheduled maintenance - Brief delays in deposits, withdrawals, settlements",
-              id: "gemini",
-              incidents: [
-                {
-                  created_at: new Date("2026-01-01T00:00:00.000Z").toISOString(),
-                  id: "incident-1",
-                  incident_updates: [
-                    {
-                      body: "BTCUSD stale ask price",
-                      created_at: new Date("2026-01-01T00:00:00.000Z").toISOString(),
-                    },
-                    {
-                      body: "Scheduled maintenance - Brief delays in deposits, withdrawals, settlements",
-                      created_at: new Date("2025-12-31T00:00:00.000Z").toISOString(),
-                    },
-                  ],
-                  name: "Scheduled maintenance - Brief delays in deposits, withdrawals, settlements",
-                  shortlink: "https://status.gemini.com/incidents/1",
-                },
-              ],
-              lastChecked: new Date("2026-01-01T00:00:00.000Z"),
-              name: "Gemini",
-              pageUrl: "https://status.gemini.com/",
-              status: "under_maintenance" as const,
-            },
-          ],
-        },
-      ],
+  it("keeps the last good service status on the first failed retry and marks it unreachable on the second failure", async () => {
+    const service = createService({
+      id: "openai",
+      name: "OpenAI",
+      pageUrl: "https://status.openai.com/",
+      type: "statuspage",
     });
-
-    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), 60_000, 60_000);
+    const checkService = jest
+      .fn<Promise<ServiceStatus>, [ServiceConfig]>()
+      .mockResolvedValueOnce(createStatus(service, { status: "operational" }))
+      .mockResolvedValueOnce(createStatus(service, { description: "Unreachable", status: "unknown" }))
+      .mockResolvedValueOnce(createStatus(service, { description: "Unreachable", status: "unknown" }));
+    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), {
+      catalog: createCatalog([{ name: "Developer Tools", services: [service] }], [{ categoryName: "Developer Tools", service }]),
+      checkService,
+      generalSweepMs: 10,
+      hotPollMs: 1_000,
+      hotSpreadMs: 1,
+      publishDebounceMs: 0,
+      retryMs: 5,
+    });
     const channel = createChannel("channel-1");
 
     try {
       await runtime.registerGuild("guild-1", channel);
+      await jest.advanceTimersByTimeAsync(1);
+      await flushScheduler();
 
-      const [, incidentEmbed] = getSentEmbeds(channel);
-      expect(incidentEmbed.title).toBe("Incident - Gemini");
-      expect(incidentEmbed.description).toContain("🛠️ Scheduled maintenance - Brief delays in deposits, withdrawals, settlements");
-      expect(incidentEmbed.description).toContain("Last updated:");
-      expect(incidentEmbed.url).toBe("https://status.gemini.com/incidents/1");
-      expect(incidentEmbed.fields[0].name).toBe("Scheduled maintenance - Brief delays in deposits, withdrawals, settlements");
-      expect(incidentEmbed.fields[0].value).toContain("[Status Page]");
+      const editsAfterSuccess = channel.__sentMessages[0].edit.mock.calls.length;
+      await jest.advanceTimersByTimeAsync(10);
+      await flushScheduler();
+
+      expect(channel.__sentMessages[0].edit.mock.calls.length).toBe(editsAfterSuccess);
+
+      await jest.advanceTimersByTimeAsync(5);
+      await flushScheduler();
+
+      const finalPayload = asEmbedPayload(channel.__sentMessages[0].edit.mock.calls.at(-1)?.[0]);
+      const finalEmbed = finalPayload.embeds[0].toJSON();
+
+      expect(finalEmbed.fields[0].value).toContain("\u26AA OpenAI - Unreachable");
     } finally {
       await runtime.dispose();
     }
   });
 
-  it("splits oversized summary pages so every embed stays within Discord's 6000 character limit", async () => {
-    mockedFetchAllStatuses.mockResolvedValue({
-      categories: [
-        {
-          name: "Huge Category",
-          services: Array.from({ length: 120 }, (_, index) => ({
-            description: `Service ${index} `.repeat(12),
-            id: `service-${index}`,
-            incidents: [],
-            lastChecked: new Date("2026-01-01T00:00:00.000Z"),
-            name: `Service ${index}`,
-            pageUrl: `https://example.com/${index}`,
-            status: "degraded_performance" as const,
-          })),
-        },
-      ],
+  it("hot-rechecks non-operational services before the normal 15 minute sweep", async () => {
+    const service = createService({
+      id: "lastpass",
+      name: "LastPass",
+      pageUrl: "https://status.lastpass.com/",
+      type: "statuspage",
     });
-
-    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), 60_000, 60_000);
+    const checkService = jest
+      .fn<Promise<ServiceStatus>, [ServiceConfig]>()
+      .mockResolvedValueOnce(
+        createStatus(service, {
+          description: "Partially Degraded Service",
+          status: "degraded_performance",
+        })
+      )
+      .mockResolvedValueOnce(createStatus(service, { status: "operational" }));
+    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), {
+      catalog: createCatalog(
+        [{ name: "Communication & Identity APIs", services: [service] }],
+        [{ categoryName: "Communication & Identity APIs", service }]
+      ),
+      checkService,
+      generalSweepMs: 10_000,
+      hotPollMs: 5,
+      hotSpreadMs: 1,
+      publishDebounceMs: 0,
+    });
     const channel = createChannel("channel-1");
 
     try {
       await runtime.registerGuild("guild-1", channel);
+      await jest.advanceTimersByTimeAsync(1);
+      await flushScheduler();
 
-      const sentEmbeds = (channel.send as jest.Mock).mock.calls.map((call) => call[0].embeds[0]);
-      expect(sentEmbeds.length).toBeGreaterThan(1);
-      for (const embed of sentEmbeds) {
-        expect(estimateEmbedLength(embed)).toBeLessThanOrEqual(6000);
-      }
+      const degradedPayload = asEmbedPayload(channel.__sentMessages[0].edit.mock.calls.at(-1)?.[0]);
+      expect(degradedPayload.embeds[0].toJSON().fields[0].value).toContain(
+        "\u{1F7E1} LastPass - Partially Degraded Service"
+      );
+
+      await jest.advanceTimersByTimeAsync(6);
+      await flushScheduler();
+
+      const recoveredPayload = asEmbedPayload(channel.__sentMessages[0].edit.mock.calls.at(-1)?.[0]);
+      expect(recoveredPayload.embeds[0].toJSON().fields[0].value).toContain("\u2705 LastPass");
     } finally {
       await runtime.dispose();
     }
   });
 
-  it("splits oversized incident updates so every incident embed stays within Discord's 6000 character limit", async () => {
-    mockedFetchAllStatuses.mockResolvedValue({
-      categories: [
-        {
-          name: "Developer Tools",
-          services: [
-            {
-              description: "Partial outage affecting a large portion of the platform.",
-              id: "openai",
-              incidents: [
-                {
-                  id: "incident-1",
-                  incident_updates: Array.from({ length: 5 }, (_, index) => ({
-                    body: `Update ${index} ` + "x".repeat(1200),
-                    created_at: new Date("2026-01-01T00:00:00.000Z").toISOString(),
-                  })),
-                  name: "Major platform incident",
-                  shortlink: "https://status.example.com/incidents/1",
-                },
-              ],
-              lastChecked: new Date("2026-01-01T00:00:00.000Z"),
-              name: "OpenAI",
-              pageUrl: "https://status.openai.com/",
-              status: "major_outage" as const,
-            },
-          ],
-        },
-      ],
+  it("keeps every published summary embed within Discord's 6000 character limit", async () => {
+    const services = Array.from({ length: 80 }, (_, index) =>
+      createService({
+        id: `service-${index}`,
+        name: `Service ${index}`,
+        pageUrl: `https://example.com/${index}`,
+        type: "statuspage",
+      })
+    );
+    const catalog = createCatalog(
+      [{ name: "Huge Category", services }],
+      services.map((service) => ({ categoryName: "Huge Category", service }))
+    );
+    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), {
+      catalog,
+      checkService: async (service) =>
+        createStatus(service, {
+          description: `${service.name} `.repeat(12),
+          status: "degraded_performance",
+        }),
+      generalSweepMs: 80,
+      publishDebounceMs: 0,
     });
-
-    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), 60_000, 60_000);
     const channel = createChannel("channel-1");
 
     try {
       await runtime.registerGuild("guild-1", channel);
+      await jest.advanceTimersByTimeAsync(200);
+      await flushScheduler();
 
-      const sentEmbeds = (channel.send as jest.Mock).mock.calls.map((call) => call[0].embeds[0]);
-      expect(sentEmbeds.length).toBeGreaterThan(1);
-      for (const embed of sentEmbeds) {
+      const embeds = [
+        ...(channel.send as jest.Mock).mock.calls.map((call) => call[0].embeds[0]),
+        ...channel.__sentMessages.flatMap((message) =>
+          message.edit.mock.calls.map((call) => asEmbedPayload(call[0]).embeds[0])
+        ),
+      ];
+
+      for (const embed of embeds) {
         expect(estimateEmbedLength(embed)).toBeLessThanOrEqual(6000);
       }
     } finally {

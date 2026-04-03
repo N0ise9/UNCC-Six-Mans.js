@@ -4,6 +4,7 @@ import * as EasterEggsController from "../../controllers/EasterEggs";
 import { GuildConfigReadResult, GuildConfigStore } from "../GuildConfigStore";
 import { GuildRuntimeManager } from "../GuildRuntimeManager";
 import { DiscordWorkScheduler } from "../DiscordWorkScheduler";
+import { PrismaStudioManager } from "../PrismaStudioManager";
 import { GuildContext, GuildInstanceConfig } from "../types";
 
 function createConfig(guildId: string): GuildInstanceConfig {
@@ -406,5 +407,70 @@ describe("GuildRuntimeManager", () => {
     } finally {
       handlerSpy.mockRestore();
     }
+  });
+
+  it("rejects /prisma for users who are not Bot Admins", async () => {
+    const prismaStudioManager = {
+      launchForGuild: jest.fn(async () => undefined),
+    } as unknown as PrismaStudioManager;
+    const manager = new GuildRuntimeManager(
+      {} as Client,
+      {} as OpenAI,
+      {} as GuildConfigStore,
+      new DiscordWorkScheduler(1, 0),
+      undefined,
+      prismaStudioManager
+    );
+    const interaction = {
+      editReply: jest.fn(async () => undefined),
+      guildId: "guild-1",
+      id: "interaction-1",
+      member: {
+        roles: {
+          cache: [],
+        },
+      },
+    } as unknown as Parameters<GuildRuntimeManager["handlePrismaCommand"]>[0];
+
+    await manager.handlePrismaCommand(interaction);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      "What do you think you're doing? Trying to run an admin command when you're not a Bot Admin. Typical."
+    );
+    expect((prismaStudioManager.launchForGuild as jest.Mock)).not.toHaveBeenCalled();
+  });
+
+  it("launches Prisma Studio for the configured guild database without leaking the URL in Discord", async () => {
+    const prismaStudioManager = {
+      launchForGuild: jest.fn(async () => undefined),
+    } as unknown as PrismaStudioManager;
+    const configStore = {
+      getGuildConfigResult: jest.fn(() => createConfigResult("guild-1")),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager(
+      {} as Client,
+      {} as OpenAI,
+      configStore,
+      new DiscordWorkScheduler(1, 0),
+      undefined,
+      prismaStudioManager
+    );
+    const interaction = {
+      editReply: jest.fn(async () => undefined),
+      guildId: "guild-1",
+      id: "interaction-2",
+      member: {
+        roles: {
+          cache: [{ name: "Bot Admin" }],
+          some: (predicate: (role: { name: string }) => boolean) => predicate({ name: "Bot Admin" }),
+        },
+      },
+    } as unknown as Parameters<GuildRuntimeManager["handlePrismaCommand"]>[0];
+
+    await manager.handlePrismaCommand(interaction);
+
+    expect((prismaStudioManager.launchForGuild as jest.Mock)).toHaveBeenCalledWith(createConfig("guild-1"));
+    expect(interaction.editReply).toHaveBeenCalledWith("Prisma Studio was launched on the host machine.");
+    expect(interaction.editReply).not.toHaveBeenCalledWith(expect.stringContaining("postgresql://"));
   });
 });

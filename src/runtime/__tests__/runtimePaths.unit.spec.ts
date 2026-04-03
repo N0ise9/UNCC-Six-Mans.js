@@ -1,5 +1,13 @@
 import path from "path";
-import { getGuildConfigPath, getRuntimeEnvPath, resolveRuntimeRoot } from "../runtimePaths";
+import {
+  getGuildConfigPath,
+  getPrismaStudioCliPath,
+  getPrismaStudioConfigPath,
+  getPrismaStudioNodePath,
+  getPrismaStudioWorkspaceRoot,
+  getRuntimeEnvPath,
+  resolveRuntimeRoot,
+} from "../runtimePaths";
 
 describe("runtimePaths", () => {
   const originalNormHome = process.env["NORM_HOME"];
@@ -55,5 +63,18 @@ describe("runtimePaths", () => {
 
     expect(getRuntimeEnvPath()).toBe(path.resolve(portableRoot, ".env"));
     expect(getGuildConfigPath()).toBe(path.resolve(portableRoot, ".guild-instance-config.json"));
+  });
+
+  it("builds packaged Prisma Studio paths beside the executable", () => {
+    process.env["NORM_HOME"] = portableRoot;
+
+    expect(getPrismaStudioNodePath({ packaged: true })).toBe(path.resolve(portableRoot, "studio-tools", "node.exe"));
+    expect(getPrismaStudioCliPath({ packaged: true })).toBe(
+      path.resolve(portableRoot, "studio-tools", "node_modules", "prisma", "build", "index.js")
+    );
+    expect(getPrismaStudioWorkspaceRoot({ packaged: true })).toBe(path.resolve(portableRoot, "studio-workspace"));
+    expect(getPrismaStudioConfigPath({ packaged: true })).toBe(
+      path.resolve(portableRoot, "studio-workspace", "prisma.studio.config.ts")
+    );
   });
 });

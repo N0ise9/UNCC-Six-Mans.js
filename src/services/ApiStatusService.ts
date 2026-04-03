@@ -53,6 +53,18 @@ export interface CategoryConfig {
   services: ServiceConfig[];
 }
 
+export interface ApiStatusCatalogEntry {
+  categoryName: string;
+  service: ServiceConfig;
+}
+
+export interface ApiStatusCatalog {
+  awsChildren: ApiStatusCatalogEntry[];
+  awsRoot: ApiStatusCatalogEntry | null;
+  displayCategories: CategoryConfig[];
+  generalServices: ApiStatusCatalogEntry[];
+}
+
 const STATUS_RANK: Record<StatusLevel, number> = {
   degraded_performance: 2,
   major_outage: 4,
@@ -473,7 +485,7 @@ function getAwsRssUrls(): string[] {
   return urls;
 }
 
-function buildAwsChildServices(): ServiceConfig[] {
+export function buildAwsChildServices(): ServiceConfig[] {
   const pageUrl = "https://health.aws.amazon.com/health/status";
   const urls = getAwsRssUrls();
 
@@ -490,6 +502,17 @@ function buildAwsChildServices(): ServiceConfig[] {
       rssUrl: url, // single feed per child
       type: "generic",
     } satisfies ServiceConfig;
+  });
+}
+
+export function createUnknownServiceStatus(
+  service: ServiceConfig,
+  description = "Checking status..."
+): ServiceStatus {
+  return buildStatus(service, {
+    description,
+    incidents: [],
+    status: "unknown",
   });
 }
 
@@ -2090,6 +2113,45 @@ export const Categories: CategoryConfig[] = [
     ],
   },
 ];
+
+export function getApiStatusCatalog(categories: CategoryConfig[] = Categories): ApiStatusCatalog {
+  const displayCategories = categories.map((category) => ({
+    name: category.name,
+    services: category.services.filter((service) => !service.groupId),
+  }));
+
+  const generalServices: ApiStatusCatalogEntry[] = [];
+  const awsChildren: ApiStatusCatalogEntry[] = [];
+  let awsRoot: ApiStatusCatalogEntry | null = null;
+
+  for (const category of categories) {
+    for (const service of category.services) {
+      const entry: ApiStatusCatalogEntry = {
+        categoryName: category.name,
+        service,
+      };
+
+      if (service.id === "aws" && service.isGroupRoot) {
+        awsRoot = entry;
+        continue;
+      }
+
+      if (service.groupId === "aws") {
+        awsChildren.push(entry);
+        continue;
+      }
+
+      generalServices.push(entry);
+    }
+  }
+
+  return {
+    awsChildren,
+    awsRoot,
+    displayCategories,
+    generalServices,
+  };
+}
 
 export async function fetchAllStatuses(): Promise<{ categories: { name: string; services: ServiceStatus[] }[] }> {
   const tasks: Array<Promise<{ name: string; services: ServiceStatus[] }>> = Categories.map(async (cat) => {

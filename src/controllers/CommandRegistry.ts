@@ -24,6 +24,11 @@ export async function registerAllSlashCommands(clientId: string, token: string) 
 
   const clearCommand = new SlashCommandBuilder().setName("clear").setDescription("Clears the queue.").toJSON();
 
+  const prismaCommand = new SlashCommandBuilder()
+    .setName("prisma")
+    .setDescription("Launch Prisma Studio for this guild's database on the host machine.")
+    .toJSON();
+
   const norm = new SlashCommandBuilder()
     .setName("norm")
     .setDescription("Ask Norm anything.")
@@ -104,7 +109,13 @@ export async function registerAllSlashCommands(clientId: string, token: string) 
     })
     .toJSON();
 
-  const commands: Array<RESTPostAPIApplicationCommandsJSONBody> = [setup, kickCommand, clearCommand, norm];
+  const commands: Array<RESTPostAPIApplicationCommandsJSONBody> = [
+    setup,
+    kickCommand,
+    clearCommand,
+    prismaCommand,
+    norm,
+  ];
   if (isSoraEnabled()) {
     commands.push(sora);
   }

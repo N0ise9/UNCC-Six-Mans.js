@@ -25,6 +25,7 @@ import { GuildConfigStore, maskSecret } from "./GuildConfigStore";
 import { DiscordWorkScheduler } from "./DiscordWorkScheduler";
 import { GuildRepositories } from "./GuildRepositories";
 import { InteractiveSurfaceRegistry } from "./InteractiveSurfaceRegistry";
+import { PrismaStudioManager } from "./PrismaStudioManager";
 import { reconcileTrackedMessages } from "./reconcileTrackedMessages";
 import { createScheduledCommandResponder } from "./createScheduledCommandResponder";
 import {
@@ -74,7 +75,8 @@ export class GuildRuntimeManager {
     private readonly openai: OpenAI,
     private readonly configStore: GuildConfigStore,
     private readonly scheduler: DiscordWorkScheduler,
-    private readonly apiStatusRuntime?: ApiStatusRuntime
+    private readonly apiStatusRuntime?: ApiStatusRuntime,
+    private readonly prismaStudioManager: PrismaStudioManager = new PrismaStudioManager()
   ) {}
 
   async dispose(): Promise<void> {
@@ -89,6 +91,7 @@ export class GuildRuntimeManager {
       await context.prisma.$disconnect().catch(() => undefined);
     }
     this.contexts.clear();
+    await this.prismaStudioManager.dispose();
   }
 
   async ensureContext(guildId: string): Promise<GuildContext | null> {
@@ -140,6 +143,12 @@ export class GuildRuntimeManager {
     if (interaction.commandName === "setup") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await this.handleSetupCommand(interaction);
+      return;
+    }
+
+    if (interaction.commandName === "prisma") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await this.handlePrismaCommand(interaction);
       return;
     }
 
@@ -198,6 +207,43 @@ export class GuildRuntimeManager {
 
       await interaction.deferReply();
       await handleEasterEggSlashInteraction(context, interaction);
+    }
+  }
+
+  async handlePrismaCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+    const responder = createScheduledCommandResponder(interaction, this.scheduler, "prisma", "high");
+
+    if (!interaction.guildId) {
+      await responder.edit("This command only works inside a server.");
+      return;
+    }
+
+    if (!isBotAdmin(interaction)) {
+      await responder.edit(
+        "What do you think you're doing? Trying to run an admin command when you're not a Bot Admin. Typical."
+      );
+      return;
+    }
+
+    const configResult = this.configStore.getGuildConfigResult(interaction.guildId);
+    if (configResult?.error) {
+      await responder.edit(
+        "This guild is configured, but I couldn't read its stored configuration. Check CONFIG_ENCRYPTION_KEY."
+      );
+      return;
+    }
+
+    if (!configResult?.config || !configResult.enabled) {
+      await responder.edit("This guild has not been configured yet. Run /setup set first.");
+      return;
+    }
+
+    try {
+      await this.prismaStudioManager.launchForGuild(configResult.config);
+      await responder.edit("Prisma Studio was launched on the host machine.");
+    } catch (error) {
+      console.error(`[${interaction.guildId}] Failed to launch Prisma Studio:`, error);
+      await responder.edit("Prisma Studio failed to launch. Check the bot console for details.");
     }
   }
 
