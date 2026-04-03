@@ -124,6 +124,8 @@ DATABASE_URL="postgresql://Norm:NormTheNiner@localhost:5432/SixMansGuildA" npx p
 
 Repeat that for each guild database you plan to use.
 
+When a guild database is loaded for the first time, Norm will automatically create a default active event if that database does not already have one. You do not need to seed the `Event` table manually just to get a fresh guild running.
+
 ## Starting the Bot
 
 Start the bot with:

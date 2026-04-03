@@ -4,6 +4,7 @@ import {
   ChatInputCommandInteraction,
   Client,
   EmbedBuilder,
+  MessageFlags,
   Message,
   PermissionFlagsBits,
   StringSelectMenuInteraction,
@@ -131,13 +132,13 @@ export class GuildRuntimeManager {
     if (!interaction.guildId) {
       await interaction.reply({
         content: "This command only works inside a server.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
     if (interaction.commandName === "setup") {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await this.handleSetupCommand(interaction);
       return;
     }
@@ -150,7 +151,7 @@ export class GuildRuntimeManager {
           content:
             "This guild is configured, but I couldn't read its stored configuration. " +
             "Check CONFIG_ENCRYPTION_KEY and rerun /setup set.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -160,20 +161,20 @@ export class GuildRuntimeManager {
           content:
             "This guild is configured, but the runtime failed to load. Check the configured channels " +
             "and database URL, then rerun /setup set.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
 
       await interaction.reply({
         content: "This guild has not been configured yet. Run /setup set first.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
     if (interaction.commandName === "kick" || interaction.commandName === "clear") {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await this.handleAdminCommand(context, interaction);
       return;
     }
@@ -182,7 +183,7 @@ export class GuildRuntimeManager {
       if (!context.config.chatChannelId) {
         await interaction.reply({
           content: "This guild is missing its OpenAI chat channel. A server admin needs to rerun /setup set.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -190,7 +191,7 @@ export class GuildRuntimeManager {
       if (interaction.channelId !== context.config.chatChannelId) {
         await interaction.reply({
           content: `Use this command in <#${context.config.chatChannelId}>.`,
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -337,6 +338,14 @@ export class GuildRuntimeManager {
   }
 
   private async bootstrapContext(context: GuildContext): Promise<void> {
+    const ensuredEvent = await context.repositories.event.ensureCurrentEvent();
+    if (ensuredEvent.created) {
+      console.info(
+        `[${context.guildId}] No active event was found in the guild database. ` +
+          `Created default event "${ensuredEvent.event.name}".`
+      );
+    }
+
     await this.refreshLeaderboard(context);
     await this.refreshQueueSurface(context);
     if (context.channels.apiStatusChannel) {

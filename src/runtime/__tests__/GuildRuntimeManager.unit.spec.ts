@@ -1,4 +1,4 @@
-import { Client, Message, TextChannel } from "discord.js";
+import { Client, Message, MessageFlags, TextChannel } from "discord.js";
 import OpenAI from "openai";
 import * as EasterEggsController from "../../controllers/EasterEggs";
 import { GuildConfigReadResult, GuildConfigStore } from "../GuildConfigStore";
@@ -261,6 +261,72 @@ describe("GuildRuntimeManager", () => {
     }
   });
 
+  it("creates a default event during bootstrap when the guild database has none", async () => {
+    const manager = new GuildRuntimeManager(
+      {} as Client,
+      {} as OpenAI,
+      {} as GuildConfigStore,
+      new DiscordWorkScheduler(1, 0)
+    );
+    const context = createContext("guild-1");
+    const ensureCurrentEvent = jest.fn(async () => ({
+      created: true,
+      event: {
+        endDate: null,
+        id: 1,
+        mmrMult: 1,
+        name: "Default Event 123",
+        startDate: new Date("2026-01-01T00:00:00.000Z"),
+      },
+    }));
+    context.repositories = {
+      event: {
+        ensureCurrentEvent,
+      },
+    } as unknown as GuildContext["repositories"];
+
+    const refreshLeaderboardSpy = jest
+      .spyOn(
+        manager as unknown as { refreshLeaderboard: (guildContext: GuildContext) => Promise<void> },
+        "refreshLeaderboard"
+      )
+      .mockResolvedValue(undefined);
+    const refreshQueueSurfaceSpy = jest
+      .spyOn(
+        manager as unknown as {
+          refreshQueueSurface: (guildContext: GuildContext, players?: unknown) => Promise<void>;
+        },
+        "refreshQueueSurface"
+      )
+      .mockResolvedValue(undefined);
+    const startQueueTimerSpy = jest
+      .spyOn(manager as unknown as { startQueueTimer: (guildContext: GuildContext) => void }, "startQueueTimer")
+      .mockImplementation(() => undefined);
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => undefined);
+
+    try {
+      await (
+        manager as unknown as {
+          bootstrapContext: (guildContext: GuildContext) => Promise<void>;
+        }
+      ).bootstrapContext(context);
+
+      expect(ensureCurrentEvent).toHaveBeenCalledTimes(1);
+      expect(refreshLeaderboardSpy).toHaveBeenCalledWith(context);
+      expect(refreshQueueSurfaceSpy).toHaveBeenCalledWith(context);
+      expect(startQueueTimerSpy).toHaveBeenCalledWith(context);
+      expect(infoSpy).toHaveBeenCalledWith(
+        '[guild-1] No active event was found in the guild database. Created default event "Default Event 123".'
+      );
+    } finally {
+      refreshLeaderboardSpy.mockRestore();
+      refreshQueueSurfaceSpy.mockRestore();
+      startQueueTimerSpy.mockRestore();
+      infoSpy.mockRestore();
+      await manager.dispose();
+    }
+  });
+
   it("rejects /norm outside the configured chat channel", async () => {
     const manager = new GuildRuntimeManager(
       {} as Client,
@@ -282,7 +348,7 @@ describe("GuildRuntimeManager", () => {
 
     expect(interaction.reply).toHaveBeenCalledWith({
       content: "Use this command in <#guild-1-chat>.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   });
 
@@ -308,7 +374,7 @@ describe("GuildRuntimeManager", () => {
 
     expect(interaction.reply).toHaveBeenCalledWith({
       content: "This guild is missing its OpenAI chat channel. A server admin needs to rerun /setup set.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   });
 

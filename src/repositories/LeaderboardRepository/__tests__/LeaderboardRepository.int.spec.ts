@@ -66,6 +66,20 @@ const validatePlayerStats = (expected: PlayerStats, actual: PlayerStats | null) 
   expect(actual!.wins).toBe(expected.wins);
 };
 
+const expectPlayersSortedByLeaderboardOrder = (players: ReadonlyArray<Readonly<PlayerStats>>) => {
+  for (let i = 0; i < players.length - 1; i++) {
+    const current = players[i];
+    const next = players[i + 1];
+
+    if (current.mmr === next.mmr) {
+      expect(current.wins).toBeGreaterThanOrEqual(next.wins);
+      continue;
+    }
+
+    expect(current.mmr).toBeGreaterThan(next.mmr);
+  }
+};
+
 async function manuallyAddPlayerStatsToLeaderboard(ballChaser: PlayerStats | Array<PlayerStats>) {
   const playersToAdd = Array.isArray(ballChaser) ? ballChaser : [ballChaser];
 
@@ -206,10 +220,7 @@ describe("LeaderboardRepository tests", () => {
     const allPlayers = await leaderboardRepository.getPlayersStats(5);
 
     expect(allPlayers).toHaveLength(5);
-    // 5 - 1 since you can't [i + 1] on the last item
-    for (let i = 0; i < 5 - 1; i++) {
-      expect(allPlayers[i].mmr).toBeGreaterThan(allPlayers[i + 1].mmr);
-    }
+    expectPlayersSortedByLeaderboardOrder(allPlayers);
   });
 
   it("gets all player stats sorted correctly based on MMR", async () => {
@@ -219,10 +230,7 @@ describe("LeaderboardRepository tests", () => {
     const allPlayers = await leaderboardRepository.getPlayersStats();
 
     expect(allPlayers).toHaveLength(playersToAdd.length);
-    // playersToAdd.length - 1 since you can't [i + 1] on the last item
-    for (let i = 0; i < playersToAdd.length - 1; i++) {
-      expect(allPlayers[i].mmr).toBeGreaterThan(allPlayers[i + 1].mmr);
-    }
+    expectPlayersSortedByLeaderboardOrder(allPlayers);
   });
 
   it("gets all player stats sorted correctly by wins when MMR is equal", async () => {

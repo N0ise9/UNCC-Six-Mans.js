@@ -28,6 +28,42 @@ class GuildEventRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
   async getCurrentEvent(): Promise<Event> {
+    const currentEvent = await this.findCurrentEvent();
+    if (!currentEvent) {
+      throw new Error("No current event. There should always be an active event.");
+    }
+
+    return currentEvent;
+  }
+
+  async ensureCurrentEvent(): Promise<{ created: boolean; event: Event }> {
+    const currentEvent = await this.findCurrentEvent();
+    if (currentEvent) {
+      return {
+        created: false,
+        event: currentEvent,
+      };
+    }
+
+    const createdEvent = await this.prisma.event.create({
+      data: {
+        name: `Default Event ${Date.now()}`,
+      },
+    });
+
+    return {
+      created: true,
+      event: this.cacheEvent({
+        endDate: createdEvent.endDate,
+        id: createdEvent.id,
+        mmrMult: createdEvent.mmrMult.toNumber(),
+        name: createdEvent.name,
+        startDate: createdEvent.startDate,
+      }),
+    };
+  }
+
+  private async findCurrentEvent(): Promise<Event | null> {
     if (this.currentEventCache && this.currentEventCache.expiresAt > Date.now()) {
       return this.currentEventCache.event;
     }
@@ -39,22 +75,25 @@ class GuildEventRepository {
     });
 
     if (!currentEventResult) {
-      throw new Error("No current event. There should always be an active event.");
+      return null;
     }
 
-    const currentEvent: Event = {
+    return this.cacheEvent({
       endDate: currentEventResult.endDate,
       id: currentEventResult.id,
       mmrMult: currentEventResult.mmrMult.toNumber(),
       name: currentEventResult.name,
       startDate: currentEventResult.startDate,
-    };
+    });
+  }
 
+  private cacheEvent(event: Event): Event {
     this.currentEventCache = {
-      event: currentEvent,
+      event,
       expiresAt: Date.now() + GuildEventRepository.cacheTtlMs,
     };
-    return currentEvent;
+
+    return event;
   }
 }
 
