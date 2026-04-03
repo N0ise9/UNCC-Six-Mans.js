@@ -5,7 +5,6 @@ import { BallChaserQueueBuilder } from "../../../../.jest/Builder";
 import { PrismaClient } from "@prisma/client";
 import { DateTime } from "luxon";
 import { Team } from "../../../types/common";
-import { InvalidCommand } from "../../../utils/InvalidCommand";
 
 function verifyBallChasersAreEqual(expectedBallChaser: PlayerInQueue, actualBallChaser: PlayerInQueue): void {
   expect(actualBallChaser).not.toBeNull();
@@ -27,6 +26,10 @@ beforeEach(async () => {
 beforeAll(async () => {
   prisma = new PrismaClient();
   await prisma.$connect();
+  await prisma.leaderboard.deleteMany();
+  await prisma.activeMatch.deleteMany();
+  await prisma.queue.deleteMany();
+  await prisma.ballChaser.deleteMany();
   await prisma.event.deleteMany();
 
   await prisma.event.create({
@@ -35,11 +38,6 @@ beforeAll(async () => {
       name: "Test Event",
     },
   });
-
-  await prisma.leaderboard.deleteMany();
-  await prisma.activeMatch.deleteMany();
-  await prisma.queue.deleteMany();
-  await prisma.ballChaser.deleteMany();
 });
 
 afterEach(async () => {
@@ -139,8 +137,10 @@ describe("Queue Repository tests", () => {
     expect(count).toBe(0);
   });
 
-  it("throws error when trying to remove BallChaser when not found in queue", async () => {
-    await expect(QueueRepository.removeBallChaserFromQueue(faker.datatype.uuid())).rejects.toThrowError(InvalidCommand);
+  it("no-ops when trying to remove BallChaser when not found in queue", async () => {
+    await expect(QueueRepository.removeBallChaserFromQueue(faker.datatype.uuid())).resolves.not.toThrowError();
+    const count = await prisma.queue.count();
+    expect(count).toBe(0);
   });
 
   it("removes all BallChasers in queue", async () => {
