@@ -89,15 +89,18 @@ export async function registerAllSlashCommands(clientId: string, token: string) 
             .addChannelTypes(ChannelType.GuildText)
             .setRequired(true)
         )
+        .addStringOption((option) =>
+          option
+            .setName("database_url")
+            .setDescription("Per-guild database URL")
+            .setRequired(true)
+        )
         .addChannelOption((option) =>
           option
             .setName("api_status_channel")
             .setDescription("Optional API status channel")
             .addChannelTypes(ChannelType.GuildText)
             .setRequired(false)
-        )
-        .addStringOption((option) =>
-          option.setName("database_url").setDescription("Per-guild database URL").setRequired(true)
         )
         .addStringOption((option) =>
           option
