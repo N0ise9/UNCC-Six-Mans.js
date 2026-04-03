@@ -1,5 +1,5 @@
 import { BaseMessageOptions, EmbedBuilder, Message, TextChannel } from "discord.js";
-import { fetchAllStatuses, ServiceStatus, summarizeIssues } from "../services/ApiStatusService";
+import { IncidentInfo, fetchAllStatuses, ServiceStatus, summarizeIssues } from "../services/ApiStatusService";
 import { DiscordWorkScheduler } from "./DiscordWorkScheduler";
 import { reconcileTrackedMessages } from "./reconcileTrackedMessages";
 
@@ -20,6 +20,7 @@ const MAX_EMBED_DESCRIPTION_LENGTH = 4096;
 const MAX_EMBED_FIELD_NAME_LENGTH = 256;
 const MAX_EMBED_FIELD_VALUE_LENGTH = 1024;
 const MAX_EMBED_FIELDS = 25;
+const SUMMARY_COLOR = 0x60a5fa;
 
 export class ApiStatusRuntime {
   private readonly registrations = new Map<string, RegisteredChannel>();
@@ -149,8 +150,9 @@ export class ApiStatusRuntime {
 
   private async refreshAllGuilds(): Promise<void> {
     const { categories } = await fetchAllStatuses();
-    const payloads = buildStatusPayloads(categories);
-    this.hasIssues = summarizeIssues(categories).issues > 0;
+    const displayCategories = prepareCategoriesForDisplay(categories);
+    const payloads = buildStatusPayloads(displayCategories);
+    this.hasIssues = summarizeIssues(displayCategories).issues > 0;
     this.latestPayloads = payloads;
     this.latestSnapshotAt = Date.now();
 
@@ -270,23 +272,25 @@ function buildIncidentPayloads(categories: StatusCategory[]): BaseMessageOptions
 function createSummaryEmbed(summary: ReturnType<typeof summarizeIssues>, pageNumber: number): EmbedBuilder {
   const description = buildSummaryDescription(summary);
   return new EmbedBuilder()
-    .setColor(summary.critical > 0 ? 0xb91c1c : summary.issues > 0 ? 0xea580c : 0x16a34a)
+    .setColor(SUMMARY_COLOR)
     .setDescription(description)
     .setFooter({ text: `${SUMMARY_MARKER} | Page ${pageNumber}` })
-    .setTitle(`API and Platform Status | Page ${pageNumber}`);
+    .setTitle(`API and Platform Status (Page ${pageNumber})`);
 }
 
 function buildSummaryDescription(summary: ReturnType<typeof summarizeIssues>): string {
+  const header =
+    `Last updated: <t:${Math.floor(Date.now() / 1000)}:R>\n` +
+    `Operational: ${summary.operational} | Issues: ${summary.issues}`;
+
   return truncate(
-    `Updated <t:${Math.floor(Date.now() / 1000)}:R>\nOperational: ${summary.operational} | Issues: ${summary.issues}${
-      summary.critical > 0 ? ` | Critical: ${summary.critical}` : ""
-    }`,
+    `${header}${summary.critical > 0 ? ` | Critical: ${summary.critical}` : ""}`,
     MAX_EMBED_DESCRIPTION_LENGTH
   );
 }
 
 function calculateSummaryBaseLength(summary: ReturnType<typeof summarizeIssues>, pageNumber: number): number {
-  const title = `API and Platform Status | Page ${pageNumber}`;
+  const title = `API and Platform Status (Page ${pageNumber})`;
   const footer = `${SUMMARY_MARKER} | Page ${pageNumber}`;
   return title.length + buildSummaryDescription(summary).length + footer.length;
 }
@@ -329,17 +333,22 @@ function buildIncidentEmbeds({
   updateLines: string[];
 }): EmbedBuilder[] {
   const description = truncate(service.description || service.status, 500);
-  const title = truncate(`${service.name} Incident`, MAX_EMBED_FIELD_NAME_LENGTH);
+  const title = truncate(`Incident - ${service.name}`, MAX_EMBED_FIELD_NAME_LENGTH);
   const updateChunks = splitFieldLines(
     updateLines.length > 0 ? updateLines : ["No additional incident updates were provided."],
     MAX_EMBED_FIELD_VALUE_LENGTH
   );
+  const latestIncidentAt =
+    service.incidents?.find((incident) => incident.created_at)?.created_at ?? service.lastChecked.toISOString();
+  const statusPageValue = `[Status Page](${incidentUrl})`;
+  const statusPageFieldLength = incidentName.length + statusPageValue.length;
 
   const embeds: EmbedBuilder[] = [];
   let pageNumber = 1;
   let embed = createIncidentEmbed({
     description,
     incidentUrl,
+    latestIncidentAt,
     pageNumber,
     service,
     title,
@@ -347,8 +356,16 @@ function buildIncidentEmbeds({
   let fieldCount = 0;
   let embedLength = calculateIncidentBaseLength({
     description,
+    latestIncidentAt,
     pageNumber,
     serviceTitle: title,
+    status: service.status,
+  }) + statusPageFieldLength;
+
+  embed.addFields({
+    inline: false,
+    name: truncate(incidentName, MAX_EMBED_FIELD_NAME_LENGTH),
+    value: statusPageValue,
   });
 
   const pushEmbed = () => {
@@ -357,6 +374,7 @@ function buildIncidentEmbeds({
     embed = createIncidentEmbed({
       description,
       incidentUrl,
+      latestIncidentAt,
       pageNumber,
       service,
       title,
@@ -364,14 +382,21 @@ function buildIncidentEmbeds({
     fieldCount = 0;
     embedLength = calculateIncidentBaseLength({
       description,
+      latestIncidentAt,
       pageNumber,
       serviceTitle: title,
+      status: service.status,
+    }) + statusPageFieldLength;
+    embed.addFields({
+      inline: false,
+      name: truncate(incidentName, MAX_EMBED_FIELD_NAME_LENGTH),
+      value: statusPageValue,
     });
   };
 
   for (const [index, chunk] of updateChunks.entries()) {
     const fieldName = truncate(
-      index === 0 ? incidentName : `${incidentName} (cont. ${index})`,
+      updateChunks.length > 1 ? `Updates (${index + 1}/${updateChunks.length})` : "Updates",
       MAX_EMBED_FIELD_NAME_LENGTH
     );
     const fieldValue = chunk.join("\n");
@@ -399,22 +424,29 @@ function buildIncidentEmbeds({
 
 function createIncidentEmbed({
   description,
+  latestIncidentAt,
   incidentUrl,
   pageNumber,
   service,
   title,
 }: {
   description: string;
+  latestIncidentAt: string | undefined;
   incidentUrl: string;
   pageNumber: number;
   service: ServiceStatus;
   title: string;
 }): EmbedBuilder {
   const footerText = pageNumber > 1 ? `${INCIDENT_MARKER} | Page ${pageNumber}` : INCIDENT_MARKER;
+  const summaryLine = description || humanizeStatus(service.status);
+  const relativeTimestamp =
+    latestIncidentAt && !Number.isNaN(Date.parse(latestIncidentAt))
+      ? `<t:${Math.floor(Date.parse(latestIncidentAt) / 1000)}:R>`
+      : `<t:${Math.floor(service.lastChecked.getTime() / 1000)}:R>`;
 
   return new EmbedBuilder()
     .setColor(statusColor(service.status))
-    .setDescription(description)
+    .setDescription(`${statusEmoji(service.status)} ${summaryLine}\nLast updated: ${relativeTimestamp}`)
     .setFooter({ text: footerText })
     .setTitle(title)
     .setTimestamp(service.lastChecked)
@@ -423,20 +455,30 @@ function createIncidentEmbed({
 
 function calculateIncidentBaseLength({
   description,
+  latestIncidentAt,
   pageNumber,
   serviceTitle,
+  status,
 }: {
   description: string;
+  latestIncidentAt: string | undefined;
   pageNumber: number;
   serviceTitle: string;
+  status: ServiceStatus["status"];
 }): number {
   const footerText = pageNumber > 1 ? `${INCIDENT_MARKER} | Page ${pageNumber}` : INCIDENT_MARKER;
-  return serviceTitle.length + description.length + footerText.length;
+  const relativeTimestamp =
+    latestIncidentAt && !Number.isNaN(Date.parse(latestIncidentAt))
+      ? `<t:${Math.floor(Date.parse(latestIncidentAt) / 1000)}:R>`
+      : `<t:${Math.floor(Date.now() / 1000)}:R>`;
+  const incidentSummary =
+    `${statusEmoji(status)} ${description || humanizeStatus(status)}\n` + `Last updated: ${relativeTimestamp}`;
+  return serviceTitle.length + incidentSummary.length + footerText.length;
 }
 
 function formatServiceLine(service: ServiceStatus): string {
-  const description = truncate((service.description ?? "").trim(), 80);
-  const suffix = description ? ` | ${description}` : "";
+  const description = truncate(formatSummaryServiceDescription(service), 140);
+  const suffix = description ? ` - ${description}` : "";
   return `${statusEmoji(service.status)} ${service.name}${suffix}`;
 }
 
@@ -458,18 +500,170 @@ function statusColor(status: ServiceStatus["status"]): number {
 function statusEmoji(status: ServiceStatus["status"]): string {
   switch (status) {
     case "operational":
-      return "OK";
+      return "✅";
     case "degraded_performance":
-      return "DEGRADED";
+      return "🟡";
     case "partial_outage":
-      return "PARTIAL";
+      return "🟠";
     case "major_outage":
-      return "OUTAGE";
+      return "🔴";
     case "under_maintenance":
-      return "MAINT";
+      return "🛠️";
     default:
-      return "UNKNOWN";
+      return "⚪";
   }
+}
+
+function formatSummaryServiceDescription(service: ServiceStatus): string {
+  const description = (service.description ?? "").trim();
+
+  if (!description) {
+    return service.status === "operational" ? "" : humanizeStatus(service.status);
+  }
+
+  return description;
+}
+
+function humanizeStatus(status: ServiceStatus["status"]): string {
+  switch (status) {
+    case "operational":
+      return "All Systems Operational";
+    case "degraded_performance":
+      return "Partially Degraded Service";
+    case "partial_outage":
+      return "Partial Outage";
+    case "major_outage":
+      return "Major Outage";
+    case "under_maintenance":
+      return "Maintenance in progress";
+    default:
+      return "Status unavailable";
+  }
+}
+
+function prepareCategoriesForDisplay(categories: StatusCategory[]): StatusCategory[] {
+  return categories.map((category) => ({
+    name: category.name,
+    services: collapseGroupedServices(category.services),
+  }));
+}
+
+function collapseGroupedServices(services: ServiceStatus[]): ServiceStatus[] {
+  const childrenByGroupId = new Map<string, ServiceStatus[]>();
+  for (const service of services) {
+    if (!service.groupId) {
+      continue;
+    }
+
+    const groupChildren = childrenByGroupId.get(service.groupId) ?? [];
+    groupChildren.push(service);
+    childrenByGroupId.set(service.groupId, groupChildren);
+  }
+
+  const collapsed: ServiceStatus[] = [];
+  for (const service of services) {
+    if (service.groupId) {
+      continue;
+    }
+
+    if (!service.isGroupRoot) {
+      collapsed.push(service);
+      continue;
+    }
+
+    const groupChildren = childrenByGroupId.get(service.id) ?? [];
+    collapsed.push(groupChildren.length > 0 ? aggregateGroupedService(service, groupChildren) : service);
+  }
+
+  return collapsed;
+}
+
+function aggregateGroupedService(root: ServiceStatus, children: ServiceStatus[]): ServiceStatus {
+  const members = [root, ...children];
+  const worstMember = members.reduce((currentWorst, member) =>
+    compareStatusSeverity(member.status, currentWorst.status) > 0 ? member : currentWorst
+  );
+  const status = worstMember.status;
+  const lastChecked = new Date(
+    Math.max(...members.map((member) => new Date(member.lastChecked).getTime()))
+  );
+  const incidents = flattenGroupedIncidents(root, members);
+
+  return {
+    ...root,
+    description: buildGroupedDescription(root, worstMember, status),
+    incidents,
+    lastChecked,
+    status,
+  };
+}
+
+function compareStatusSeverity(left: ServiceStatus["status"], right: ServiceStatus["status"]): number {
+  return statusSeverity(left) - statusSeverity(right);
+}
+
+function statusSeverity(status: ServiceStatus["status"]): number {
+  switch (status) {
+    case "major_outage":
+      return 5;
+    case "partial_outage":
+      return 4;
+    case "degraded_performance":
+      return 3;
+    case "under_maintenance":
+      return 2;
+    case "operational":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function buildGroupedDescription(
+  root: ServiceStatus,
+  worstMember: ServiceStatus,
+  status: ServiceStatus["status"]
+): string {
+  if (status === "operational") {
+    return "";
+  }
+
+  const worstDescription = (worstMember.description ?? "").trim();
+  const detail = worstDescription || humanizeStatus(status);
+  if (worstMember.id === root.id) {
+    return detail;
+  }
+
+  return `${getGroupedChildLabel(root, worstMember)} - ${detail}`;
+}
+
+function flattenGroupedIncidents(root: ServiceStatus, members: ServiceStatus[]): IncidentInfo[] {
+  return members
+    .flatMap((member) => {
+      const incidents = member.incidents ?? [];
+      if (member.id === root.id) {
+        return incidents;
+      }
+
+      return incidents.map((incident) => ({
+        ...incident,
+        name: `${getGroupedChildLabel(root, member)} - ${incident.name}`,
+      }));
+    })
+    .sort((left, right) => {
+      const leftTime = Date.parse(left.created_at ?? "");
+      const rightTime = Date.parse(right.created_at ?? "");
+      return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
+    });
+}
+
+function getGroupedChildLabel(root: ServiceStatus, member: ServiceStatus): string {
+  const prefix = `${root.name} `;
+  if (member.name.startsWith(prefix)) {
+    return member.name.slice(prefix.length);
+  }
+
+  return member.name;
 }
 
 function truncate(value: string, maxLength: number): string {

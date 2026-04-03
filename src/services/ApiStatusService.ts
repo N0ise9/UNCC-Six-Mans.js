@@ -38,6 +38,8 @@ export interface IncidentInfo {
 
 export interface ServiceStatus {
   id: string;
+  groupId?: string;
+  isGroupRoot?: boolean;
   name: string;
   pageUrl: string;
   status: StatusLevel;
@@ -76,6 +78,8 @@ const isWorseStatus = (candidate: StatusLevel, current: StatusLevel, rank = STAT
 function buildStatus(service: ServiceConfig, overrides: Partial<ServiceStatus> = {}): ServiceStatus {
   return {
     id: service.id,
+    groupId: service.groupId,
+    isGroupRoot: service.isGroupRoot,
     name: service.name,
     pageUrl: service.pageUrl,
     status: "unknown",
