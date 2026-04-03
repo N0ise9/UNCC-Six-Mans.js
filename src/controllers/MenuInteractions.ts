@@ -6,7 +6,10 @@ import { bluePlayerChosen, orangePlayerChosen } from "../services/TeamAssignment
 import { Team } from "../types/common";
 import { getEnvVariable } from "../utils";
 import MessageBuilder, { MenuCustomID } from "../utils/MessageHelper/MessageBuilder";
-import { twos } from "./Interactions";
+import AsyncMutex from "../utils/AsyncMutex";
+import { messageEditScheduler } from "../utils/MessageEditScheduler";
+
+const queueMutex = new AsyncMutex();
 
 export async function handleMenuInteraction(menuInteraction: StringSelectMenuInteraction): Promise<void> {
   const { message } = menuInteraction;
@@ -16,47 +19,52 @@ export async function handleMenuInteraction(menuInteraction: StringSelectMenuInt
 
   switch (menuInteraction.customId) {
     case MenuCustomID.BlueSelect: {
-      // If user is not the captain and not in dev
-      const isCaptain = await QueueRepository.isTeamCaptain(menuInteraction.user.id, Team.Blue);
-      if (isCaptain || isDev) {
+      const release = await queueMutex.acquire();
+      try {
+        const isCaptain = await QueueRepository.isTeamCaptain(menuInteraction.user.id, Team.Blue);
+        if (!isCaptain && !isDev) return;
+
         const playersLeft = await bluePlayerChosen(menuInteraction.values[0]);
 
-        if (twos) {
+        if (QueueRepository.getTwosEnabled()) {
           const emptyQueue: PlayerInQueue[] = [];
           const newActiveMatch = await createMatchFromChosenTeams();
-          Promise.all([
-            await message.reply(await MessageBuilder.activeMatchMessage(newActiveMatch)),
-            await message.edit(MessageBuilder.queueMessage(emptyQueue)),
-          ]);
+
+          await message.reply(await MessageBuilder.activeMatchMessage(newActiveMatch));
+          messageEditScheduler.schedule(message, MessageBuilder.queueMessage(emptyQueue));
 
           QueueRepository.resetCaptainsRandomVoters();
+          QueueRepository.resetTwosVoters();
+          QueueRepository.resetTwosEnabled();
         } else {
-          await message.edit(MessageBuilder.captainChooseMessage(false, playersLeft, twos));
+          messageEditScheduler.schedule(message, MessageBuilder.captainChooseMessage(false, playersLeft, false));
         }
-        break;
+      } finally {
+        release();
       }
-
       break;
     }
+
     case MenuCustomID.OrangeSelect: {
-      // If user is not the captain and not in dev
-      const isCaptain = await QueueRepository.isTeamCaptain(menuInteraction.user.id, Team.Orange);
-      const emptyQueue: PlayerInQueue[] = [];
-      if (isCaptain || isDev) {
+      const release = await queueMutex.acquire();
+      try {
+        const isCaptain = await QueueRepository.isTeamCaptain(menuInteraction.user.id, Team.Orange);
+        if (!isCaptain && !isDev) return;
+
+        const emptyQueue: PlayerInQueue[] = [];
         await orangePlayerChosen(menuInteraction.values);
 
         const newActiveMatch = await createMatchFromChosenTeams();
 
-        Promise.all([
-          await message.reply(await MessageBuilder.activeMatchMessage(newActiveMatch)),
-          await message.edit(MessageBuilder.queueMessage(emptyQueue)),
-        ]);
+        await message.reply(await MessageBuilder.activeMatchMessage(newActiveMatch));
+        messageEditScheduler.schedule(message, MessageBuilder.queueMessage(emptyQueue));
 
         QueueRepository.resetCaptainsRandomVoters();
-
-        break;
+        QueueRepository.resetTwosVoters();
+        QueueRepository.resetTwosEnabled();
+      } finally {
+        release();
       }
-
       break;
     }
   }

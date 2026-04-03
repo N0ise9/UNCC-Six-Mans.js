@@ -1,137 +1,73 @@
-import { Client, Message, TextChannel, VoiceBasedChannel } from "discord.js";
-import { updateLeaderboardChannel } from "./controllers/LeaderboardChannelController";
-import { handleInteraction, postCurrentQueue } from "./controllers/Interactions";
-import { getDiscordChannelById } from "./utils/discordUtils";
-import { getEnvVariable } from "./utils";
-import { handleDevInteraction } from "./controllers/DevInteractions";
-import { handleAdminInteraction } from "./controllers/AdminController";
-import { handleEasterEggsInteraction, normCommand } from "./controllers/EasterEggs";
-import { registerAllSlashCommands } from "./controllers/CommandRegistry";
-import { handleMenuInteraction } from "./controllers/MenuInteractions";
-import { startQueueTimer } from "./controllers/QueueController";
-import { startApiStatusReporting } from "./controllers/ApiStatusController";
-
+import { Client } from "discord.js";
 import OpenAI from "openai";
+import { registerAllSlashCommands } from "./controllers/CommandRegistry";
+import { DiscordWorkScheduler } from "./runtime/DiscordWorkScheduler";
+import { GuildConfigStore } from "./runtime/GuildConfigStore";
+import { GuildRuntimeManager } from "./runtime/GuildRuntimeManager";
+import { getEnvVariable } from "./utils";
 
 const NormClient = new Client({
   intents: ["Guilds", "GuildMessages", "GuildVoiceStates", "MessageContent"],
 });
 
-const guildId = getEnvVariable("guild_id");
-const leaderboardChannelId = getEnvVariable("leaderboard_channel_id");
-const queueChannelId = getEnvVariable("queue_channel_id");
-const chatChannelId = getEnvVariable("chat_channel_id");
-const voiceChannelID = getEnvVariable("voice_channel_id");
-const apiStatusChannelId = getEnvVariable("api_status_channel_id");
 const discordToken = getEnvVariable("token");
 const openai = new OpenAI({ apiKey: getEnvVariable("openai") });
+const scheduler = new DiscordWorkScheduler(2, 75);
+const configStore = new GuildConfigStore();
+const runtimeManager = new GuildRuntimeManager(NormClient, openai, configStore, scheduler);
 
-let queueEmbed: Message | null;
-let chatChannelMonitor: boolean = false;
-let chatChannel: TextChannel;
-let voiceChannel: VoiceBasedChannel;
-
-// function called on startup
 NormClient.on("clientReady", async (client) => {
-  console.info("NormJS is running.");
+  console.info("NormJS single-instance runtime is starting.");
 
   if (!client.user) throw new Error("No client id");
-  const registerAllCommandsPromise = registerAllSlashCommands(client.user.id, guildId, discordToken);
+  await registerAllSlashCommands(client.user.id, discordToken);
+  await runtimeManager.initializeConfiguredGuilds();
 
-  const updateLeaderboardPromise = getDiscordChannelById(NormClient, leaderboardChannelId).then(
-    (leaderboardChannel) => {
-      if (leaderboardChannel) {
-        updateLeaderboardChannel(leaderboardChannel);
-      }
-    }
-  );
-
-  const postCurrentQueuePromise = getDiscordChannelById(NormClient, queueChannelId)
-    .then((queueChannel) => {
-      if (queueChannel) {
-        return postCurrentQueue(queueChannel);
-      }
-    })
-    .then((queueEmbedMsg) => {
-      queueEmbed = queueEmbedMsg ?? null;
-    });
-
-  const registerChatPromise = getDiscordChannelById(NormClient, chatChannelId).then((getChatChannel) => {
-    if (!getChatChannel) {
-      console.warn("Unable to access chat channel.");
-    } else {
-      chatChannel = getChatChannel;
-      return (chatChannelMonitor = true);
-    }
-  });
-
-  const registerVoiceChatPromise = NormClient.channels.fetch(voiceChannelID).then((getVoiceChannel) => {
-    if (!getVoiceChannel) {
-      console.warn("Unable to access voice channel.");
-    } else if (getVoiceChannel.isVoiceBased()) {
-      voiceChannel = getVoiceChannel;
-    } else {
-      console.warn("Channel is not a voice channel.");
-    }
-  });
-
-  try {
-    await Promise.all([
-      registerAllCommandsPromise,
-      updateLeaderboardPromise,
-      postCurrentQueuePromise,
-      registerChatPromise,
-      registerVoiceChatPromise,
-    ]);
-  } catch (e) {
-    console.warn("One or more startup tasks failed:", (e as Error).message);
-  }
-
-  if (queueEmbed) {
-    startQueueTimer(queueEmbed);
-  } else {
-    console.warn("Unable to start queue timers since queue embed is null.");
-  }
-
-  // Start API/Service status reporting
-  const apiStatusChannel = await getDiscordChannelById(NormClient, apiStatusChannelId);
-  if (apiStatusChannel) {
-    startApiStatusReporting(apiStatusChannel);
-  } else {
-    console.warn("API status channel not found or inaccessible.");
-  }
-
-  if (!chatChannelMonitor) {
-    console.warn("Unable to start chat monitoring timer on a channel that doesn't exist.");
-  }
+  console.info(`NormJS is running with config store at ${configStore.getConfigPath()}.`);
 });
 
 NormClient.on("interactionCreate", async (interaction) => {
+  if (!interaction.inCachedGuild()) {
+    return;
+  }
+
   if (interaction.isButton()) {
     await interaction.deferUpdate();
+    const context = await runtimeManager.ensureContext(interaction.guildId);
+    if (!context) return;
+    await runtimeManager.handleButtonInteraction(context, interaction);
+    return;
+  }
 
-    await handleInteraction(interaction, NormClient);
-    await handleDevInteraction(interaction);
-  } else if (interaction.isStringSelectMenu()) {
+  if (interaction.isStringSelectMenu()) {
     await interaction.deferUpdate();
+    const context = await runtimeManager.ensureContext(interaction.guildId);
+    if (!context) return;
+    await runtimeManager.handleSelectMenuInteraction(context, interaction);
+    return;
+  }
 
-    await handleMenuInteraction(interaction);
-  } else if (interaction.isCommand()) {
-    // Route commands explicitly so each handler can manage deferReply appropriately
-    if (["kick", "clear"].includes(interaction.commandName)) {
-      if (!queueEmbed) throw new Error("No queue embed set.");
-      await interaction.deferReply({ ephemeral: true });
-      await handleAdminInteraction(interaction, queueEmbed);
-    } else if (["norm", "sora"].includes(interaction.commandName)) {
-      await handleEasterEggsInteraction(interaction, openai);
-    }
+  if (interaction.isChatInputCommand()) {
+    await runtimeManager.handleSlashCommand(interaction);
   }
 });
 
 NormClient.on("messageCreate", async (message) => {
-  if (message.channelId === chatChannelId) {
-    normCommand(chatChannel, voiceChannel, message, openai, NormClient);
-  }
+  await runtimeManager.handleMessage(message);
+});
+
+NormClient.on("error", (error) => {
+  console.error("Discord client error:", error);
+});
+
+process.on("SIGINT", async () => {
+  await runtimeManager.dispose();
+  process.exit(0);
+});
+
+process.on("SIGTERM", async () => {
+  await runtimeManager.dispose();
+  process.exit(0);
 });
 
 NormClient.login(discordToken);

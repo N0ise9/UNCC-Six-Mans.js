@@ -75,26 +75,24 @@ describe("Leaderboard Service tests", () => {
     jest.mocked(LeaderboardRepository.getPlayersStats).mockResolvedValue([mockPlayer1, mockPlayer2]);
     const result = await LeaderboardToString();
 
-    expect(result).toMatchInlineSnapshot(`
-Array [
-  "Rank: 1
-	Name: TwanTheSwan
-	MMR: 123
-	Wins: 43
-	Losses: 22
-	Matches Played: 65
-	Win Perc: 66%
+    expect(result).toEqual([
+      `Rank: 1
+\tName: TwanTheSwan
+\tMMR: 123
+\tWins: 43
+\tLosses: 22
+\tMatches Played: 65
+\tWin Perc: 66%
 
 Rank: 2
-	Name: h
-	MMR: 119
-	Wins: 10
-	Losses: 6
-	Matches Played: 16
-	Win Perc: 63%
+\tName: h
+\tMMR: 119
+\tWins: 10
+\tLosses: 6
+\tMatches Played: 16
+\tWin Perc: 63%
 
-",
-]
-`);
+`,
+    ]);
   });
 });

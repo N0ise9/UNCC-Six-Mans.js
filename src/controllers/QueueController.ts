@@ -2,6 +2,7 @@ import { Message } from "discord.js";
 import QueueRepository from "../repositories/QueueRepository";
 import { checkQueueTimes } from "../services/QueueService";
 import MessageBuilder from "../utils/MessageHelper/MessageBuilder";
+import { messageEditScheduler } from "../utils/MessageEditScheduler";
 
 export function startQueueTimer(queueEmbed: Message) {
   let minuteCounter = 0;
@@ -13,18 +14,21 @@ export function startQueueTimer(queueEmbed: Message) {
       const updatedList = await checkQueueTimes();
 
       if (updatedList) {
-        await queueEmbed.edit(MessageBuilder.queueMessage(updatedList));
+        messageEditScheduler.schedule(queueEmbed, MessageBuilder.queueMessage(updatedList));
         minuteCounter = 0;
-      } else if (minuteCounter >= 5) {
-        const allPlayers = await QueueRepository.getAllBallChasersInQueue();
+        return;
+      }
 
-        if (allPlayers.length > 0 && allPlayers.length < 6) {
-          await queueEmbed.edit(MessageBuilder.queueMessage(allPlayers));
+      if (minuteCounter >= 5) {
+        const allPlayers = await QueueRepository.getAllBallChasersInQueue();
+        const target = QueueRepository.getTwosEnabled() ? 4 : 6;
+
+        if (allPlayers.length > 0 && allPlayers.length < target) {
+          messageEditScheduler.schedule(queueEmbed, MessageBuilder.queueMessage(allPlayers));
         }
 
         minuteCounter = 0;
       }
-      // every 1 minute
     },
     1 * 60 * 1000
   );

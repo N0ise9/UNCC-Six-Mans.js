@@ -7,11 +7,16 @@ import QueueRepository from "../../repositories/QueueRepository";
 jest.mock("../../repositories/ActiveMatchRepository");
 jest.mock("../../repositories/QueueRepository");
 
-//DateTime.now = jest.fn(() => DateTime.fromISO("2022-03-08T20:28:27.885Z"));
+const FixedDateTimeNow = DateTime.fromISO("2022-03-08T15:28:27.885-05:00") as DateTime<true>;
 const DateTimeSixtyMinutesFromNow = DateTime.fromISO("2022-03-08T16:28:00.000-05:00");
 
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.spyOn(DateTime, "now").mockReturnValue(FixedDateTimeNow);
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
 });
 
 describe("QueueService tests", () => {

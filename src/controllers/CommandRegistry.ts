@@ -1,24 +1,23 @@
-import { REST, RESTPostAPIApplicationCommandsJSONBody, Routes, SlashCommandBuilder } from "discord.js";
+import {
+  ChannelType,
+  PermissionFlagsBits,
+  REST,
+  RESTPostAPIApplicationCommandsJSONBody,
+  Routes,
+  SlashCommandBuilder,
+} from "discord.js";
 
-/**
- * Registers all application slash commands in a single request so they cannot overwrite each other.
- * Combines Admin and EasterEggs commands.
- */
-export async function registerAllSlashCommands(clientId: string, guildId: string, token: string) {
-  const rest = new REST({ version: "9" }).setToken(token);
+export async function registerAllSlashCommands(clientId: string, token: string) {
+  const rest = new REST({ version: "10" }).setToken(token);
 
-  //   // Admin commands
-  //   const kickCommand = new SlashCommandBuilder()
-  //     .setName("kick")
-  //     .setDescription("Removes a player from the queue.")
-  //     .addUserOption((option) =>
-  //       option.setName("player").setDescription("The player you want to remove.").setRequired(true)
-  //     )
-  //     .toJSON();
+  const kickCommand = new SlashCommandBuilder()
+    .setName("kick")
+    .setDescription("Removes a player from the queue.")
+    .addUserOption((option) => option.setName("player").setDescription("The player you want to remove.").setRequired(true))
+    .toJSON();
 
-  //   const clearCommand = new SlashCommandBuilder().setName("clear").setDescription("Clears the queue.").toJSON();
+  const clearCommand = new SlashCommandBuilder().setName("clear").setDescription("Clears the queue.").toJSON();
 
-  // Easter eggs commands
   const norm = new SlashCommandBuilder()
     .setName("norm")
     .setDescription("Ask Norm anything.")
@@ -31,7 +30,7 @@ export async function registerAllSlashCommands(clientId: string, guildId: string
   const sora = new SlashCommandBuilder()
     .setName("sora")
     .setDescription("Generate a short video with Sora.")
-    .addStringOption((opt) => opt.setName("prompt").setDescription("Video Prompt").setRequired(true))
+    .addStringOption((opt) => opt.setName("prompt").setDescription("Video prompt").setRequired(true))
     .addStringOption((opt) =>
       opt
         .setName("duration")
@@ -45,10 +44,71 @@ export async function registerAllSlashCommands(clientId: string, guildId: string
     )
     .toJSON();
 
-  try {
-    const commands: Array<RESTPostAPIApplicationCommandsJSONBody> = [norm, sora];
-    await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
-  } catch (error) {
-    console.error(error);
-  }
+  const setup = new SlashCommandBuilder()
+    .setName("setup")
+    .setDescription("Configure this guild for the single-instance bot runtime.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) => {
+      return subcommand
+        .setName("show")
+        .setDescription("Show the current guild configuration.");
+    })
+    .addSubcommand((subcommand) => {
+      return subcommand
+        .setName("disable")
+        .setDescription("Disable this guild configuration.");
+    })
+    .addSubcommand((subcommand) => {
+      return subcommand
+        .setName("set")
+        .setDescription("Create or update the guild configuration.")
+        .addChannelOption((option) =>
+          option
+            .setName("queue_channel")
+            .setDescription("Queue channel")
+            .addChannelTypes(ChannelType.GuildText)
+            .setRequired(true)
+        )
+        .addChannelOption((option) =>
+          option
+            .setName("leaderboard_channel")
+            .setDescription("Leaderboard channel")
+            .addChannelTypes(ChannelType.GuildText)
+            .setRequired(true)
+        )
+        .addChannelOption((option) =>
+          option
+            .setName("chat_channel")
+            .setDescription("Norm chat channel")
+            .addChannelTypes(ChannelType.GuildText)
+            .setRequired(true)
+        )
+        .addChannelOption((option) =>
+          option
+            .setName("voice_channel")
+            .setDescription("Voice channel for guild-specific Norm features")
+            .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
+            .setRequired(true)
+        )
+        .addChannelOption((option) =>
+          option
+            .setName("api_status_channel")
+            .setDescription("Optional API status channel")
+            .addChannelTypes(ChannelType.GuildText)
+            .setRequired(false)
+        )
+        .addStringOption((option) =>
+          option.setName("database_url").setDescription("Per-guild database URL").setRequired(true)
+        )
+        .addStringOption((option) =>
+          option
+            .setName("conversation_id")
+            .setDescription("Optional existing OpenAI conversation ID to reuse")
+            .setRequired(false)
+        );
+    })
+    .toJSON();
+
+  const commands: Array<RESTPostAPIApplicationCommandsJSONBody> = [setup, kickCommand, clearCommand, norm, sora];
+  await rest.put(Routes.applicationCommands(clientId), { body: commands });
 }

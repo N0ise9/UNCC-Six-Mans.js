@@ -142,7 +142,7 @@ export default class MessageBuilder {
     };
   }
 
-  static async activeMatchMessage({ blue, orange }: ActiveMatchCreated): Promise<MessageOptions> {
+  static async activeMatchMessage({ blue, orange }: ActiveMatchCreated, mmrMultiplier?: number): Promise<MessageOptions> {
     //const embed = await EmbedBuilder.activeMatchEmbed({ blue, orange });
     const blueTeam: Array<string> = blue.players.map((player) => "<@" + player.id + ">");
     const orangeTeam: Array<string> = orange.players.map((player) => "<@" + player.id + ">");
@@ -169,9 +169,9 @@ export default class MessageBuilder {
       winner = "Both teams are";
     }
 
-    const event = await EventRepository.getCurrentEvent();
-    const blueMMR = blue.mmrStake * event.mmrMult;
-    const orangeMMR = orange.mmrStake * event.mmrMult;
+    const eventMultiplier = mmrMultiplier ?? (await EventRepository.getCurrentEvent()).mmrMult;
+    const blueMMR = blue.mmrStake * eventMultiplier;
+    const orangeMMR = orange.mmrStake * eventMultiplier;
 
     activeMatchEmbed.addFields({
       name: "MMR Stake & Probability Rating:\n",
@@ -191,10 +191,10 @@ export default class MessageBuilder {
         "%** chance of winning.",
     });
 
-    if (event.mmrMult > 1) {
+    if (eventMultiplier > 1) {
       activeMatchEmbed.addFields({
-        name: "X" + event.mmrMult.toString() + " MMR Event!",
-        value: "Winnings are multiplied by **" + event.mmrMult.toString() + "** for this match!",
+        name: "X" + eventMultiplier.toString() + " MMR Event!",
+        value: "Winnings are multiplied by **" + eventMultiplier.toString() + "** for this match!",
       });
     }
 
@@ -275,7 +275,8 @@ export default class MessageBuilder {
   static async voteBrokenQueueMessage(
     { blue, orange }: ActiveMatchCreated,
     brokenQueuePlayers: ActiveMatchTeams,
-    brokenQueueVotes: number
+    brokenQueueVotes: number,
+    mmrMultiplier?: number
   ): Promise<MessageOptions> {
     const brokenHeart = "\uD83D\uDC94";
     const blueTeam = blue.players.map((player) => {
@@ -327,9 +328,9 @@ export default class MessageBuilder {
       winner = "Both teams are";
     }
 
-    const event = await EventRepository.getCurrentEvent();
-    const blueMMR = blue.mmrStake * event.mmrMult;
-    const orangeMMR = orange.mmrStake * event.mmrMult;
+    const eventMultiplier = mmrMultiplier ?? (await EventRepository.getCurrentEvent()).mmrMult;
+    const blueMMR = blue.mmrStake * eventMultiplier;
+    const orangeMMR = orange.mmrStake * eventMultiplier;
 
     activeMatchEmbed.addFields({
       name: "MMR Stake & Probability Rating:\n",
@@ -349,10 +350,10 @@ export default class MessageBuilder {
         "%** chance of winning.",
     });
 
-    if (event.mmrMult != 1) {
+    if (eventMultiplier != 1) {
       activeMatchEmbed.addFields({
-        name: "X" + event.mmrMult.toString() + " MMR Event!",
-        value: "Winnings are multiplied by **" + event.mmrMult.toString() + "** for this match!",
+        name: "X" + eventMultiplier.toString() + " MMR Event!",
+        value: "Winnings are multiplied by **" + eventMultiplier.toString() + "** for this match!",
       });
     }
 
