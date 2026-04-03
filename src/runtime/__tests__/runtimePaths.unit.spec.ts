@@ -3,6 +3,12 @@ import { getGuildConfigPath, getRuntimeEnvPath, resolveRuntimeRoot } from "../ru
 
 describe("runtimePaths", () => {
   const originalNormHome = process.env["NORM_HOME"];
+  const packagedExecPath =
+    process.platform === "win32" ? "C:\\portable\\norm\\Norm.exe" : "/opt/norm/Norm";
+  const portableRoot =
+    process.platform === "win32" ? "C:\\portable\\norm" : "/opt/norm";
+  const sourceRoot =
+    process.platform === "win32" ? "C:\\workspace\\norm" : "/workspace/norm";
 
   afterEach(() => {
     if (originalNormHome === undefined) {
@@ -14,40 +20,40 @@ describe("runtimePaths", () => {
 
   it("prefers NORM_HOME when it is configured", () => {
     const runtimeRoot = resolveRuntimeRoot({
-      cwd: "C:\\workspace\\norm",
-      env: { NORM_HOME: "C:\\portable\\norm" },
-      execPath: "C:\\portable\\norm\\Norm.exe",
+      cwd: sourceRoot,
+      env: { NORM_HOME: portableRoot },
+      execPath: packagedExecPath,
       packaged: true,
     });
 
-    expect(runtimeRoot).toBe(path.resolve("C:\\portable\\norm"));
+    expect(runtimeRoot).toBe(path.resolve(portableRoot));
   });
 
   it("uses the executable directory for packaged builds when NORM_HOME is absent", () => {
     const runtimeRoot = resolveRuntimeRoot({
-      cwd: "C:\\workspace\\norm",
+      cwd: sourceRoot,
       env: {},
-      execPath: "C:\\portable\\norm\\Norm.exe",
+      execPath: packagedExecPath,
       packaged: true,
     });
 
-    expect(runtimeRoot).toBe(path.resolve("C:\\portable\\norm"));
+    expect(runtimeRoot).toBe(path.resolve(path.dirname(packagedExecPath)));
   });
 
   it("falls back to the current working directory in source mode", () => {
     const runtimeRoot = resolveRuntimeRoot({
-      cwd: "C:\\workspace\\norm",
+      cwd: sourceRoot,
       env: {},
       packaged: false,
     });
 
-    expect(runtimeRoot).toBe(path.resolve("C:\\workspace\\norm"));
+    expect(runtimeRoot).toBe(path.resolve(sourceRoot));
   });
 
   it("builds env and guild config paths from the resolved runtime root", () => {
-    process.env["NORM_HOME"] = "C:\\portable\\norm";
+    process.env["NORM_HOME"] = portableRoot;
 
-    expect(getRuntimeEnvPath()).toBe(path.resolve("C:\\portable\\norm", ".env"));
-    expect(getGuildConfigPath()).toBe(path.resolve("C:\\portable\\norm", ".guild-instance-config.json"));
+    expect(getRuntimeEnvPath()).toBe(path.resolve(portableRoot, ".env"));
+    expect(getGuildConfigPath()).toBe(path.resolve(portableRoot, ".guild-instance-config.json"));
   });
 });

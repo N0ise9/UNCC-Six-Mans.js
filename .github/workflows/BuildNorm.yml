@@ -63,6 +63,30 @@ jobs:
       - name: Build Windows portable package
         run: npm run package:windows
 
+      - name: Verify Windows portable package output
+        shell: powershell
+        run: |
+          if (!(Test-Path ".\release\windows-portable\Norm.exe")) {
+            throw "Norm.exe was not created."
+          }
+          if (!(Test-Path ".\release\windows-portable\Norm.cmd")) {
+            throw "Norm.cmd was not created."
+          }
+
+      - name: Smoke test packaged executable
+        shell: powershell
+        run: |
+          Remove-Item -Force ".\release\windows-portable\.env" -ErrorAction SilentlyContinue
+          $output = & ".\release\windows-portable\Norm.exe" 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Out-String | Write-Host
+          if ($exitCode -eq 0) {
+            throw "Norm.exe unexpectedly exited successfully without a .env file."
+          }
+          if (($output | Out-String) -notmatch "No environment variable named token") {
+            throw "Norm.exe did not report the expected missing token error."
+          }
+
       - name: Upload Windows portable artifact
         uses: actions/upload-artifact@v4
         with:
