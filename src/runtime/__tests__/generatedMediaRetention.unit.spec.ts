@@ -1,9 +1,19 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { pruneGeneratedMedia } from "../generatedMediaRetention";
+import { buildGeneratedMediaPath, pruneGeneratedMedia } from "../generatedMediaRetention";
 
 describe("generatedMediaRetention", () => {
+  const originalNormHome = process.env["NORM_HOME"];
+
+  afterEach(() => {
+    if (originalNormHome === undefined) {
+      delete process.env["NORM_HOME"];
+    } else {
+      process.env["NORM_HOME"] = originalNormHome;
+    }
+  });
+
   function createTempDirectory(): string {
     return fs.mkdtempSync(path.join(os.tmpdir(), "generated-media-"));
   }
@@ -37,6 +47,20 @@ describe("generatedMediaRetention", () => {
       expect(deletedCount).toBe(1);
       expect(fs.existsSync(oldFile)).toBe(false);
       expect(fs.existsSync(newFile)).toBe(true);
+    } finally {
+      cleanup(directory);
+    }
+  });
+
+  it("resolves generated media paths from NORM_HOME when provided", () => {
+    const directory = createTempDirectory();
+    process.env["NORM_HOME"] = directory;
+
+    try {
+      const filePath = buildGeneratedMediaPath("images", "Norm Prompt", "png");
+
+      expect(filePath).toContain(path.join(directory, "data", "generated-media", "images"));
+      expect(path.basename(filePath)).toMatch(/^Norm_Prompt-\d+\.png$/);
     } finally {
       cleanup(directory);
     }

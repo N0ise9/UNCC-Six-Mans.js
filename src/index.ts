@@ -1,4 +1,3 @@
-import "dotenv/config";
 import { Client } from "discord.js";
 import OpenAI from "openai";
 import { registerAllSlashCommands } from "./controllers/CommandRegistry";
@@ -8,7 +7,10 @@ import { DiscordWorkScheduler } from "./runtime/DiscordWorkScheduler";
 import { GuildConfigStore } from "./runtime/GuildConfigStore";
 import { GuildRuntimeManager } from "./runtime/GuildRuntimeManager";
 import { startGeneratedMediaPruner } from "./runtime/generatedMediaRetention";
+import { loadRuntimeEnv } from "./runtime/runtimePaths";
 import { getEnvVariable } from "./utils";
+
+loadRuntimeEnv();
 
 const NormClient = new Client({
   intents: ["Guilds"],
@@ -22,6 +24,7 @@ const apiStatusRuntime = new ApiStatusRuntime(scheduler);
 const configStore = new GuildConfigStore();
 const runtimeManager = new GuildRuntimeManager(NormClient, openai, configStore, scheduler, apiStatusRuntime);
 const generatedMediaPruner = startGeneratedMediaPruner();
+let shutdownInFlight: Promise<void> | null = null;
 
 async function runSafely(label: string, handler: () => Promise<void>): Promise<void> {
   try {
@@ -29,6 +32,45 @@ async function runSafely(label: string, handler: () => Promise<void>): Promise<v
   } catch (error) {
     console.error(`${label} failed:`, error);
   }
+}
+
+async function shutdown(code: number, reason: string, error?: unknown): Promise<void> {
+  if (shutdownInFlight) {
+    await shutdownInFlight;
+    return;
+  }
+
+  shutdownInFlight = (async () => {
+    if (error !== undefined) {
+      console.error(`[Shutdown] ${reason}:`, error);
+    } else {
+      console.info(`[Shutdown] ${reason}.`);
+    }
+
+    clearInterval(generatedMediaPruner);
+
+    try {
+      await runtimeManager.dispose();
+    } catch (disposeError) {
+      console.error("[Shutdown] Failed to dispose guild runtime manager:", disposeError);
+    }
+
+    try {
+      await apiStatusRuntime.dispose();
+    } catch (disposeError) {
+      console.error("[Shutdown] Failed to dispose API status runtime:", disposeError);
+    }
+
+    try {
+      await NormClient.destroy();
+    } catch (destroyError) {
+      console.error("[Shutdown] Failed to destroy Discord client:", destroyError);
+    }
+
+    process.exit(code);
+  })();
+
+  await shutdownInFlight;
 }
 
 NormClient.on("clientReady", async (client) => {
@@ -76,17 +118,21 @@ NormClient.on("error", (error) => {
 });
 
 process.on("SIGINT", async () => {
-  clearInterval(generatedMediaPruner);
-  await runtimeManager.dispose();
-  await apiStatusRuntime.dispose();
-  process.exit(0);
+  await shutdown(0, "Received SIGINT");
 });
 
 process.on("SIGTERM", async () => {
-  clearInterval(generatedMediaPruner);
-  await runtimeManager.dispose();
-  await apiStatusRuntime.dispose();
-  process.exit(0);
+  await shutdown(0, "Received SIGTERM");
 });
 
-NormClient.login(discordToken);
+process.on("uncaughtException", (error) => {
+  void shutdown(1, "Uncaught exception", error);
+});
+
+process.on("unhandledRejection", (reason) => {
+  void shutdown(1, "Unhandled promise rejection", reason);
+});
+
+void NormClient.login(discordToken).catch((error) => {
+  void shutdown(1, "Discord login failed", error);
+});

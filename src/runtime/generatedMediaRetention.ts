@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
+import { getGeneratedMediaRoot } from "./runtimePaths";
 
-export const GENERATED_MEDIA_ROOT = path.resolve(process.cwd(), "data", "generated-media");
 export const GENERATED_MEDIA_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const GENERATED_MEDIA_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -12,13 +12,17 @@ export function buildGeneratedMediaPath(
   baseName: string,
   extension: string
 ): string {
-  const directory = path.join(GENERATED_MEDIA_ROOT, kind);
+  const directory = path.join(getGeneratedMediaRootPath(), kind);
   ensureDirectory(directory);
   return path.join(directory, `${sanitizeFileSegment(baseName)}-${Date.now()}.${extension}`);
 }
 
+export function getGeneratedMediaRootPath(): string {
+  return getGeneratedMediaRoot();
+}
+
 export function pruneGeneratedMedia(
-  rootDirectory = GENERATED_MEDIA_ROOT,
+  rootDirectory = getGeneratedMediaRootPath(),
   now = Date.now(),
   retentionMs = GENERATED_MEDIA_RETENTION_MS
 ): number {

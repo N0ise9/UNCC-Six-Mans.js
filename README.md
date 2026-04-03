@@ -26,7 +26,7 @@ If one guild has a bad database URL or an unreachable Docker-backed Postgres end
 
 ## Requirements
 
-- Node.js 22.12+ recommended
+- Node.js 24.14.1 LTS recommended
 - npm
 - A Discord bot application and token
 - An OpenAI API key for `/norm`
@@ -63,6 +63,7 @@ Example:
 token=YOUR_DISCORD_BOT_TOKEN
 openai=YOUR_OPENAI_API_KEY
 CONFIG_ENCRYPTION_KEY=replace-this-with-a-long-random-secret
+NORM_HOME=
 ENVIRONMENT=dev
 conversation_token_limit=120000
 ENABLE_SORA=false
@@ -73,6 +74,7 @@ What these do:
 - `token`: Discord bot token
 - `openai`: OpenAI API key
 - `CONFIG_ENCRYPTION_KEY`: used to encrypt and decrypt stored per-guild database URLs
+- `NORM_HOME`: optional runtime root override for `.env`, `.guild-instance-config.json`, and generated media
 - `ENVIRONMENT`: optional runtime mode; `dev` enables dev-only behavior in a few helper paths
 - `conversation_token_limit`: optional input-token threshold for rotating a guild's stored OpenAI conversation
 - `ENABLE_SORA`: enables the `/sora` slash command
@@ -80,6 +82,7 @@ What these do:
 
 Important:
 - Do not rotate `CONFIG_ENCRYPTION_KEY` casually. If it changes, existing stored guild database URLs can no longer be decrypted.
+- If `NORM_HOME` is unset, source-mode runs use the current working directory and the packaged executable uses the folder beside `Norm.exe`.
 - Old `.env` values like `queue_channel_id`, `leaderboard_channel_id`, `guild_id`, `conversation_id`, and per-guild `DATABASE_URL` are legacy and are not the active per-guild setup path anymore.
 - `DATABASE_URL` is only needed for one-off Prisma CLI commands like `npx prisma db push`; the bot runtime itself reads per-guild database URLs from `.guild-instance-config.json`.
 
@@ -132,6 +135,37 @@ npm start
 The current start script runs `tsx watch src/index.ts`.
 
 When the bot starts successfully, it registers slash commands globally and logs the path to the per-guild config store.
+
+## Windows Portable EXE
+
+Norm can also be packaged into a Windows portable executable using Node SEA.
+
+Build it with:
+
+```powershell
+npm run package:windows
+```
+
+That creates a portable folder under `release/windows-portable` containing:
+- `Norm.exe`
+- `Norm.cmd`
+- `.env.sample`
+- `README.md`
+
+Before the first launch, copy `.env.sample` to `.env` in that same folder and fill in your bot-wide values there.
+
+Use `Norm.cmd` as the default double-click launcher. It starts `Norm.exe` from its own folder and keeps the console window open after the process exits so you can read startup or crash output.
+
+Portable runtime behavior:
+- `.env` is read from the executable folder by default
+- `.guild-instance-config.json` is written beside the executable by default
+- generated media is written under `data/generated-media` beside the executable by default
+- set `NORM_HOME` if you want those runtime files somewhere else
+
+Important packaging notes:
+- build the EXE on Windows with the same Node version you want to ship
+- the packaged path uses the official Node SEA workflow plus an `esbuild` bundle step
+- GitHub Actions keeps normal lint/build/test checks on push and PR, while the Windows packaging artifact is intended for manual `workflow_dispatch` runs
 
 ## Guild Setup
 
@@ -206,6 +240,12 @@ Build:
 npm run build
 ```
 
+Build Windows portable EXE:
+
+```powershell
+npm run package:windows
+```
+
 Generate Prisma client:
 
 ```powershell
@@ -227,6 +267,8 @@ npm run integration
 ```
 
 Integration tests require a reachable PostgreSQL server.
+
+GitHub Actions runs lint, build, unit tests, and integration tests on branch pushes and pull requests. The Windows portable package can be produced from the build workflow through manual dispatch.
 
 ## Troubleshooting
 

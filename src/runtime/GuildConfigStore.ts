@@ -1,8 +1,8 @@
 import crypto from "crypto";
 import fs from "fs";
-import path from "path";
 import { getEnvVariable } from "../utils";
 import { EncryptedValue, GuildConfigUpsertInput, GuildInstanceConfig, GuildInstanceStoredConfig } from "./types";
+import { getGuildConfigPath } from "./runtimePaths";
 
 interface GuildConfigFile {
   guilds: GuildInstanceStoredConfig[];
@@ -20,8 +20,6 @@ export interface GuildConfigReadResult {
   config: GuildInstanceConfig | null;
 }
 
-const CONFIG_FILE_NAME = ".guild-instance-config.json";
-
 type GuildRuntimeFieldUpdates = {
   leaderboardMessageIds?: string[] | null;
   openAiConversationId?: string | null;
@@ -32,7 +30,7 @@ export class GuildConfigStore {
   private readonly filePath: string;
 
   constructor(filePath?: string) {
-    this.filePath = filePath ?? path.resolve(process.cwd(), CONFIG_FILE_NAME);
+    this.filePath = filePath ?? getGuildConfigPath();
   }
 
   getConfigPath(): string {
