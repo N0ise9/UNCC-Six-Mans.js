@@ -26,6 +26,7 @@ import { DiscordWorkScheduler } from "./DiscordWorkScheduler";
 import { GuildRepositories } from "./GuildRepositories";
 import { InteractiveSurfaceRegistry } from "./InteractiveSurfaceRegistry";
 import { reconcileTrackedMessages } from "./reconcileTrackedMessages";
+import { createScheduledCommandResponder } from "./createScheduledCommandResponder";
 import {
   ActiveMatchTeams,
   NewActiveMatchInput,
@@ -196,13 +197,15 @@ export class GuildRuntimeManager {
   }
 
   async handleSetupCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+    const responder = createScheduledCommandResponder(interaction, this.scheduler, "setup", "high");
+
     if (!interaction.guildId) {
-      await interaction.editReply("This command only works inside a server.");
+      await responder.edit("This command only works inside a server.");
       return;
     }
 
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-      await interaction.editReply("You need Manage Server permissions to run setup.");
+      await responder.edit("You need Manage Server permissions to run setup.");
       return;
     }
 
@@ -210,11 +213,11 @@ export class GuildRuntimeManager {
       case "show": {
         const config = this.configStore.getGuildConfig(interaction.guildId);
         if (!config) {
-          await interaction.editReply("This guild has not been configured yet.");
+          await responder.edit("This guild has not been configured yet.");
           return;
         }
 
-        await interaction.editReply(
+        await responder.edit(
           [
             `Guild: ${config.guildId}`,
             `Enabled: ${config.enabled}`,
@@ -234,7 +237,7 @@ export class GuildRuntimeManager {
       case "disable": {
         const config = this.configStore.disableGuild(interaction.guildId);
         await this.reloadContext(interaction.guildId);
-        await interaction.editReply(config ? "Guild configuration disabled." : "No guild configuration was found.");
+        await responder.edit(config ? "Guild configuration disabled." : "No guild configuration was found.");
         return;
       }
       case "set": {
@@ -247,23 +250,23 @@ export class GuildRuntimeManager {
         const conversationId = interaction.options.getString("conversation_id") ?? undefined;
 
         if (queueChannel.type !== ChannelType.GuildText) {
-          await interaction.editReply("Queue channel must be a text channel.");
+          await responder.edit("Queue channel must be a text channel.");
           return;
         }
         if (leaderboardChannel.type !== ChannelType.GuildText) {
-          await interaction.editReply("Leaderboard channel must be a text channel.");
+          await responder.edit("Leaderboard channel must be a text channel.");
           return;
         }
         if (chatChannel.type !== ChannelType.GuildText) {
-          await interaction.editReply("Chat channel must be a text channel.");
+          await responder.edit("Chat channel must be a text channel.");
           return;
         }
         if (voiceChannel.type !== ChannelType.GuildVoice && voiceChannel.type !== ChannelType.GuildStageVoice) {
-          await interaction.editReply("Voice channel must be voice-based.");
+          await responder.edit("Voice channel must be voice-based.");
           return;
         }
         if (apiStatusChannel && apiStatusChannel.type !== ChannelType.GuildText) {
-          await interaction.editReply("API status channel must be a text channel.");
+          await responder.edit("API status channel must be a text channel.");
           return;
         }
 
@@ -281,13 +284,13 @@ export class GuildRuntimeManager {
         this.configStore.setGuildConfig(input);
         const reloadFailure = await this.reloadContext(interaction.guildId);
         if (reloadFailure) {
-          await interaction.editReply(
+          await responder.edit(
             `Guild configuration saved, but the runtime failed to load: ${reloadFailure.message}`
           );
           return;
         }
 
-        await interaction.editReply("Guild configuration saved and runtime refreshed.");
+        await responder.edit("Guild configuration saved and runtime refreshed.");
         return;
       }
     }
@@ -516,8 +519,10 @@ export class GuildRuntimeManager {
   }
 
   async handleAdminCommand(context: GuildContext, interaction: ChatInputCommandInteraction): Promise<void> {
+    const responder = createScheduledCommandResponder(interaction, this.scheduler, `admin-${interaction.commandName}`);
+
     if (!isBotAdmin(interaction)) {
-      await interaction.editReply(
+      await responder.edit(
         "What do you think you're doing? Trying to run an admin command when you're not a Bot Admin. Typical."
       );
       return;
@@ -529,20 +534,20 @@ export class GuildRuntimeManager {
         case "kick": {
           const playerToRemove = interaction.options.getUser("player");
           if (!playerToRemove) {
-            await interaction.editReply("No player was provided.");
+            await responder.edit("No player was provided.");
             return;
           }
 
           await kickPlayerFromQueue(context, playerToRemove.id);
           await this.refreshQueueSurface(context);
-          await interaction.editReply(`${playerToRemove.username} has been removed from the queue.`);
+          await responder.edit(`${playerToRemove.username} has been removed from the queue.`);
           return;
         }
         case "clear": {
           await context.repositories.queue.removeAllBallChasersFromQueue();
           resetVoteState(context);
           await this.refreshQueueSurface(context);
-          await interaction.editReply("Queue has been cleared.");
+          await responder.edit("Queue has been cleared.");
           return;
         }
       }

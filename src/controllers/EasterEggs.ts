@@ -1,11 +1,10 @@
 /* eslint-disable max-len */
-/* eslint-disable no-console */
-
 import { ChatInputCommandInteraction, Message, TextChannel } from "discord.js";
 import OpenAI from "openai";
-import path from "path";
 import * as fs from "fs";
+import path from "path";
 import { GuildContext } from "../runtime/types";
+import { createScheduledCommandResponder } from "../runtime/createScheduledCommandResponder";
 
 export const EASTER_EGG_SLASH_COMMANDS = {
   Norm: "norm",
@@ -33,7 +32,11 @@ type OpenAIResponsePayload = {
 };
 
 type SoraVideoCompletion = {
+  error?: {
+    message?: string;
+  };
   id: string;
+  progress?: number;
   status: "completed" | "failed" | "in_progress" | "queued";
 };
 
@@ -42,6 +45,72 @@ type SoraVideoClient = {
   retrieve: (id: string) => Promise<SoraVideoCompletion>;
   create: (payload: { model: string; prompt: string; seconds: string }) => Promise<SoraVideoCompletion>;
 };
+
+const GENERATED_MEDIA_ROOT = path.resolve(process.cwd(), "data", "generated-media");
+
+function isSoraEnabled(): boolean {
+  return (process.env["ENABLE_SORA"] ?? "false").toLowerCase() === "true";
+}
+
+function getSoraModel(): string {
+  const model = process.env["SORA_MODEL"]?.trim();
+  if (!model) {
+    throw new Error("ENABLE_SORA is true but SORA_MODEL is not configured.");
+  }
+
+  return model;
+}
+
+function getSoraVideoClient(openai: OpenAI): SoraVideoClient | null {
+  const candidate = openai as OpenAI & { videos?: SoraVideoClient };
+  if (candidate.videos) {
+    return candidate.videos;
+  }
+
+  if (typeof openai.get !== "function" || typeof openai.post !== "function") {
+    return null;
+  }
+
+  return {
+    create: async (payload) =>
+      await openai.post<SoraVideoCompletion>("/videos", {
+        body: payload,
+      }),
+    downloadContent: async (id) =>
+      await openai.get<Response>(`/videos/${id}/content`, {
+        __binaryResponse: true,
+        headers: {
+          Accept: "application/binary",
+        },
+      }),
+    retrieve: async (id) => await openai.get<SoraVideoCompletion>(`/videos/${id}`),
+  };
+}
+
+function ensureDirectory(directory: string): void {
+  fs.mkdirSync(directory, { recursive: true });
+}
+
+function sanitizeFileSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 48) || "norm";
+}
+
+function buildGeneratedMediaPath(kind: "images" | "videos", baseName: string, extension: string): string {
+  const directory = path.join(GENERATED_MEDIA_ROOT, kind);
+  ensureDirectory(directory);
+  return path.join(directory, `${sanitizeFileSegment(baseName)}-${Date.now()}.${extension}`);
+}
+
+export function assertSoraRuntimeSupport(openai: OpenAI): void {
+  if (!isSoraEnabled()) {
+    return;
+  }
+
+  getSoraModel();
+  if (!getSoraVideoClient(openai)) {
+    throw new Error("ENABLE_SORA is true, but this installed OpenAI SDK does not expose the Videos API.");
+  }
+}
 
 function chunkMessage(text: string, max = 1999): string[] {
   const chunks: string[] = [];
@@ -61,7 +130,7 @@ async function ensureConversation(context: GuildContext): Promise<string> {
     try {
       await context.openai.conversations.retrieve(existingConversationId);
       return existingConversationId;
-    } catch (error) {
+    } catch {
       console.warn(`[${context.guildId}] Stored OpenAI conversation missing; creating a new one.`);
     }
   }
@@ -243,7 +312,7 @@ async function runNormPrompt(
       const imageBase64 = imageOutput.result;
       if (!imageBase64) continue;
 
-      const imageFile = path.join(__dirname, `../images/${actor.username}-${Date.now()}-${count}.png`);
+      const imageFile = buildGeneratedMediaPath("images", `${actor.username}-${count}`, "png");
       fs.writeFileSync(imageFile, Buffer.from(imageBase64, "base64"));
       files.push({ attachment: imageFile });
       count += 1;
@@ -273,11 +342,17 @@ export async function handleEasterEggSlashInteraction(
   context: GuildContext,
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
+  const responder = createScheduledCommandResponder(
+    interaction,
+    context.scheduler,
+    `easter-egg-${interaction.commandName}`
+  );
+
   switch (interaction.commandName) {
     case EASTER_EGG_SLASH_COMMANDS.Norm: {
       const prompt = interaction.options.getString("prompt");
       if (!prompt) {
-        await interaction.editReply("Prompt was empty.");
+        await responder.edit("Prompt was empty.");
         return;
       }
 
@@ -298,28 +373,12 @@ export async function handleEasterEggSlashInteraction(
           prompt,
           attachments,
           {
-            edit: async (payload) => {
-              await context.scheduler.enqueue(
-                async () => await interaction.editReply(payload),
-                {
-                  dedupeKey: `interaction-edit:${interaction.id}`,
-                  label: "interaction-edit-reply",
-                  priority: "normal",
-                }
-              );
-            },
+            edit: async (payload) => await responder.edit(payload),
             followUp: async (payload) => {
-              await context.scheduler.enqueue(
-                async () =>
-                  await interaction.followUp({
-                    allowedMentions: { parse: [] },
-                    content: payload,
-                  }),
-                {
-                  label: "interaction-follow-up",
-                  priority: "normal",
-                }
-              );
+              await responder.followUp({
+                allowedMentions: { parse: [] },
+                content: payload,
+              });
             },
           },
           {
@@ -331,6 +390,11 @@ export async function handleEasterEggSlashInteraction(
       break;
     }
     case EASTER_EGG_SLASH_COMMANDS.Sora: {
+      if (!isSoraEnabled()) {
+        await responder.edit("Sora video generation is disabled for this runtime.");
+        return;
+      }
+
       const prompt = interaction.options.getString("prompt");
       const durationStr = interaction.options.getString("duration") ?? "8";
       const validDurations = new Set(["4", "8", "12"]);
@@ -338,19 +402,20 @@ export async function handleEasterEggSlashInteraction(
       const duration = Number(secondsStr);
 
       if (!prompt) {
-        await interaction.editReply("Prompt was empty.");
+        await responder.edit("Prompt was empty.");
         return;
       }
 
       try {
-        const videoClient = (context.openai as OpenAI & { videos?: SoraVideoClient }).videos;
+        const videoClient = getSoraVideoClient(context.openai);
         if (!videoClient) {
-          await interaction.editReply("This OpenAI SDK build does not support Sora video generation yet.");
-          return;
+          throw new Error("Sora is enabled, but the active OpenAI client does not support Videos.");
         }
 
+        const soraModel = getSoraModel();
+
         let completion = await videoClient.create({
-          model: "sora-2-2025-12-08",
+          model: soraModel,
           prompt,
           seconds: secondsStr,
         });
@@ -361,36 +426,29 @@ export async function handleEasterEggSlashInteraction(
         }
 
         if (completion.status === "failed") {
-          await interaction.editReply(`<@${interaction.user.id}> I couldn't create a video right now.`);
+          const reason = completion.error?.message ? ` ${completion.error.message}` : "";
+          await responder.edit(`<@${interaction.user.id}> I couldn't create a video right now.${reason}`);
           return;
         }
 
         const video = await videoClient.downloadContent(completion.id);
         if (!video) {
-          await interaction.editReply(`<@${interaction.user.id}> I couldn't create a video right now.`);
+          await responder.edit(`<@${interaction.user.id}> I couldn't create a video right now.`);
           return;
         }
 
         const body = await video.arrayBuffer();
         const buffer = Buffer.from(body);
-        const filePath = path.join(__dirname, `../recordings/${interaction.user.username}-${Date.now()}-sora.mp4`);
+        const filePath = buildGeneratedMediaPath("videos", `${interaction.user.username}-sora`, "mp4");
         fs.writeFileSync(filePath, buffer);
 
-        await context.scheduler.enqueue(
-          async () =>
-            await interaction.editReply({
-              content: `<@${interaction.user.id}> Estimated cost: $${(duration * 0.1).toFixed(2)}.`,
-              files: [{ attachment: filePath }],
-            }),
-          {
-            dedupeKey: `interaction-edit:${interaction.id}`,
-            label: "interaction-edit-reply",
-            priority: "normal",
-          }
-        );
+        await responder.edit({
+          content: `<@${interaction.user.id}> Estimated cost: $${(duration * 0.1).toFixed(2)}.`,
+          files: [{ attachment: filePath }],
+        });
       } catch (error) {
         console.error(`[${context.guildId}] /sora error:`, error);
-        await interaction.editReply(`<@${interaction.user.id}> I couldn't generate the video. Please try again later.`);
+        await responder.edit(`<@${interaction.user.id}> I couldn't generate the video. Please try again later.`);
       }
       break;
     }
