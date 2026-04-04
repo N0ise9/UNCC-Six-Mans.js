@@ -98,6 +98,37 @@ describe("ApiStatusService statuspage fetching", () => {
     expect(getFirstRequestedUrl(fetchMock)).toBe("https://status.example.com/api/v2/summary.json");
   });
 
+  it('uses the live incident name when summary text still says "All Systems Operational"', async () => {
+    const fetchMock = jest.fn(async () =>
+      jsonResponse({
+        incidents: [
+          {
+            created_at: "2026-04-03T12:00:00.000Z",
+            id: "incident-1",
+            impact: "minor",
+            incident_updates: [],
+            name: "Cloudlets and NetStorage upload Issues",
+            shortlink: "https://status.example.com/incidents/incident-1",
+            status: "monitoring",
+          },
+        ],
+        status: {
+          description: "All Systems Operational",
+          indicator: "none",
+        },
+      })
+    );
+    global.fetch = fetchMock as typeof fetch;
+
+    const service = createStatuspageService();
+
+    const status = await checkSingleService(service);
+
+    expect(status.status).toBe("degraded_performance");
+    expect(status.description).toBe("Cloudlets and NetStorage upload Issues");
+    expect(status.incidents?.[0]?.name).toBe("Cloudlets and NetStorage upload Issues");
+  });
+
   it("uses RSS only as a backup when summary.json is unavailable", async () => {
     const fetchMock = jest
       .fn()
@@ -221,5 +252,38 @@ describe("ApiStatusService statuspage fetching", () => {
 
     expect(status.status).toBe("degraded_performance");
     expect(status.incidents?.length).toBe(1);
+  });
+
+  it("handles Fastly-style RSS feeds without falling back on parser entity limits", async () => {
+    const repeatedNbsp = "&nbsp;".repeat(1005);
+    const fetchMock = jest.fn(async () =>
+      textResponse(`<?xml version="1.0" encoding="utf-8"?>
+        <rss version="2.0">
+          <channel>
+            <title>Fastly RSS</title>
+            <item>
+              <title>Informational update</title>
+              <description>All other services are unaffected by this informational update.${repeatedNbsp}</description>
+              <pubDate>Sat, 04 Apr 2026 04:33:00 GMT</pubDate>
+              <link>https://status.example.com/incidents/incident-1</link>
+            </item>
+          </channel>
+        </rss>`)
+    );
+    global.fetch = fetchMock as typeof fetch;
+
+    const service = {
+      id: "fastly-like-service",
+      name: "Fastly-like Service",
+      pageUrl: "https://status.example.com/",
+      rssUrl: "https://status.example.com/rss",
+      type: "generic",
+    } satisfies ServiceConfig;
+
+    const status = await checkSingleService(service);
+
+    expect(status.status).toBe("operational");
+    expect(status.description).toBe("");
+    expect(status.incidents).toEqual([]);
   });
 });

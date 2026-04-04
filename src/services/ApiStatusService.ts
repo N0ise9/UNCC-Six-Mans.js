@@ -84,6 +84,12 @@ const STATUS_RANK_UNKNOWN_HIGH: Record<StatusLevel, number> = {
   unknown: 5,
 };
 
+const FEED_PARSER_OPTIONS = {
+  attributeNamePrefix: "@_",
+  ignoreAttributes: false,
+  processEntities: false,
+} as const;
+
 const isWorseStatus = (candidate: StatusLevel, current: StatusLevel, rank = STATUS_RANK): boolean =>
   rank[candidate] > rank[current];
 
@@ -104,6 +110,10 @@ function buildStatus(service: ServiceConfig, overrides: Partial<ServiceStatus> =
 
 function errorStatus(service: ServiceConfig, description: string, status: StatusLevel = "unknown"): ServiceStatus {
   return buildStatus(service, { status, description, incidents: [] });
+}
+
+function createFeedParser(): XMLParser {
+  return new XMLParser(FEED_PARSER_OPTIONS);
 }
 
 function normalizeStatusLevel(value?: string): StatusLevel | null {
@@ -138,6 +148,23 @@ export function impactToStatusWithState(impact?: string, status?: string): Statu
   if (/scheduled|in_progress/.test(st)) return "under_maintenance";
   const active = /(investigating|identified|monitoring|verifying|postmortem)/.test(st);
   return impactToStatusLevel(impact, active ? "degraded_performance" : "operational");
+}
+
+function humanizeServiceStatus(status: StatusLevel): string {
+  switch (status) {
+    case "operational":
+      return "All Systems Operational";
+    case "degraded_performance":
+      return "Partially Degraded Service";
+    case "partial_outage":
+      return "Partial Outage";
+    case "major_outage":
+      return "Major Outage";
+    case "under_maintenance":
+      return "Maintenance in progress";
+    default:
+      return "Status unavailable";
+  }
 }
 
 // Helper to fetch with timeout
@@ -313,19 +340,42 @@ async function fetchStatuspage(service: ServiceConfig): Promise<ServiceStatus> {
     }
 
     return buildStatus(service, {
-      // Append short text for live maintenance, otherwise keep concise
-      description:
-        status === "under_maintenance" && incidents.length > 0
-          ? "Maintenance in progress"
-          : status === "operational"
-            ? ""
-            : data?.status?.description,
+      description: describeStatuspageResult(status, data?.status?.description, incidents),
       incidents,
       status,
     });
   } catch {
     return errorStatus(service, "Unreachable");
   }
+}
+
+function describeStatuspageResult(
+  status: StatusLevel,
+  summaryDescription: string | undefined,
+  incidents: IncidentInfo[]
+): string {
+  const trimmedSummary = (summaryDescription ?? "").trim();
+
+  if (status === "operational") {
+    return "";
+  }
+
+  if (status === "under_maintenance" && incidents.length > 0) {
+    return "Maintenance in progress";
+  }
+
+  if (incidents.length > 0) {
+    const incidentName = (incidents[0]?.name ?? "").trim();
+    if (incidentName && (!trimmedSummary || isOperationalSummaryDescription(trimmedSummary))) {
+      return incidentName;
+    }
+  }
+
+  return trimmedSummary || humanizeServiceStatus(status);
+}
+
+function isOperationalSummaryDescription(description: string): boolean {
+  return /all systems operational|no known issues|no incidents reported|operational/i.test(description);
 }
 
 async function fetchGeneric(service: ServiceConfig): Promise<ServiceStatus> {
@@ -627,7 +677,7 @@ function feedEntryStatusToLevel(status?: string): StatusLevel | null {
 async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
   // If multiple feeds are provided, aggregate them
   if (service.rssUrls && service.rssUrls.length > 0) {
-    const parser = new XMLParser({ attributeNamePrefix: "@_", ignoreAttributes: false });
+    const parser = createFeedParser();
 
     const parseFeed = async (url: string) => {
       try {
@@ -765,7 +815,7 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
     if (!res.ok) throw new Error(`RSS fetch failed: ${res.status}`);
     const xml = await res.text();
 
-    const parser = new XMLParser({ attributeNamePrefix: "@_", ignoreAttributes: false });
+    const parser = createFeedParser();
     const parsed = parser.parse(xml);
 
     // Type guards for Atom vs RSS

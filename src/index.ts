@@ -6,11 +6,13 @@ import { ApiStatusRuntime } from "./runtime/ApiStatusRuntime";
 import { DiscordWorkScheduler } from "./runtime/DiscordWorkScheduler";
 import { GuildConfigStore } from "./runtime/GuildConfigStore";
 import { GuildRuntimeManager } from "./runtime/GuildRuntimeManager";
+import { ensurePackagedRuntimeSupportFiles } from "./runtime/PackagedRuntimeSupport";
 import { startGeneratedMediaPruner } from "./runtime/generatedMediaRetention";
 import { ensurePrismaStudioAssetsExtracted } from "./runtime/PrismaStudioAssets";
 import { loadRuntimeEnv } from "./runtime/runtimePaths";
 import { getEnvVariable } from "./utils";
 
+const packagedRuntimeSupport = ensurePackagedRuntimeSupportFiles();
 loadRuntimeEnv();
 
 const scheduler = new DiscordWorkScheduler(2, 75);
@@ -146,6 +148,11 @@ function registerDiscordHandlers(client: Client, discordToken: string): void {
 }
 
 async function startBot(): Promise<void> {
+  if (packagedRuntimeSupport.createdFiles.length > 0) {
+    const createdNames = packagedRuntimeSupport.createdFiles.map((file) => `"${file.path}"`).join(", ");
+    console.info(`[PackagedRuntime] Created missing companion files: ${createdNames}.`);
+  }
+
   const discordToken = getEnvVariable("token");
   const openai = new OpenAI({ apiKey: getEnvVariable("openai") });
   assertSoraRuntimeSupport(openai);

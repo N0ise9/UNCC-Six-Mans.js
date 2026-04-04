@@ -8,12 +8,14 @@ const rootDirectory = process.cwd();
 const seaDirectory = path.resolve(rootDirectory, "release", "sea");
 const seaAssetsDirectory = path.resolve(seaDirectory, "assets");
 const prismaStudioAssetDirectory = path.resolve(seaAssetsDirectory, "prisma-studio");
+const runtimeFileAssetDirectory = path.resolve(seaAssetsDirectory, "runtime-files");
 const bundledScriptPath = path.resolve(seaDirectory, "norm.bundle.cjs");
 const seaConfigPath = path.resolve(seaDirectory, "sea-config.json");
 const seaBlobPath = path.resolve(seaDirectory, "norm.blob");
 
 fs.mkdirSync(seaDirectory, { recursive: true });
 fs.rmSync(seaAssetsDirectory, { force: true, recursive: true });
+stageRuntimeFiles();
 stagePrismaStudioAssets();
 
 await build({
@@ -57,6 +59,17 @@ if (seaBuildResult.status !== 0) {
 }
 
 console.info(`SEA blob created at ${seaBlobPath}.`);
+
+function stageRuntimeFiles() {
+  fs.mkdirSync(runtimeFileAssetDirectory, { recursive: true });
+
+  for (const fileName of [".env.sample", "README.md"]) {
+    const sourcePath = path.resolve(rootDirectory, fileName);
+    if (fs.existsSync(sourcePath)) {
+      fs.copyFileSync(sourcePath, path.resolve(runtimeFileAssetDirectory, fileName));
+    }
+  }
+}
 
 function stagePrismaStudioAssets() {
   const stagedNodeRuntimePath = path.resolve(prismaStudioAssetDirectory, "node.exe.gz");

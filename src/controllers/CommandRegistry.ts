@@ -123,5 +123,10 @@ export async function registerAllSlashCommands(clientId: string, token: string) 
     commands.push(sora);
   }
 
-  await rest.put(Routes.applicationCommands(clientId), { body: commands });
+  const registeredCommands = (await rest.put(Routes.applicationCommands(clientId), {
+    body: commands,
+  })) as Array<{ name: string }>;
+
+  const commandNames = registeredCommands.map((command) => command.name).join(", ");
+  console.info(`[SlashCommands] Registered global commands: ${commandNames}`);
 }
