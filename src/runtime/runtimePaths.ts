@@ -6,9 +6,10 @@ import { APP_VERSION } from "./appMetadata";
 const DEFAULT_CONFIG_FILENAME = ".guild-instance-config.json";
 const INTERNAL_RUNTIME_DIRECTORY = ".norm-internal";
 const PRISMA_STUDIO_ASSET_DIRECTORY = "prisma-studio";
+const PRISMA_STUDIO_PACKAGED_CONFIG_FILENAME = "prisma.studio.config.js";
+const PRISMA_STUDIO_SOURCE_CONFIG_FILENAME = "prisma.studio.config.ts";
 const PRISMA_STUDIO_TOOLS_DIRECTORY = "tools";
 const PRISMA_STUDIO_WORKSPACE_DIRECTORY = "workspace";
-const PRISMA_STUDIO_CONFIG_FILENAME = "prisma.studio.config.ts";
 
 export function resolveRuntimeRoot(options?: {
   cwd?: string;
@@ -95,7 +96,11 @@ export function getPrismaStudioCliPath(options?: { packaged?: boolean }): string
 }
 
 export function getPrismaStudioConfigPath(options?: { packaged?: boolean }): string {
-  return path.resolve(getPrismaStudioWorkspaceRoot(options), PRISMA_STUDIO_CONFIG_FILENAME);
+  if (isPackagedRuntime(options)) {
+    return path.resolve(getPrismaStudioToolsRoot(options), PRISMA_STUDIO_PACKAGED_CONFIG_FILENAME);
+  }
+
+  return path.resolve(resolveRuntimeRoot(), PRISMA_STUDIO_SOURCE_CONFIG_FILENAME);
 }
 
 export function loadRuntimeEnv(): dotenv.DotenvConfigOutput {

@@ -99,11 +99,14 @@ jobs:
           if (!(Test-Path "$assetRoot\tools\node_modules\prisma\build\index.js")) {
             throw "Extracted Prisma Studio CLI was not found."
           }
-          if (!(Test-Path "$assetRoot\workspace\prisma.studio.config.ts")) {
+          if (!(Test-Path "$assetRoot\tools\prisma.studio.config.js")) {
             throw "Extracted Prisma Studio config was not found."
           }
           if (!(Test-Path "$assetRoot\workspace\prisma\schema.prisma")) {
             throw "Extracted Prisma Studio schema was not found."
+          }
+          if (!(Test-Path "$assetRoot\tools\node_modules\@prisma\dev\dist\state.cjs")) {
+            throw "Extracted Prisma Studio @prisma/dev runtime was not found."
           }
 
           & "$assetRoot\node.exe" `
@@ -111,6 +114,13 @@ jobs:
             studio --help
           if ($LASTEXITCODE -ne 0) {
             throw "Extracted Prisma Studio CLI failed to start."
+          }
+
+          & "$assetRoot\node.exe" `
+            -e "require(process.argv[1]); console.log('ok')" `
+            "$assetRoot\tools\node_modules\@prisma\dev\dist\state.cjs"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Extracted Prisma Studio runtime dependencies were not complete."
           }
 
       - name: Smoke test packaged executable

@@ -22,8 +22,11 @@ if (!fs.existsSync(seaConfigPath) || !fs.existsSync(bundledBlobPath)) {
   throw new Error("SEA bundle output is missing. Run `npm run bundle:sea` first.");
 }
 
-fs.rmSync(packageDirectory, { force: true, recursive: true });
 fs.mkdirSync(packageDirectory, { recursive: true });
+
+for (const filePath of [executablePath, launcherPath, path.resolve(packageDirectory, ".env.sample"), path.resolve(packageDirectory, "README.md")]) {
+  fs.rmSync(filePath, { force: true });
+}
 
 fs.copyFileSync(process.execPath, executablePath);
 

@@ -18,6 +18,11 @@ type ManagedStudioProcess = {
   port: number;
 };
 
+type StudioProcessOutput = {
+  stderr: string;
+  stdout: string;
+};
+
 type PrismaStudioManagerOptions = {
   browserOpener?: (url: string) => Promise<void>;
   ensurePackagedAssets?: () => Promise<void> | void;
@@ -43,6 +48,7 @@ export class PrismaStudioManager {
   private readonly readyTimeoutMs: number;
   private readonly spawnProcess: typeof spawn;
   private activeProcess: ManagedStudioProcess | null = null;
+  private readonly processOutput = new WeakMap<ChildProcess, StudioProcessOutput>();
 
   constructor(private readonly options: PrismaStudioManagerOptions = {}) {
     this.browserOpener = options.browserOpener ?? openDefaultBrowser;
@@ -135,11 +141,12 @@ export class PrismaStudioManager {
           BROWSER: "none",
           DATABASE_URL: databaseUrl,
         },
-        stdio: "ignore",
+        stdio: ["ignore", "pipe", "pipe"],
         windowsHide: false,
       }
     );
 
+    this.captureProcessOutput(child);
     child.on("error", (error) => {
       console.error("[PrismaStudioManager] Prisma Studio process failed:", error);
     });
@@ -172,7 +179,10 @@ export class PrismaStudioManager {
 
     while (Date.now() - startedAt <= this.readyTimeoutMs) {
       if (child.exitCode !== null) {
-        throw new Error(`Prisma Studio exited before it became ready (exit code ${child.exitCode}).`);
+        const output = this.getProcessOutput(child);
+        const details = formatStudioFailureDetails(output);
+        const suffix = details ? ` Details: ${details}` : "";
+        throw new Error(`Prisma Studio exited before it became ready (exit code ${child.exitCode}).${suffix}`);
       }
 
       if (await this.isPortOpenFn(port)) {
@@ -183,6 +193,29 @@ export class PrismaStudioManager {
     }
 
     throw new Error("Prisma Studio did not become ready before the timeout elapsed.");
+  }
+
+  private captureProcessOutput(child: ChildProcess): void {
+    const output: StudioProcessOutput = {
+      stderr: "",
+      stdout: "",
+    };
+
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string | Buffer) => {
+      output.stdout = appendProcessOutput(output.stdout, chunk.toString());
+    });
+
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string | Buffer) => {
+      output.stderr = appendProcessOutput(output.stderr, chunk.toString());
+    });
+
+    this.processOutput.set(child, output);
+  }
+
+  private getProcessOutput(child: ChildProcess): StudioProcessOutput | null {
+    return this.processOutput.get(child) ?? null;
   }
 }
 
@@ -226,6 +259,24 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, milliseconds);
   });
+}
+
+function appendProcessOutput(current: string, nextChunk: string): string {
+  const combined = `${current}${nextChunk}`;
+  return combined.length > 4_000 ? combined.slice(-4_000) : combined;
+}
+
+function formatStudioFailureDetails(output: StudioProcessOutput | null): string {
+  const combined = [output?.stderr, output?.stdout]
+    .filter((value): value is string => Boolean(value && value.trim().length > 0))
+    .join("\n")
+    .trim();
+
+  if (!combined) {
+    return "";
+  }
+
+  return combined.replace(/\s+/g, " ").trim();
 }
 
 function getStudioUrl(port: number): string {

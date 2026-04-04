@@ -19,7 +19,13 @@ function createConfig(guildId: string): GuildInstanceConfig {
 function createChildProcess(): ChildProcess {
   const child = new EventEmitter() as ChildProcess;
   const mutableChild = child as ChildProcess & { exitCode: number | null };
+  const stdout = new EventEmitter() as NonNullable<ChildProcess["stdout"]>;
+  const stderr = new EventEmitter() as NonNullable<ChildProcess["stderr"]>;
   mutableChild.exitCode = null;
+  stdout.setEncoding = jest.fn() as typeof stdout.setEncoding;
+  stderr.setEncoding = jest.fn() as typeof stderr.setEncoding;
+  child.stdout = stdout;
+  child.stderr = stderr;
   child.kill = jest.fn(() => {
     mutableChild.exitCode = 0;
     queueMicrotask(() => {
@@ -93,5 +99,30 @@ describe("PrismaStudioManager", () => {
     } finally {
       await manager.dispose();
     }
+  });
+
+  it("includes captured stderr when Prisma Studio exits before becoming ready", async () => {
+    const child = createChildProcess();
+    const spawnProcess = jest.fn(() => {
+      queueMicrotask(() => {
+        child.stderr?.emit("data", "Cannot find module 'pathe'");
+        (child as ChildProcess & { exitCode: number | null }).exitCode = 1;
+        child.emit("exit", 1);
+      });
+      return child;
+    });
+
+    const manager = new PrismaStudioManager({
+      isPortAvailable: async () => true,
+      isPortOpen: async () => false,
+      portCandidates: [5555],
+      readyPollMs: 0,
+      readyTimeoutMs: 100,
+      spawnProcess: spawnProcess as unknown as typeof import("node:child_process").spawn,
+    });
+
+    await expect(manager.launchForGuild(createConfig("guild-1"))).rejects.toThrow(
+      "Cannot find module 'pathe'"
+    );
   });
 });

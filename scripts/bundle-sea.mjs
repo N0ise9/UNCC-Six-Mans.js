@@ -74,6 +74,7 @@ function stageRuntimeFiles() {
 function stagePrismaStudioAssets() {
   const stagedNodeRuntimePath = path.resolve(prismaStudioAssetDirectory, "node.exe.gz");
   const stagedToolsRoot = path.resolve(prismaStudioAssetDirectory, "tools");
+  const stagedPackagedConfigPath = path.resolve(stagedToolsRoot, "prisma.studio.config.js");
   const stagedNodeModulesRoot = path.resolve(stagedToolsRoot, "node_modules");
   const stagedWorkspaceRoot = path.resolve(prismaStudioAssetDirectory, "workspace");
   const stagedSchemaDirectory = path.resolve(stagedWorkspaceRoot, "prisma");
@@ -82,23 +83,95 @@ function stagePrismaStudioAssets() {
   fs.mkdirSync(stagedSchemaDirectory, { recursive: true });
   fs.writeFileSync(stagedNodeRuntimePath, zlib.gzipSync(fs.readFileSync(process.execPath)));
 
-  for (const directoryName of ["prisma", "@prisma", "postgres", "mysql2"]) {
-    const sourcePath = path.resolve(rootDirectory, "node_modules", directoryName);
-    const targetPath = path.resolve(stagedNodeModulesRoot, directoryName);
-    if (fs.existsSync(sourcePath)) {
-      fs.cpSync(sourcePath, targetPath, { recursive: true });
-    }
-  }
+  const copiedPackages = new Set();
+  copyInstalledPackageTree("prisma", stagedNodeModulesRoot, copiedPackages);
 
-  const prismaStudioConfigSourcePath = path.resolve(rootDirectory, "prisma.studio.config.ts");
-  if (fs.existsSync(prismaStudioConfigSourcePath)) {
-    fs.copyFileSync(prismaStudioConfigSourcePath, path.resolve(stagedWorkspaceRoot, "prisma.studio.config.ts"));
-  }
+  fs.writeFileSync(
+    stagedPackagedConfigPath,
+    [
+      'const { defineConfig } = require("prisma/config");',
+      "",
+      "module.exports = defineConfig({",
+      "  datasource: {",
+      '    url: process.env.DATABASE_URL ?? "",',
+      "  },",
+      '  schema: "../workspace/prisma/schema.prisma",',
+      "});",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
 
   const schemaSourcePath = path.resolve(rootDirectory, "prisma", "schema.prisma");
   if (fs.existsSync(schemaSourcePath)) {
     fs.copyFileSync(schemaSourcePath, path.resolve(stagedSchemaDirectory, "schema.prisma"));
   }
+}
+
+function copyInstalledPackageTree(packageName, targetNodeModulesRoot, copiedPackages, sourcePathOverride) {
+  if (copiedPackages.has(packageName)) {
+    return;
+  }
+
+  const sourcePath = sourcePathOverride ?? resolveInstalledPackagePath(packageName);
+  if (!sourcePath) {
+    throw new Error(`Unable to locate installed package "${packageName}" for Prisma Studio packaging.`);
+  }
+
+  const targetPath = path.resolve(targetNodeModulesRoot, ...packageName.split("/"));
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.cpSync(sourcePath, targetPath, { recursive: true });
+  copiedPackages.add(packageName);
+
+  const manifestPath = path.resolve(sourcePath, "package.json");
+  if (!fs.existsSync(manifestPath)) {
+    return;
+  }
+
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const dependencyNames = [
+    ...Object.keys(manifest.dependencies ?? {}),
+    ...Object.keys(manifest.optionalDependencies ?? {}),
+  ];
+
+  for (const dependencyName of dependencyNames) {
+    const dependencySourcePath = resolveInstalledPackagePath(dependencyName, sourcePath);
+    if (!dependencySourcePath) {
+      continue;
+    }
+
+    copyInstalledPackageTree(dependencyName, targetNodeModulesRoot, copiedPackages, dependencySourcePath);
+  }
+}
+
+function resolveInstalledPackagePath(packageName, startDirectory = rootDirectory) {
+  const packageSegments = packageName.split("/");
+  let currentDirectory = startDirectory;
+
+  while (true) {
+    const candidatePath = path.resolve(currentDirectory, "node_modules", ...packageSegments);
+    if (fs.existsSync(candidatePath)) {
+      return candidatePath;
+    }
+
+    if (path.resolve(currentDirectory) === path.resolve(rootDirectory)) {
+      break;
+    }
+
+    const nextDirectory = path.dirname(currentDirectory);
+    if (nextDirectory === currentDirectory) {
+      break;
+    }
+
+    currentDirectory = nextDirectory;
+  }
+
+  const rootCandidatePath = path.resolve(rootDirectory, "node_modules", ...packageSegments);
+  if (fs.existsSync(rootCandidatePath)) {
+    return rootCandidatePath;
+  }
+
+  return null;
 }
 
 function buildSeaAssetMap(directory) {

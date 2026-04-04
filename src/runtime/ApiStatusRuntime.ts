@@ -681,8 +681,6 @@ function buildIncidentEmbeds({
     updateLines.length > 0 ? updateLines : ["No additional incident updates were provided."],
     MAX_EMBED_FIELD_VALUE_LENGTH
   );
-  const latestIncidentAt =
-    service.incidents?.find((incident) => incident.created_at)?.created_at ?? service.lastChecked.toISOString();
   const statusPageValue = `[Status Page](${incidentUrl})`;
   const statusPageFieldLength = incidentName.length + statusPageValue.length;
 
@@ -691,7 +689,6 @@ function buildIncidentEmbeds({
   let embed = createIncidentEmbed({
     description,
     incidentUrl,
-    latestIncidentAt,
     pageNumber,
     service,
     title,
@@ -700,7 +697,7 @@ function buildIncidentEmbeds({
   let embedLength =
     calculateIncidentBaseLength({
       description,
-      latestIncidentAt,
+      lastChecked: service.lastChecked,
       pageNumber,
       serviceTitle: title,
       status: service.status,
@@ -718,7 +715,6 @@ function buildIncidentEmbeds({
     embed = createIncidentEmbed({
       description,
       incidentUrl,
-      latestIncidentAt,
       pageNumber,
       service,
       title,
@@ -727,7 +723,7 @@ function buildIncidentEmbeds({
     embedLength =
       calculateIncidentBaseLength({
         description,
-        latestIncidentAt,
+        lastChecked: service.lastChecked,
         pageNumber,
         serviceTitle: title,
         status: service.status,
@@ -766,14 +762,12 @@ function buildIncidentEmbeds({
 
 function createIncidentEmbed({
   description,
-  latestIncidentAt,
   incidentUrl,
   pageNumber,
   service,
   title,
 }: {
   description: string;
-  latestIncidentAt: string | undefined;
   incidentUrl: string;
   pageNumber: number;
   service: ServiceStatus;
@@ -781,10 +775,7 @@ function createIncidentEmbed({
 }): EmbedBuilder {
   const footerText = pageNumber > 1 ? `${INCIDENT_MARKER} | Page ${pageNumber}` : INCIDENT_MARKER;
   const summaryLine = description || humanizeStatus(service.status);
-  const relativeTimestamp =
-    latestIncidentAt && !Number.isNaN(Date.parse(latestIncidentAt))
-      ? `<t:${Math.floor(Date.parse(latestIncidentAt) / 1000)}:R>`
-      : `<t:${Math.floor(service.lastChecked.getTime() / 1000)}:R>`;
+  const relativeTimestamp = `<t:${Math.floor(service.lastChecked.getTime() / 1000)}:R>`;
 
   return new EmbedBuilder()
     .setColor(statusColor(service.status))
@@ -797,22 +788,19 @@ function createIncidentEmbed({
 
 function calculateIncidentBaseLength({
   description,
-  latestIncidentAt,
+  lastChecked,
   pageNumber,
   serviceTitle,
   status,
 }: {
   description: string;
-  latestIncidentAt: string | undefined;
+  lastChecked: Date;
   pageNumber: number;
   serviceTitle: string;
   status: ServiceStatus["status"];
 }): number {
   const footerText = pageNumber > 1 ? `${INCIDENT_MARKER} | Page ${pageNumber}` : INCIDENT_MARKER;
-  const relativeTimestamp =
-    latestIncidentAt && !Number.isNaN(Date.parse(latestIncidentAt))
-      ? `<t:${Math.floor(Date.parse(latestIncidentAt) / 1000)}:R>`
-      : `<t:${Math.floor(Date.now() / 1000)}:R>`;
+  const relativeTimestamp = `<t:${Math.floor(lastChecked.getTime() / 1000)}:R>`;
   const incidentSummary =
     `${statusEmoji(status)} ${description || humanizeStatus(status)}\n` + `Last updated: ${relativeTimestamp}`;
   return serviceTitle.length + incidentSummary.length + footerText.length;

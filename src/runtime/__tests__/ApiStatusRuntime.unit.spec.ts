@@ -422,4 +422,70 @@ describe("ApiStatusRuntime", () => {
       await runtime.dispose();
     }
   });
+
+  it("uses Norm's last checked time in incident embeds instead of the provider incident timestamp", async () => {
+    const service = createService({
+      id: "linode",
+      name: "Linode",
+      pageUrl: "https://status.linode.com/",
+      type: "statuspage",
+    });
+    const lastChecked = new Date("2026-04-04T21:00:00.000Z");
+    const incidentCreatedAt = "2026-01-01T00:00:00.000Z";
+    const catalog = createCatalog(
+      [{ name: "Hosting & DNS / CDN", services: [service] }],
+      [{ categoryName: "Hosting & DNS / CDN", service }]
+    );
+    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), {
+      catalog,
+      checkService: async () =>
+        createStatus(service, {
+          description: "Service Issue - GPU and VPU Booting issues",
+          incidents: [
+            {
+              created_at: incidentCreatedAt,
+              id: "incident-1",
+              incident_updates: [
+                {
+                  body: "We are investigating this issue.",
+                  created_at: incidentCreatedAt,
+                },
+              ],
+              name: "Service Issue - GPU and VPU Booting issues",
+              shortlink: "https://status.linode.com/incidents/incident-1",
+              status: "investigating",
+            },
+          ],
+          lastChecked,
+          status: "degraded_performance",
+        }),
+      generalSweepMs: 1,
+      publishDebounceMs: 0,
+    });
+    const channel = createChannel("channel-1");
+
+    try {
+      await runtime.registerGuild("guild-1", channel);
+      await jest.advanceTimersByTimeAsync(5);
+      await flushScheduler();
+
+      const allEmbeds = [
+        ...(channel.send as jest.Mock).mock.calls.map((call) => call[0].embeds[0].toJSON()),
+        ...channel.__sentMessages.flatMap((message) =>
+          message.edit.mock.calls.map((call) => asEmbedPayload(call[0]).embeds[0].toJSON())
+        ),
+      ];
+      const incidentEmbed = allEmbeds.find((embed) => embed.title === "Incident - Linode");
+
+      expect(incidentEmbed).toBeDefined();
+      expect(incidentEmbed.description).toContain(
+        `Last updated: <t:${Math.floor(lastChecked.getTime() / 1000)}:R>`
+      );
+      expect(incidentEmbed.description).not.toContain(
+        `Last updated: <t:${Math.floor(new Date(incidentCreatedAt).getTime() / 1000)}:R>`
+      );
+    } finally {
+      await runtime.dispose();
+    }
+  });
 });

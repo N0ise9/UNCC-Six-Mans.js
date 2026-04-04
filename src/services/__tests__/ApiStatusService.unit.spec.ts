@@ -129,6 +129,85 @@ describe("ApiStatusService statuspage fetching", () => {
     expect(status.incidents?.[0]?.name).toBe("Cloudlets and NetStorage upload Issues");
   });
 
+  it("creates a fallback incident from impacted statuspage components when the summary is degraded", async () => {
+    const fetchMock = jest.fn(async () =>
+      jsonResponse({
+        components: [
+          {
+            group: false,
+            id: "component-1",
+            name: "WARP connectivity",
+            status: "degraded_performance",
+            updated_at: "2026-04-04T16:45:00.000Z",
+          },
+        ],
+        incidents: [],
+        status: {
+          description: "Minor Service Outage",
+          indicator: "minor",
+        },
+      })
+    );
+    global.fetch = fetchMock as typeof fetch;
+
+    const service = createStatuspageService({
+      name: "Cloudflare",
+      pageUrl: "https://www.cloudflarestatus.com/",
+    });
+
+    const status = await checkSingleService(service);
+
+    expect(status.status).toBe("degraded_performance");
+    expect(status.description).toBe("Minor Service Outage");
+    expect(status.incidents).toHaveLength(1);
+    expect(status.incidents?.[0]?.name).toBe("WARP connectivity");
+  });
+
+  it("keeps statuspage services operational when only future scheduled maintenance exists", async () => {
+    const fetchMock = jest.fn(async () =>
+      jsonResponse({
+        components: [
+          {
+            group: false,
+            id: "component-1",
+            name: "Dar Es Salaam, Tanzania - (DAR)",
+            status: "under_maintenance",
+            updated_at: "2026-04-04T16:45:00.000Z",
+          },
+        ],
+        incidents: [
+          {
+            created_at: "2026-04-04T12:00:00.000Z",
+            id: "maintenance-1",
+            impact: "minor",
+            incident_updates: [],
+            name: "Future maintenance",
+            scheduled_for: "2026-04-18T22:00:00.000Z",
+            scheduled_until: "2026-04-19T00:30:00.000Z",
+            shortlink: "https://status.example.com/incidents/maintenance-1",
+            status: "scheduled",
+          },
+        ],
+        status: {
+          description: "Minor Service Outage",
+          indicator: "minor",
+        },
+      })
+    );
+    global.fetch = fetchMock as typeof fetch;
+
+    const service = createStatuspageService({
+      name: "Cloudflare",
+      pageUrl: "https://www.cloudflarestatus.com/",
+    });
+
+    const status = await checkSingleService(service);
+
+    expect(status.status).toBe("operational");
+    expect(status.description).toBe("");
+    expect(status.incidents).toEqual([]);
+  });
+
   it("uses RSS only as a backup when summary.json is unavailable", async () => {
     const fetchMock = jest
       .fn()
@@ -275,6 +354,114 @@ describe("ApiStatusService statuspage fetching", () => {
     const service = {
       id: "fastly-like-service",
       name: "Fastly-like Service",
+      pageUrl: "https://status.example.com/",
+      rssUrl: "https://status.example.com/rss",
+      type: "generic",
+    } satisfies ServiceConfig;
+
+    const status = await checkSingleService(service);
+
+    expect(status.status).toBe("operational");
+    expect(status.description).toBe("");
+    expect(status.incidents).toEqual([]);
+  });
+
+  it("strips encoded HTML from RSS incident updates before they reach embeds", async () => {
+    const fetchMock = jest.fn(async () =>
+      textResponse(`<?xml version="1.0" encoding="utf-8"?>
+        <rss version="2.0">
+          <channel>
+            <title>Fastly RSS</title>
+            <item>
+              <title>Ghana (ACC) Rerouted Traffic</title>
+              <description>&lt;p&gt;&lt;span style="font-size: 14px; font-family: Helvetica"&gt;Traffic in Ghana (ACC) has been temporarily rerouted.&lt;/span&gt;&lt;/p&gt;</description>
+              <pubDate>Sat, 04 Apr 2026 16:33:00 GMT</pubDate>
+              <link>https://status.example.com/incidents/incident-1</link>
+            </item>
+          </channel>
+        </rss>`)
+    );
+    global.fetch = fetchMock as typeof fetch;
+
+    const service = {
+      id: "fastly-html-service",
+      name: "Fastly",
+      pageUrl: "https://status.example.com/",
+      rssUrl: "https://status.example.com/rss",
+      type: "generic",
+    } satisfies ServiceConfig;
+
+    const status = await checkSingleService(service);
+
+    expect(status.status).toBe("operational");
+    expect(status.incidents).toEqual([]);
+    expect(status.description).toBe("");
+  });
+
+  it("keeps non-operational RSS updates as plain text instead of raw HTML markup", async () => {
+    const fetchMock = jest.fn(async () =>
+      textResponse(`<?xml version="1.0" encoding="utf-8"?>
+        <rss version="2.0">
+          <channel>
+            <title>Fastly RSS</title>
+            <item>
+              <title>Ghana (ACC) Rerouted Traffic</title>
+              <description>&lt;p&gt;&lt;span style="font-size: 14px; font-family: Helvetica"&gt;Traffic in Ghana (ACC) has been temporarily rerouted.&lt;/span&gt;&lt;br /&gt;All other services are unaffected.&lt;/p&gt;</description>
+              <pubDate>Sat, 04 Apr 2026 16:33:00 GMT</pubDate>
+              <link>https://status.example.com/incidents/incident-1</link>
+            </item>
+            <item>
+              <title>Active performance issue</title>
+              <description>Users are currently experiencing elevated errors.</description>
+              <pubDate>Sat, 04 Apr 2026 16:34:00 GMT</pubDate>
+              <link>https://status.example.com/incidents/incident-1</link>
+            </item>
+          </channel>
+        </rss>`)
+    );
+    global.fetch = fetchMock as typeof fetch;
+
+    const service = {
+      id: "fastly-html-incident-service",
+      name: "Fastly",
+      pageUrl: "https://status.example.com/",
+      rssUrl: "https://status.example.com/rss",
+      type: "generic",
+    } satisfies ServiceConfig;
+
+    const status = await checkSingleService(service);
+
+    expect(status.status).toBe("degraded_performance");
+    expect(status.incidents).toHaveLength(1);
+    expect(status.incidents?.[0]?.incident_updates?.map((update) => update.body)).toEqual(
+      expect.arrayContaining([
+        "Users are currently experiencing elevated errors.",
+        "Traffic in Ghana (ACC) has been temporarily rerouted.\nAll other services are unaffected.",
+      ])
+    );
+  });
+
+  it("treats future scheduled RSS maintenance as operational instead of active maintenance", async () => {
+    const fetchMock = jest.fn(async () =>
+      textResponse(`<?xml version="1.0" encoding="utf-8"?>
+        <rss version="2.0">
+          <channel>
+            <title>Stripe RSS</title>
+            <item>
+              <title>Scheduled maintenance for TWINT</title>
+              <description>THIS IS A SCHEDULED EVENT May 12, 18:00 - 19:00 UTC Scheduled - TWINT has an upcoming scheduled maintenance.</description>
+              <pubDate>Sat, 04 Apr 2026 16:33:00 GMT</pubDate>
+              <status>Scheduled</status>
+              <link>https://status.example.com/incidents/maintenance-1</link>
+            </item>
+          </channel>
+        </rss>`)
+    );
+    global.fetch = fetchMock as typeof fetch;
+
+    const service = {
+      id: "stripe-scheduled-service",
+      name: "Stripe",
       pageUrl: "https://status.example.com/",
       rssUrl: "https://status.example.com/rss",
       type: "generic",

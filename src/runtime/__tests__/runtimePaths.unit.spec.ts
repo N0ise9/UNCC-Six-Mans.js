@@ -100,8 +100,8 @@ describe("runtimePaths", () => {
         "sea-assets",
         APP_VERSION,
         "prisma-studio",
-        "workspace",
-        "prisma.studio.config.ts"
+        "tools",
+        "prisma.studio.config.js"
       )
     );
   });

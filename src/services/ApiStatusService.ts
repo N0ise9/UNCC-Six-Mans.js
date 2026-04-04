@@ -201,25 +201,79 @@ function decodeHtmlEntities(text: string): string {
   return result;
 }
 
+function decodeHtmlEntitiesDeep(text: string): string {
+  let current = text;
+  for (let index = 0; index < 3; index += 1) {
+    const decoded = decodeHtmlEntities(current);
+    if (decoded === current) {
+      break;
+    }
+    current = decoded;
+  }
+  return current;
+}
+
+function extractStructuredText(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => extractStructuredText(item))
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const preferredKeys = ["#text", "__text", "#cdata", "__cdata", "text", "value"];
+    const preferredText = preferredKeys
+      .map((key) => extractStructuredText(record[key]))
+      .filter(Boolean)
+      .join(" ");
+
+    if (preferredText) {
+      return preferredText;
+    }
+
+    return Object.entries(record)
+      .filter(([key]) => !key.startsWith("@_"))
+      .map(([, nested]) => extractStructuredText(nested))
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  return "";
+}
+
 // Convert basic HTML content to plain text suitable for Discord embeds
-function htmlToText(html: string): string {
-  if (!html) return "";
-  // Normalize newlines first
-  let s = html.replace(/\r\n?|\r/g, "\n");
+function htmlToText(html: unknown): string {
+  const raw = extractStructuredText(html);
+  if (!raw) return "";
+  // Normalize newlines first and decode early so encoded markup can be stripped safely.
+  let s = decodeHtmlEntitiesDeep(raw).replace(/\r\n?|\r/g, "\n");
+  s = s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1");
+  s = s.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, " ");
   // Line break style tags -> newlines
   s = s.replace(/<br\s*\/?\s*>/gi, "\n");
-  s = s.replace(/<\/(p|div|h[1-6])\s*>/gi, "\n");
+  s = s.replace(/<\/(p|div|h[1-6]|section|article|tr)\s*>/gi, "\n");
   // Start of blocks -> nothing
-  s = s.replace(/<(p|div|h[1-6])[^>]*>/gi, "");
+  s = s.replace(/<(p|div|h[1-6]|section|article|tr)[^>]*>/gi, "");
   // Lists -> bullets
-  s = s.replace(/<li[^>]*>/gi, "• ");
+  s = s.replace(/<li[^>]*>/gi, "- ");
   s = s.replace(/<\/li\s*>/gi, "\n");
-  s = s.replace(/<\/?(ul|ol)[^>]*>/gi, "");
+  s = s.replace(/<\/?(ul|ol|table|tbody|thead|tr|td|th)[^>]*>/gi, "");
   // Remove all remaining tags
   s = s.replace(/<[^>]+>/g, "");
-  // Decode entities
-  s = decodeHtmlEntities(s);
+  // Decode any remaining entities after tags are gone.
+  s = decodeHtmlEntitiesDeep(s);
   // Collapse excessive whitespace/newlines
+  s = s.replace(/\u00A0/g, " ");
   s = s.replace(/[\t ]+/g, " ");
   s = s.replace(/\n{3,}/g, "\n\n");
   s = s.replace(/ *\n */g, "\n");
@@ -265,7 +319,7 @@ function statuspageToLevel(indicator?: string, overall?: string): StatusLevel {
   }
 }
 
-type StatuspageUpdate = { body: string; created_at: string };
+type StatuspageUpdate = { body: unknown; created_at: string };
 type StatuspageIncident = {
   id: string;
   name: string;
@@ -278,7 +332,18 @@ type StatuspageIncident = {
   scheduled_until?: string;
   monitoring_at?: string;
 };
+type StatuspageComponent = {
+  description?: string | null;
+  group?: boolean;
+  group_id?: string;
+  id: string;
+  name: string;
+  status?: string;
+  updated_at?: string;
+};
 type StatuspageSummary = {
+  components?: StatuspageComponent[];
+  scheduled_maintenances?: StatuspageIncident[];
   status?: { description?: string; indicator?: string };
   incidents?: StatuspageIncident[];
 };
@@ -290,38 +355,17 @@ async function fetchStatuspage(service: ServiceConfig): Promise<ServiceStatus> {
     if (!res.ok) throw new Error(`${service.name} status API returned ${res.status}`);
     const data: StatuspageSummary = await res.json();
     let status = statuspageToLevel(data?.status?.indicator, data?.status?.description);
-    // Include active outages and maintenance only when currently happening
     const nowMs = Date.now();
-    const incidents: IncidentInfo[] = (data?.incidents || [])
-      .filter((i) => {
-        const st = (i.status || "").toLowerCase();
-        const imp = (i.impact || "").toLowerCase();
-        // In-progress maintenance always included
-        if (/in_progress/.test(st)) return true;
-        // Scheduled maintenance only if current time within the window
-        if (/scheduled/.test(st)) {
-          const startMs = i.scheduled_for ? Date.parse(i.scheduled_for) : NaN;
-          const endMs = i.scheduled_until ? Date.parse(i.scheduled_until) : NaN;
-          if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && nowMs >= startMs && nowMs <= endMs) return true;
-          return false;
-        }
-        // For non-maintenance incidents, require an active/problem state and a real impact
-        const active = /(investigating|identified|monitoring|verifying|postmortem)/i.test(st);
-        return active && imp && imp !== "none";
-      })
-      .map((i) => ({
-        created_at: i.created_at,
-        id: i.id,
-        impact: i.impact,
-        // Many providers return HTML in update bodies; convert to safe plain text
-        incident_updates: (i.incident_updates || []).map((u) => ({
-          body: htmlToText(u.body),
-          created_at: u.created_at,
-        })),
-        name: htmlToText(i.name),
-        shortlink: i.shortlink,
-        status: i.status,
-      }));
+    const futureScheduledMaintenances = [
+      ...(data?.incidents || []).filter((incident) => isFutureScheduledStatuspageIncident(incident, nowMs)),
+      ...(data?.scheduled_maintenances || []).filter((incident) =>
+        isFutureScheduledStatuspageIncident(incident, nowMs)
+      ),
+    ];
+    const incidents: IncidentInfo[] = [
+      ...mapActiveStatuspageIncidents(data?.incidents, nowMs),
+      ...mapActiveStatuspageIncidents(data?.scheduled_maintenances, nowMs),
+    ];
 
     // If summary claims maintenance but none is currently in-progress or within window, treat as operational
     if (status === "under_maintenance" && incidents.length === 0) {
@@ -337,6 +381,14 @@ async function fetchStatuspage(service: ServiceConfig): Promise<ServiceStatus> {
         incWorst = escalateStatus(incWorst, m);
       }
       status = escalateStatus(status, incWorst);
+    }
+
+    if (incidents.length === 0 && futureScheduledMaintenances.length > 0) {
+      status = "operational";
+    }
+
+    if (incidents.length === 0 && status !== "operational" && status !== "unknown") {
+      incidents.push(...synthesizeStatuspageFallbackIncidents(service, data, status));
     }
 
     return buildStatus(service, {
@@ -376,6 +428,128 @@ function describeStatuspageResult(
 
 function isOperationalSummaryDescription(description: string): boolean {
   return /all systems operational|no known issues|no incidents reported|operational/i.test(description);
+}
+
+function mapActiveStatuspageIncidents(items: StatuspageIncident[] | undefined, nowMs: number): IncidentInfo[] {
+  return (items || []).filter((incident) => isActiveStatuspageIncident(incident, nowMs)).map(mapStatuspageIncident);
+}
+
+function isActiveStatuspageIncident(incident: StatuspageIncident, nowMs: number): boolean {
+  const status = (incident.status || "").toLowerCase();
+  const impact = (incident.impact || "").toLowerCase();
+
+  if (/in_progress/.test(status)) {
+    return true;
+  }
+
+  if (/scheduled/.test(status)) {
+    const startMs = incident.scheduled_for ? Date.parse(incident.scheduled_for) : NaN;
+    const endMs = incident.scheduled_until ? Date.parse(incident.scheduled_until) : NaN;
+    return !Number.isNaN(startMs) && !Number.isNaN(endMs) && nowMs >= startMs && nowMs <= endMs;
+  }
+
+  if (/investigating|identified|monitoring|verifying|postmortem/i.test(status)) {
+    return !!impact && impact !== "none";
+  }
+
+  return false;
+}
+
+function isFutureScheduledStatuspageIncident(incident: StatuspageIncident, nowMs: number): boolean {
+  const status = (incident.status || "").toLowerCase();
+  if (!/scheduled/.test(status)) {
+    return false;
+  }
+
+  const startMs = incident.scheduled_for ? Date.parse(incident.scheduled_for) : NaN;
+  return !Number.isNaN(startMs) && startMs > nowMs;
+}
+
+function mapStatuspageIncident(incident: StatuspageIncident): IncidentInfo {
+  return {
+    created_at: incident.created_at,
+    id: incident.id,
+    impact: incident.impact,
+    incident_updates: (incident.incident_updates || []).map((update) => ({
+      body: htmlToText(update.body),
+      created_at: update.created_at,
+    })),
+    name: htmlToText(incident.name),
+    shortlink: incident.shortlink,
+    status: incident.status,
+  };
+}
+
+function synthesizeStatuspageFallbackIncidents(
+  service: ServiceConfig,
+  summary: StatuspageSummary,
+  status: StatusLevel
+): IncidentInfo[] {
+  const impactedComponents = getImpactedStatuspageComponents(summary.components);
+  if (impactedComponents.length > 0) {
+    const impactedNames = summarizeAffectedComponents(impactedComponents);
+    const componentLevels = impactedComponents
+      .map((component) => normalizeStatusLevel(component.status))
+      .filter((level): level is StatusLevel => level !== null);
+    const componentStatus = componentLevels.reduce<StatusLevel>(escalateStatus, status);
+
+    return [
+      {
+        created_at: getLatestStatuspageComponentUpdateAt(impactedComponents),
+        id: `${service.id}-statuspage-components`,
+        impact: componentStatus,
+        incident_updates: [],
+        name: impactedComponents.length === 1 ? impactedNames : `Affected components: ${impactedNames}`,
+        shortlink: service.pageUrl,
+        status: componentStatus,
+      },
+    ];
+  }
+
+  const summaryDescription = (summary.status?.description ?? "").trim();
+  if (!summaryDescription || isOperationalSummaryDescription(summaryDescription)) {
+    return [];
+  }
+
+  return [
+    {
+      created_at: new Date().toISOString(),
+      id: `${service.id}-statuspage-summary`,
+      impact: status,
+      incident_updates: [],
+      name: summaryDescription,
+      shortlink: service.pageUrl,
+      status,
+    },
+  ];
+}
+
+function getImpactedStatuspageComponents(components: StatuspageComponent[] | undefined): StatuspageComponent[] {
+  const impacted = (components || []).filter((component) => {
+    const normalized = normalizeStatusLevel(component.status);
+    return normalized !== null && normalized !== "operational";
+  });
+
+  const leaves = impacted.filter((component) => !component.group);
+  return leaves.length > 0 ? leaves : impacted;
+}
+
+function summarizeAffectedComponents(components: StatuspageComponent[]): string {
+  const names = components.map((component) => htmlToText(component.name)).filter(Boolean);
+  if (names.length <= 3) {
+    return names.join(", ");
+  }
+
+  return `${names.slice(0, 3).join(", ")} +${names.length - 3} more`;
+}
+
+function getLatestStatuspageComponentUpdateAt(components: StatuspageComponent[]): string {
+  const latest = components.reduce<number>((currentLatest, component) => {
+    const parsed = component.updated_at ? Date.parse(component.updated_at) : NaN;
+    return Number.isNaN(parsed) ? currentLatest : Math.max(currentLatest, parsed);
+  }, 0);
+
+  return new Date(latest > 0 ? latest : Date.now()).toISOString();
 }
 
 async function fetchGeneric(service: ServiceConfig): Promise<ServiceStatus> {
@@ -641,14 +815,15 @@ export function createUnknownServiceStatus(service: ServiceConfig, description =
 }
 
 type FeedEntry = {
+  description?: unknown;
   id?: string;
   link?: string | Record<string, unknown> | Array<Record<string, unknown>>;
   published?: string;
   updated?: string;
   status?: string;
   title?: string;
-  summary?: string | Record<string, unknown>;
-  content?: string | Record<string, unknown>;
+  summary?: unknown;
+  content?: unknown;
   pubDate?: string; // RSS
 };
 
@@ -661,7 +836,7 @@ function feedEntryStatusToLevel(status?: string): StatusLevel | null {
   if (/^(available|healthy|ok|operational|resolved)$/.test(normalized)) {
     return "operational";
   }
-  if (/(maintenance|planned)/.test(normalized)) {
+  if (/maintenance/.test(normalized) && !/(scheduled|planned|upcoming)/.test(normalized)) {
     return "under_maintenance";
   }
   if (/(partial|degraded|warning)/.test(normalized)) {
@@ -672,6 +847,44 @@ function feedEntryStatusToLevel(status?: string): StatusLevel | null {
   }
 
   return null;
+}
+
+function isFutureScheduledMaintenanceText(text: string): boolean {
+  if (!/(scheduled event|scheduled maintenance|upcoming scheduled maintenance|maintenance is scheduled)/i.test(text)) {
+    return false;
+  }
+
+  if (/(in progress|ongoing|current|started|underway|active maintenance)/i.test(text)) {
+    return false;
+  }
+
+  if (/\bin\s+\d+\s+(minute|minutes|hour|hours|day|days|week|weeks|month|months)\b/i.test(text)) {
+    return true;
+  }
+
+  return /(upcoming|scheduled)/i.test(text);
+}
+
+function getFeedEntryBody(entry: FeedEntry, titleFallback = ""): string {
+  return htmlToText(entry.summary ?? entry.content ?? entry.description ?? titleFallback);
+}
+
+function getFeedEntryLink(entry: FeedEntry): string | undefined {
+  if (typeof entry.link === "string") {
+    return entry.link;
+  }
+
+  if (Array.isArray(entry.link)) {
+    const first = entry.link[0] as Record<string, unknown> | undefined;
+    return first && typeof first["@_href"] === "string" ? (first["@_href"] as string) : undefined;
+  }
+
+  if (entry.link && typeof entry.link === "object") {
+    const objectLink = entry.link as Record<string, unknown>;
+    return typeof objectLink["@_href"] === "string" ? (objectLink["@_href"] as string) : undefined;
+  }
+
+  return undefined;
 }
 
 async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
@@ -723,29 +936,16 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
     for (const e of entries.slice(0, 200)) {
       const tsStr = (e.updated || e.published || e.pubDate || "").toString();
       const ts = tsStr ? Date.parse(tsStr) : NaN;
-      const title = htmlToText((e.title || "").toString());
-      const bodyRaw =
-        typeof e.summary === "string"
-          ? e.summary
-          : typeof e.content === "string"
-            ? e.content
-            : ((e as Record<string, unknown> | undefined)?.["description"] as string | undefined) || "";
-      const body = htmlToText((bodyRaw || title).toString());
-      // Try to capture a link for this entry if present
-      let link: string | undefined;
-      if (typeof e.link === "string") link = e.link;
-      else if (Array.isArray(e.link)) {
-        const first = e.link[0] as Record<string, unknown> | undefined;
-        const href = first && typeof first["@_href"] === "string" ? (first["@_href"] as string) : undefined;
-        link = href;
-      } else if (e.link && typeof e.link === "object") {
-        const obj = e.link as Record<string, unknown>;
-        link = typeof obj["@_href"] === "string" ? (obj["@_href"] as string) : undefined;
-      }
+      const title = htmlToText(e.title);
+      const body = getFeedEntryBody(e, title);
+      const link = getFeedEntryLink(e);
       if (!Number.isNaN(ts) && now - ts <= 1000 * 60 * 60 * 24 * 3) {
         updates.push({ body, created_at: new Date(ts).toISOString() });
         const combined = `${title} ${body}`;
         const explicitStatus = feedEntryStatusToLevel(e.status);
+        if (isFutureScheduledMaintenanceText(combined)) {
+          continue;
+        }
         if (isResolutionText(combined)) {
           latestResolutionMs = Math.max(latestResolutionMs, ts);
           continue;
@@ -778,7 +978,7 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
               id: `${service.id}-rss-incident`,
               impact: topStatus,
               incident_updates: sorted,
-              name: (latestNonOperationalTitle || `${service.name} — Aggregated RSS incidents`).toString(),
+              name: (latestNonOperationalTitle || `${service.name} - Aggregated RSS incidents`).toString(),
               shortlink: latestNonOperationalLink || service.pageUrl,
               status: topStatus,
             },
@@ -860,31 +1060,18 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
     for (const e of entries.slice(0, 20)) {
       const tsStr = (e.updated || e.published || e.pubDate || "").toString();
       const ts = tsStr ? Date.parse(tsStr) : NaN;
-      const title = htmlToText((e.title || "").toString());
-      const bodyRaw =
-        typeof e.summary === "string"
-          ? e.summary
-          : typeof e.content === "string"
-            ? e.content
-            : ((e as Record<string, unknown> | undefined)?.["description"] as string | undefined) || "";
-      const body = htmlToText((bodyRaw || title).toString());
-      let link: string | undefined;
-      if (typeof e.link === "string") {
-        link = e.link;
-      } else if (Array.isArray(e.link)) {
-        const first = e.link[0] as Record<string, unknown> | undefined;
-        const href = first && typeof first["@_href"] === "string" ? (first["@_href"] as string) : undefined;
-        link = href;
-      } else if (e.link && typeof e.link === "object") {
-        const obj = e.link as Record<string, unknown>;
-        link = typeof obj["@_href"] === "string" ? (obj["@_href"] as string) : undefined;
-      }
+      const title = htmlToText(e.title);
+      const body = getFeedEntryBody(e, title);
+      const link = getFeedEntryLink(e);
 
       if (!Number.isNaN(ts) && now - ts <= 1000 * 60 * 60 * 24 * 3) {
         // consider last 3 days
         updates.push({ body, created_at: new Date(ts).toISOString() });
         const combined = `${title} ${body}`;
         const explicitStatus = feedEntryStatusToLevel(e.status);
+        if (isFutureScheduledMaintenanceText(combined)) {
+          continue;
+        }
         if (isResolutionText(combined)) {
           latestResolutionMs = Math.max(latestResolutionMs, ts);
           continue;

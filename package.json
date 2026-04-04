@@ -6,7 +6,7 @@
     "node": ">=24.14.1 <25"
   },
   "scripts": {
-    "clean": "node scripts/clean.mjs build release",
+    "clean": "node scripts/clean.mjs build",
     "lint": "eslint \"src/**/*.ts\"",
     "build:js": "tsc",
     "build": "npm run clean && npm run build:js",

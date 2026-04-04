@@ -11,9 +11,7 @@ function isSoraEnabled(): boolean {
   return (process.env["ENABLE_SORA"] ?? "false").toLowerCase() === "true";
 }
 
-export async function registerAllSlashCommands(clientId: string, token: string) {
-  const rest = new REST({ version: "10" }).setToken(token);
-
+function buildSlashCommands(): Array<RESTPostAPIApplicationCommandsJSONBody> {
   const kickCommand = new SlashCommandBuilder()
     .setName("kick")
     .setDescription("Removes a player from the queue.")
@@ -123,10 +121,43 @@ export async function registerAllSlashCommands(clientId: string, token: string) 
     commands.push(sora);
   }
 
-  const registeredCommands = (await rest.put(Routes.applicationCommands(clientId), {
-    body: commands,
-  })) as Array<{ name: string }>;
+  return commands;
+}
 
-  const commandNames = registeredCommands.map((command) => command.name).join(", ");
-  console.info(`[SlashCommands] Registered global commands: ${commandNames}`);
+async function pruneGlobalSlashCommands(rest: REST, clientId: string): Promise<void> {
+  await rest.put(Routes.applicationCommands(clientId), {
+    body: [],
+  });
+}
+
+export async function registerGuildSlashCommands(clientId: string, token: string, guildId: string): Promise<void> {
+  const rest = new REST({ version: "10" }).setToken(token);
+  const commands = buildSlashCommands();
+  await rest.put(Routes.applicationGuildCommands(clientId, guildId), {
+    body: commands,
+  });
+}
+
+export async function registerAllSlashCommands(clientId: string, token: string, guildIds: string[] = []) {
+  const rest = new REST({ version: "10" }).setToken(token);
+  const commands = buildSlashCommands();
+
+  const uniqueGuildIds = [...new Set(guildIds)];
+  await pruneGlobalSlashCommands(rest, clientId);
+
+  for (const guildId of uniqueGuildIds) {
+    await rest.put(Routes.applicationGuildCommands(clientId, guildId), {
+      body: commands,
+    });
+  }
+
+  const commandNames = commands.map((command) => command.name).join(", ");
+  console.info(`[SlashCommands] Registered guild commands: ${commandNames}`);
+
+  if (uniqueGuildIds.length > 0) {
+    const guildWord = uniqueGuildIds.length === 1 ? "guild" : "guilds";
+    console.info(
+      `[SlashCommands] Registered guild commands for ${uniqueGuildIds.length} ${guildWord}.`
+    );
+  }
 }

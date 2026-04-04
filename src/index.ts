@@ -1,6 +1,6 @@
 import { Client } from "discord.js";
 import OpenAI from "openai";
-import { registerAllSlashCommands } from "./controllers/CommandRegistry";
+import { registerAllSlashCommands, registerGuildSlashCommands } from "./controllers/CommandRegistry";
 import { assertSoraRuntimeSupport } from "./controllers/EasterEggs";
 import { ApiStatusRuntime } from "./runtime/ApiStatusRuntime";
 import { DiscordWorkScheduler } from "./runtime/DiscordWorkScheduler";
@@ -107,7 +107,12 @@ function registerDiscordHandlers(client: Client, discordToken: string): void {
       console.info("NormJS single-instance runtime is starting.");
 
       if (!readyClient.user) throw new Error("No client id");
-      await registerAllSlashCommands(readyClient.user.id, discordToken);
+      const guilds = await readyClient.guilds.fetch();
+      await registerAllSlashCommands(
+        readyClient.user.id,
+        discordToken,
+        guilds.map((guild) => guild.id)
+      );
       await runtimeManager?.initializeConfiguredGuilds();
 
       console.info(`NormJS is running with config store at ${configStore.getConfigPath()}.`);
@@ -144,6 +149,17 @@ function registerDiscordHandlers(client: Client, discordToken: string): void {
 
   client.on("error", (error) => {
     console.error("Discord client error:", error);
+  });
+
+  client.on("guildCreate", async (guild) => {
+    await runSafely("guildCreate", async () => {
+      if (!client.user) {
+        return;
+      }
+
+      await registerGuildSlashCommands(client.user.id, discordToken, guild.id);
+      console.info(`[SlashCommands] Registered commands for newly joined guild ${guild.id}.`);
+    });
   });
 }
 
