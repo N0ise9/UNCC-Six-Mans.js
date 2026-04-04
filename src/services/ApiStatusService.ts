@@ -199,6 +199,17 @@ function htmlToText(html: string): string {
   return s.trim();
 }
 
+function stripInformationalBoilerplate(text: string): string {
+  return text
+    .replace(/this site is updated when[^.]+\.?/gi, " ")
+    .replace(/customers can (also )?reference[^.]+\.?/gi, " ")
+    .replace(/for additional insights into[^.]+\.?/gi, " ")
+    .replace(/visit (our )?(status page|dashboard)[^.]+\.?/gi, " ")
+    .replace(/learn more[^.]*\.?/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function statuspageToLevel(indicator?: string, overall?: string): StatusLevel {
   // indicator: none|minor|major|critical; overall description might include Maintenance
   if (!indicator) {
@@ -246,7 +257,7 @@ type StatuspageSummary = {
 };
 
 async function fetchStatuspage(service: ServiceConfig): Promise<ServiceStatus> {
-  const apiUrl = service.apiUrl || service.pageUrl.replace(/\/?$/, "/") + "api/v2/summary.json";
+  const apiUrl = deriveStatuspageSummaryUrl(service);
   try {
     const res = await fetchWithTimeout(apiUrl);
     if (!res.ok) throw new Error(`${service.name} status API returned ${res.status}`);
@@ -331,15 +342,66 @@ async function fetchGeneric(service: ServiceConfig): Promise<ServiceStatus> {
 }
 
 function inferStatusFromText(text: string): StatusLevel {
-  const t = text.toLowerCase();
+  const operationalPhrasePattern = new RegExp(
+    ["\\bno\\s+issues\\b", "\\bno\\s+known\\s+issues\\b", "\\bavailable\\b", "\\bhealthy\\b", "\\ball clear\\b"].join(
+      "|"
+    ),
+    "i"
+  );
+  const activeMaintenancePattern = new RegExp(
+    [
+      "(ongoing|current|active|in progress).{0,24}(maintenance)",
+      "maintenance.{0,24}(ongoing|current|active|in progress)",
+    ].join("|"),
+    "i"
+  );
+  const majorOutagePattern = /(critical|major outage|service unavailable|outage|unavailable|downtime|down)/i;
+  const degradedPattern = new RegExp(
+    [
+      "degrad",
+      "investigating",
+      "identified",
+      "monitoring",
+      "verifying",
+      "latenc",
+      "error",
+      "elevated\\s+error",
+      "disruption",
+      "interruption",
+    ].join("|"),
+    "i"
+  );
+  const activeIssueContextPattern = new RegExp(
+    [
+      "active",
+      "current",
+      "ongoing",
+      "widespread",
+      "affecting",
+      "impacting",
+      "preventing",
+      "experiencing",
+      "detected",
+      "users?\\s+(may|are|cannot|can't)",
+    ].join("|"),
+    "i"
+  );
+  const t = stripInformationalBoilerplate(text).toLowerCase();
+  if (!t) return "operational";
   // Ignore informational posts explicitly stating no impact
   if (/(no\s+operational\s+impact|no\s+impact)/i.test(t)) return "operational";
-  if (/(\bno\s+issues\b|\bno\s+known\s+issues\b)/i.test(t)) return "operational";
-  if (/(maintenance)/i.test(t)) return "under_maintenance";
-  if (/(critical|major outage|service unavailable|outage|unavailable|downtime|down)/i.test(t)) return "major_outage";
+  if (operationalPhrasePattern.test(t))
+    return "operational";
+  if (activeMaintenancePattern.test(t))
+    return "under_maintenance";
+  if (majorOutagePattern.test(t))
+    return "major_outage";
   if (/(partial)/i.test(t)) return "partial_outage";
-  if (/(degrad|incident|investigating|identified|latenc|error|elevated\s+error|disruption|interruption|issue)/i.test(t))
+  if (degradedPattern.test(t))
     return "degraded_performance";
+  if (/(incident|issue|issues)/i.test(t) && activeIssueContextPattern.test(t)) {
+    return "degraded_performance";
+  }
   return "operational";
 }
 
@@ -357,10 +419,25 @@ function isResolutionText(text: string): boolean {
   );
 }
 
+function deriveStatuspagePathUrl(pageUrl: string, pathname: string): string {
+  try {
+    const url = new URL(pageUrl);
+    url.pathname = pathname;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    const normalizedBase = pageUrl.replace(/\/+$/, "");
+    return `${normalizedBase}${pathname}`;
+  }
+}
+
+function deriveStatuspageSummaryUrl(service: ServiceConfig): string {
+  return service.apiUrl || deriveStatuspagePathUrl(service.pageUrl, "/api/v2/summary.json");
+}
+
 function deriveStatuspageRssUrl(pageUrl: string): string {
-  // e.g., https://www.githubstatus.com/ -> https://www.githubstatus.com/history.atom
-  const base = pageUrl.replace(/\/?$/, "/");
-  return base + "history.atom";
+  return deriveStatuspagePathUrl(pageUrl, "/history.atom");
 }
 
 // AWS feed generator: build many service/region RSS endpoints
@@ -505,10 +582,7 @@ export function buildAwsChildServices(): ServiceConfig[] {
   });
 }
 
-export function createUnknownServiceStatus(
-  service: ServiceConfig,
-  description = "Checking status..."
-): ServiceStatus {
+export function createUnknownServiceStatus(service: ServiceConfig, description = "Checking status..."): ServiceStatus {
   return buildStatus(service, {
     description,
     incidents: [],
@@ -521,11 +595,34 @@ type FeedEntry = {
   link?: string | Record<string, unknown> | Array<Record<string, unknown>>;
   published?: string;
   updated?: string;
+  status?: string;
   title?: string;
   summary?: string | Record<string, unknown>;
   content?: string | Record<string, unknown>;
   pubDate?: string; // RSS
 };
+
+function feedEntryStatusToLevel(status?: string): StatusLevel | null {
+  const normalized = (status || "").trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (/^(available|healthy|ok|operational|resolved)$/.test(normalized)) {
+    return "operational";
+  }
+  if (/(maintenance|planned)/.test(normalized)) {
+    return "under_maintenance";
+  }
+  if (/(partial|degraded|warning)/.test(normalized)) {
+    return "degraded_performance";
+  }
+  if (/(major|critical|unavailable|outage|down)/.test(normalized)) {
+    return "major_outage";
+  }
+
+  return null;
+}
 
 async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
   // If multiple feeds are provided, aggregate them
@@ -598,11 +695,12 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
       if (!Number.isNaN(ts) && now - ts <= 1000 * 60 * 60 * 24 * 3) {
         updates.push({ body, created_at: new Date(ts).toISOString() });
         const combined = `${title} ${body}`;
+        const explicitStatus = feedEntryStatusToLevel(e.status);
         if (isResolutionText(combined)) {
           latestResolutionMs = Math.max(latestResolutionMs, ts);
           continue;
         }
-        const st = inferStatusFromText(combined);
+        const st = explicitStatus ?? inferStatusFromText(combined);
         if (st !== "operational") latestNonOperationalMs = Math.max(latestNonOperationalMs, ts);
         if (st !== "operational" && (latestNonOperationalTitle === undefined || ts >= latestNonOperationalMs)) {
           latestNonOperationalTitle = title || latestNonOperationalTitle;
@@ -736,11 +834,12 @@ async function fetchRSS(service: ServiceConfig): Promise<ServiceStatus> {
         // consider last 3 days
         updates.push({ body, created_at: new Date(ts).toISOString() });
         const combined = `${title} ${body}`;
+        const explicitStatus = feedEntryStatusToLevel(e.status);
         if (isResolutionText(combined)) {
           latestResolutionMs = Math.max(latestResolutionMs, ts);
           continue;
         }
-        const st = inferStatusFromText(combined);
+        const st = explicitStatus ?? inferStatusFromText(combined);
         if (st !== "operational") {
           latestNonOperationalMs = Math.max(latestNonOperationalMs, ts);
           // pick the worst
@@ -1315,39 +1414,17 @@ async function checkService(service: ServiceConfig): Promise<ServiceStatus> {
   // For Statuspage-backed services, the JSON summary is most accurate for "current" state.
   if (service.type === "statuspage") {
     const sp = await fetchStatuspage(service);
-    const spUnreachable = sp.status === "unknown" && sp.description === "Unreachable";
-    if (!spUnreachable) {
-      // Some Statuspage sites occasionally return a 200 with an empty/ambiguous summary.
-      // If the summary yields an unknown status, try the RSS feed for a better signal.
-      if (sp.status === "unknown") {
-        try {
-          const rssFallback = await fetchRSS(service);
-          if (rssFallback.status !== "unknown") return rssFallback;
-        } catch {
-          // ignore and use the summary result below
-        }
-      }
-      // If non-operational and RSS is available, consult RSS for richer details or more severe state
-      const hasRss = true; // we can derive Statuspage RSS even if not explicitly configured
-      if (hasRss && sp.status !== "operational" && sp.status !== "unknown") {
-        try {
-          const rss = await fetchRSS(service);
-          const rssBetter =
-            isWorseStatus(rss.status, sp.status, STATUS_RANK_UNKNOWN_HIGH) || (sp.incidents?.length ?? 0) === 0;
-          return rssBetter ? rss : sp;
-        } catch {
-          return sp;
-        }
-      }
+    if (sp.status !== "unknown") {
       return sp;
     }
-    // If statuspage summary unreachable, fall back to RSS (Statuspage sites have a history feed), then generic
-    {
-      const rss = await fetchRSS(service);
-      if (rss.status !== "unknown") {
-        return rss;
-      }
+
+    // Statuspage summary is the preferred source of truth.
+    // RSS and generic checks are only backups when summary.json is unavailable or ambiguous.
+    const rss = await fetchRSS(service);
+    if (rss.status !== "unknown") {
+      return rss;
     }
+
     return await fetchGeneric(service);
   }
 
@@ -1455,6 +1532,7 @@ export const Categories: CategoryConfig[] = [
         type: "statuspage",
       },
       {
+        apiUrl: "https://status.linode.com/api/v2/summary.json",
         id: "linode",
         name: "Linode",
         pageUrl: "https://status.linode.com/",
@@ -1552,7 +1630,7 @@ export const Categories: CategoryConfig[] = [
         name: "Fastly",
         pageUrl: "https://www.fastlystatus.com/",
         rssUrl: "https://www.fastlystatus.com/rss",
-        type: "statuspage",
+        type: "generic",
       },
       {
         id: "akamai",
