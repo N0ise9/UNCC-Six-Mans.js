@@ -30,6 +30,17 @@ import { PrismaStudioAccessGate } from "./PrismaStudioAccessGate";
 import { reconcileTrackedMessages } from "./reconcileTrackedMessages";
 import { createScheduledCommandResponder } from "./createScheduledCommandResponder";
 import {
+  calculateMMR,
+  calculateProbability,
+  calculateProbabilityDecimal,
+  chooseCaptains,
+  countCaptainsRandomVotes,
+  countTwosVotes,
+  createRandomTeams,
+  getQueueTargetSize,
+  resolveMatchReport,
+} from "./sixMansRules";
+import {
   ActiveMatchTeams,
   NewActiveMatchInput,
   PlayerInActiveMatch,
@@ -762,7 +773,7 @@ export class GuildRuntimeManager {
     if (!playerInQueue) return;
 
     const queue = await context.repositories.queue.getAllBallChasersInQueue();
-    const target = getQueueTargetSize(context);
+    const target = getQueueTargetSize(context.voteState.twosEnabled);
     if (queue.length !== target) return;
 
     context.voteState.captainsRandomVotes.set(userId, customId);
@@ -819,6 +830,7 @@ export class GuildRuntimeManager {
   private async handleTwosVote(context: GuildContext, userId: string): Promise<void> {
     const ballChasers = await context.repositories.queue.getAllBallChasersInQueue();
     if (ballChasers.length < 4) return;
+    if (!ballChasers.some((player) => player.id === userId)) return;
 
     context.voteState.twosVotes.set(userId, ButtonCustomID.Twos);
     if (countTwosVotes(context.voteState.twosVotes) >= 4) {
@@ -971,37 +983,10 @@ function isDevEnvironment(): boolean {
   return process.env["ENVIRONMENT"] === "dev";
 }
 
-function getQueueTargetSize(context: GuildContext): number {
-  return context.voteState.twosEnabled ? 4 : 6;
-}
-
 function resetVoteState(context: GuildContext): void {
   context.voteState.captainsRandomVotes.clear();
   context.voteState.twosVotes.clear();
   context.voteState.twosEnabled = false;
-}
-
-function countCaptainsRandomVotes(votes: Map<string, string>): { captains: number; random: number } {
-  let captains = 0;
-  let random = 0;
-
-  for (const value of votes.values()) {
-    if (value === ButtonCustomID.ChooseTeam) captains += 1;
-    if (value === ButtonCustomID.CreateRandomTeam) random += 1;
-  }
-
-  return {
-    captains,
-    random,
-  };
-}
-
-function countTwosVotes(votes: Map<string, string>): number {
-  let twos = 0;
-  for (const value of votes.values()) {
-    if (value === ButtonCustomID.Twos) twos += 1;
-  }
-  return twos;
 }
 
 function getVoterList(players: ReadonlyArray<Readonly<PlayerInQueue>>, votes: Map<string, string>): PlayerInQueue[] {
@@ -1029,7 +1014,7 @@ async function buildQueueRender(
     };
   }
 
-  const targetSize = getQueueTargetSize(context);
+  const targetSize = getQueueTargetSize(context.voteState.twosEnabled);
   if (players.length >= targetSize) {
     const { captains, random } = countCaptainsRandomVotes(context.voteState.captainsRandomVotes);
     const voterList = getVoterList(players, context.voteState.captainsRandomVotes);
@@ -1085,7 +1070,7 @@ async function joinQueue(
   if (activeMatchMember) return null;
 
   const queue = await context.repositories.queue.getAllBallChasersInQueue();
-  const target = getQueueTargetSize(context);
+  const target = getQueueTargetSize(context.voteState.twosEnabled);
   const queueMember = await context.repositories.queue.getBallChaserInQueue(userId);
 
   if (!queueMember && queue.length >= target) {
@@ -1159,47 +1144,20 @@ async function kickPlayerFromQueue(
   return updatedList ?? playersInQueue;
 }
 
-function createRandomTeams(ballchasers: ReadonlyArray<PlayerInQueue>): Array<NewActiveMatchInput> {
-  const sortedBallChaser = ballchasers.slice().sort((o, b) => o.mmr - b.mmr);
-  const activeMatch: NewActiveMatchInput[] = [];
-  let orangeTeamCounter = 0;
-  let blueTeamCounter = 0;
-
-  sortedBallChaser.forEach((player) => {
-    if (Math.round(Math.random()) === 1) {
-      if (orangeTeamCounter < sortedBallChaser.length / 2) {
-        activeMatch.push({ id: player.id, team: Team.Orange });
-        orangeTeamCounter += 1;
-      } else {
-        activeMatch.push({ id: player.id, team: Team.Blue });
-        blueTeamCounter += 1;
-      }
-    } else if (blueTeamCounter < sortedBallChaser.length / 2) {
-      activeMatch.push({ id: player.id, team: Team.Blue });
-      blueTeamCounter += 1;
-    } else {
-      activeMatch.push({ id: player.id, team: Team.Orange });
-      orangeTeamCounter += 1;
-    }
-  });
-
-  return activeMatch;
-}
-
 async function setCaptains(
   context: GuildContext,
   ballChasers: ReadonlyArray<PlayerInQueue>
 ): Promise<ReadonlyArray<PlayerInQueue>> {
-  const sortedBallChaser = ballChasers.slice().sort((o, b) => b.mmr - o.mmr);
+  const { blueCaptainId, orangeCaptainId } = chooseCaptains(ballChasers);
 
   await Promise.all([
     context.repositories.queue.updateBallChaserInQueue({
-      id: sortedBallChaser[0].id,
+      id: orangeCaptainId,
       isCap: true,
       team: Team.Orange,
     }),
     context.repositories.queue.updateBallChaserInQueue({
-      id: sortedBallChaser[1].id,
+      id: blueCaptainId,
       isCap: true,
       team: Team.Blue,
     }),
@@ -1224,35 +1182,6 @@ async function orangePlayerChosen(context: GuildContext, chosenPlayers: string[]
       team: Team.Orange,
     });
   }
-}
-
-function calculateProbabilityDecimal(teams: ActiveMatchTeams): {
-  blueProbabilityDecimal: number;
-  orangeProbabilityDecimal: number;
-} {
-  const blueTeamMMR = teams.blueTeam.reduce((totalMMR, player) => totalMMR + player.mmr, 0);
-  const orangeTeamMMR = teams.orangeTeam.reduce((totalMMR, player) => totalMMR + player.mmr, 0);
-
-  const calcTeamProbabilityDecimal = (winnerMMR: number, loserMMR: number): number => {
-    const difference = (loserMMR - winnerMMR) / 400;
-    return 1 / (Math.pow(10, difference) + 1);
-  };
-
-  return {
-    blueProbabilityDecimal: calcTeamProbabilityDecimal(blueTeamMMR, orangeTeamMMR),
-    orangeProbabilityDecimal: calcTeamProbabilityDecimal(orangeTeamMMR, blueTeamMMR),
-  };
-}
-
-function calculateMMR(calculatedProbabilityDecimal: number): number {
-  let mmr = (1 - calculatedProbabilityDecimal) * 20;
-  mmr = Math.min(15, mmr);
-  mmr = Math.max(5, mmr);
-  return Math.round(mmr);
-}
-
-function calculateProbability(calculatedProbabilityDecimal: number): number {
-  return Math.round(calculatedProbabilityDecimal * 100);
 }
 
 async function startMatch(
@@ -1324,24 +1253,18 @@ async function createMatchFromChosenTeams(context: GuildContext): Promise<Active
 
 async function checkReport(context: GuildContext, reportedTeam: Team, playerInMatchId: string): Promise<boolean> {
   const teams = await context.repositories.activeMatch.getAllPlayersInActiveMatch(playerInMatchId);
-  const reporter = [...teams.blueTeam, ...teams.orangeTeam].find((player) => player.id === playerInMatchId);
-  const previousReporter = [...teams.blueTeam, ...teams.orangeTeam].find((player) => player.reportedTeam !== null);
+  const reportResolution = resolveMatchReport(teams, playerInMatchId, reportedTeam);
 
-  if (!reporter) {
-    return false;
+  switch (reportResolution.kind) {
+    case "ignore":
+      return false;
+    case "record":
+      await reportMatch(context, reportedTeam, reportResolution.reporter, teams);
+      return false;
+    case "confirm":
+      await confirmMatch(context, reportedTeam, teams, playerInMatchId);
+      return true;
   }
-
-  if (previousReporter?.team === reporter.team && previousReporter.reportedTeam === reportedTeam) {
-    return false;
-  }
-
-  if (previousReporter?.reportedTeam !== reportedTeam || previousReporter?.id === reporter.id) {
-    await reportMatch(context, reportedTeam, reporter, teams);
-    return false;
-  }
-
-  await confirmMatch(context, reportedTeam, teams, playerInMatchId);
-  return true;
 }
 
 async function reportMatch(

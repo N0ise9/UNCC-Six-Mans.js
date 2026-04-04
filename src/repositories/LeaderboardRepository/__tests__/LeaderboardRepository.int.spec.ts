@@ -193,6 +193,75 @@ describe("LeaderboardRepository tests", () => {
     expect(actual).not.toBeNull();
   });
 
+  it("creates a leaderboard row with default losses when only wins are provided", async () => {
+    const mockPlayerStats = LeaderboardBuilder.single({ id: "winner", losses: 0, mmr: 115, wins: 1 });
+    await manuallyAddBallChaser({
+      id: mockPlayerStats.id,
+      name: mockPlayerStats.name,
+    });
+
+    await leaderboardRepository.updatePlayersStats([
+      {
+        id: mockPlayerStats.id,
+        mmr: 115,
+        wins: 1,
+      },
+    ]);
+
+    const created = await prisma.leaderboard.findUnique({
+      where: {
+        eventId_playerId: {
+          eventId,
+          playerId: mockPlayerStats.id,
+        },
+      },
+    });
+
+    expect(created?.wins).toBe(1);
+    expect(created?.losses).toBe(0);
+    expect(created?.mmr).toBe(115);
+  });
+
+  it("preserves omitted wins or losses when updating an existing leaderboard row", async () => {
+    const existingPlayer = LeaderboardBuilder.single({
+      id: "player-1",
+      losses: 4,
+      mmr: 100,
+      name: "player-1",
+      wins: 7,
+    });
+    await manuallyAddPlayerStatsToLeaderboard(existingPlayer);
+
+    await leaderboardRepository.updatePlayersStats([
+      {
+        id: existingPlayer.id,
+        losses: existingPlayer.losses + 1,
+        mmr: 90,
+      },
+    ]);
+
+    await leaderboardRepository.updatePlayersStats([
+      {
+        id: existingPlayer.id,
+        mmr: 110,
+        wins: existingPlayer.wins + 1,
+      },
+    ]);
+
+    const updated = await prisma.leaderboard.findUnique({
+      where: {
+        eventId_playerId: {
+          eventId,
+          playerId: existingPlayer.id,
+        },
+      },
+    });
+
+    expect(updated?.wins).toBe(existingPlayer.wins + 1);
+    expect(updated?.losses).toBe(existingPlayer.losses + 1);
+    expect(updated?.mmr).toBe(110);
+  });
+
   it("gets top n player stats", async () => {
     const playersToAdd = LeaderboardBuilder.many(10);
     await manuallyAddPlayerStatsToLeaderboard(playersToAdd);

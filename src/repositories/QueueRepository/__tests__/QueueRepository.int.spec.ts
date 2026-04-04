@@ -211,6 +211,58 @@ describe("Queue Repository tests", () => {
     expect(DateTime.fromJSDate(playerInDb?.queueTime!).toISO()).toEqual(mockBallChaser.queueTime.toISO());
     expect(playerInDb?.team).toBeNull();
   });
+
+  it("adds a queue row for an existing ballchaser who is not currently queued", async () => {
+    const mockBallChaser = BallChaserQueueBuilder.single({ isCap: false, team: null });
+
+    await prisma.ballChaser.create({
+      data: {
+        id: mockBallChaser.id,
+        name: mockBallChaser.name,
+      },
+    });
+
+    await queueRepository.addBallChaserToQueue({
+      id: mockBallChaser.id,
+      name: mockBallChaser.name,
+      queueTime: mockBallChaser.queueTime,
+    });
+
+    const playerInDb = await prisma.queue.findUnique({
+      include: {
+        player: true,
+      },
+      where: {
+        playerId: mockBallChaser.id,
+      },
+    });
+
+    expect(playerInDb).not.toBeNull();
+    expect(playerInDb?.player.name).toBe(mockBallChaser.name);
+    expect(DateTime.fromJSDate(playerInDb?.queueTime!).toISO()).toBe(mockBallChaser.queueTime.toISO());
+  });
+
+  it("reorders the queue when a player's queue time is refreshed", async () => {
+    const firstBallChaser = BallChaserQueueBuilder.single({
+      id: "first",
+      queueTime: DateTime.fromISO("2026-04-04T12:00:00.000Z"),
+    });
+    const secondBallChaser = BallChaserQueueBuilder.single({
+      id: "second",
+      queueTime: DateTime.fromISO("2026-04-04T12:05:00.000Z"),
+    });
+    await manuallyAddBallChaserToQueue(firstBallChaser);
+    await manuallyAddBallChaserToQueue(secondBallChaser);
+
+    await queueRepository.updateBallChaserInQueue({
+      id: "first",
+      queueTime: DateTime.fromISO("2026-04-04T12:10:00.000Z"),
+    });
+
+    const queue = await queueRepository.getAllBallChasersInQueue();
+
+    expect(queue.map((player) => player.id)).toEqual(["second", "first"]);
+  });
   describe("check if player is in queue", () => {
     it("player is in queue", async () => {
       const mockBallChaser = BallChaserQueueBuilder.single();
