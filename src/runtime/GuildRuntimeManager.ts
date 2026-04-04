@@ -917,9 +917,18 @@ export class GuildRuntimeManager {
     const release = await context.queueMutex.acquire();
     try {
       const updatedList = await checkQueueTimes(context);
-      if (!updatedList) return;
-      resetVoteState(context);
-      await this.refreshQueueSurface(context, updatedList);
+      if (updatedList) {
+        resetVoteState(context);
+        await this.refreshQueueSurface(context, updatedList);
+        return;
+      }
+
+      const queuedPlayers = await context.repositories.queue.getAllBallChasersInQueue();
+      if (queuedPlayers.length === 0) {
+        return;
+      }
+
+      await this.refreshQueueSurface(context, queuedPlayers);
     } catch (error) {
       console.error(`[${context.guildId}] Queue timer refresh failed:`, error);
     } finally {

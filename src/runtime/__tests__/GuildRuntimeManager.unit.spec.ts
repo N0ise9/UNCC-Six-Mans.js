@@ -1,4 +1,5 @@
 import { Client, Message, MessageFlags, TextChannel } from "discord.js";
+import { DateTime } from "luxon";
 import OpenAI from "openai";
 import * as EasterEggsController from "../../controllers/EasterEggs";
 import { GuildConfigReadResult, GuildConfigStore } from "../GuildConfigStore";
@@ -325,6 +326,62 @@ describe("GuildRuntimeManager", () => {
       refreshQueueSurfaceSpy.mockRestore();
       startQueueTimerSpy.mockRestore();
       infoSpy.mockRestore();
+      await manager.dispose();
+    }
+  });
+
+  it("refreshes the queue surface on the minute even when no players expire", async () => {
+    const manager = new GuildRuntimeManager(
+      {} as Client,
+      {} as OpenAI,
+      {} as GuildConfigStore,
+      new DiscordWorkScheduler(1, 0)
+    );
+    const context = createContext("guild-1");
+    const queuedPlayers = [
+      {
+        id: "player-1",
+        isCap: false,
+        mmr: 100,
+        name: "Player One",
+        queueTime: DateTime.now().plus({ minutes: 30 }),
+        team: null,
+      },
+    ];
+    const release = jest.fn();
+    context.queueMutex = {
+      acquire: jest.fn(async () => release),
+    } as unknown as GuildContext["queueMutex"];
+    context.repositories = {
+      queue: {
+        getAllBallChasersInQueue: jest.fn(async () => queuedPlayers),
+        removeBallChaserFromQueue: jest.fn(async () => undefined),
+      },
+    } as unknown as GuildContext["repositories"];
+
+    const refreshQueueSurfaceSpy = jest
+      .spyOn(
+        manager as unknown as {
+          refreshQueueSurface: (
+            guildContext: GuildContext,
+            players?: typeof queuedPlayers
+          ) => Promise<void>;
+        },
+        "refreshQueueSurface"
+      )
+      .mockResolvedValue(undefined);
+
+    try {
+      await (
+        manager as unknown as {
+          runQueueTimer: (guildContext: GuildContext) => Promise<void>;
+        }
+      ).runQueueTimer(context);
+
+      expect(refreshQueueSurfaceSpy).toHaveBeenCalledWith(context, queuedPlayers);
+      expect(release).toHaveBeenCalledTimes(1);
+    } finally {
+      refreshQueueSurfaceSpy.mockRestore();
       await manager.dispose();
     }
   });
