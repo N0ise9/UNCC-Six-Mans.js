@@ -1,58 +1,38 @@
-import { BallChaser, PrismaClient, createPrismaClientFromEnv } from "../../../prisma";
+import { BallChaser, PrismaClient } from "../../../prisma";
 import * as faker from "faker";
 import { LeaderboardBuilder } from "../../../../.jest/Builder";
 import { waitForAllPromises } from "../../../utils";
 import { LeaderboardRepository } from "../LeaderboardRepository";
 import { EventRepository } from "../../EventRepository";
 import { PlayerStats } from "../types";
+import {
+  createIntegrationTestPrismaClient,
+  DEFAULT_TEST_EVENT_ID,
+  ensureDefaultIntegrationEvent,
+  resetIntegrationDatabase,
+} from "../../../../.jest/integrationPrisma";
 
 let prisma: PrismaClient;
-let eventId: number = 1;
+let eventId: number = DEFAULT_TEST_EVENT_ID;
 let eventRepository: EventRepository;
 let leaderboardRepository: LeaderboardRepository;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  await resetIntegrationDatabase(prisma);
+  await ensureDefaultIntegrationEvent(prisma, eventId, "Spring 2022");
   eventRepository = new EventRepository(prisma);
   leaderboardRepository = new LeaderboardRepository(prisma, eventRepository);
 });
 
 beforeAll(async () => {
-  prisma = createPrismaClientFromEnv();
+  prisma = createIntegrationTestPrismaClient();
   await prisma.$connect();
-  await prisma.leaderboard.deleteMany();
-  await prisma.event.deleteMany();
-
-  await prisma.event.create({
-    data: {
-      id: eventId,
-      name: "Spring 2022",
-    },
-  });
-
-  await prisma.activeMatch.deleteMany();
-  await prisma.queue.deleteMany();
-  await prisma.ballChaser.deleteMany();
-});
-
-afterEach(async () => {
-  await prisma.leaderboard.deleteMany();
-  await prisma.event.deleteMany();
-
-  await prisma.event.create({
-    data: {
-      id: eventId,
-      name: "Spring 2022",
-    },
-  });
-
-  await prisma.activeMatch.deleteMany();
-  await prisma.queue.deleteMany();
-  await prisma.ballChaser.deleteMany();
 });
 
 afterAll(async () => {
-  await prisma.$disconnect();
+  await resetIntegrationDatabase(prisma);
+  await prisma?.$disconnect();
 });
 
 const validatePlayerStats = (expected: PlayerStats, actual: PlayerStats | null) => {

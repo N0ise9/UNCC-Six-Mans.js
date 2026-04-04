@@ -1,28 +1,26 @@
-import { PrismaClient, createPrismaClientFromEnv } from "../../../prisma";
+import { PrismaClient } from "../../../prisma";
 import { Event } from "../types";
 import * as faker from "faker";
 import { EventRepository } from "../EventRepository";
+import { createIntegrationTestPrismaClient, resetIntegrationDatabase } from "../../../../.jest/integrationPrisma";
 
 let prisma: PrismaClient;
 let eventRepository: EventRepository;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  await resetIntegrationDatabase(prisma);
   eventRepository = new EventRepository(prisma);
 });
 
 beforeAll(async () => {
-  prisma = createPrismaClientFromEnv();
+  prisma = createIntegrationTestPrismaClient();
   await prisma.$connect();
-  await prisma.event.deleteMany();
-});
-
-afterEach(async () => {
-  await prisma.event.deleteMany();
 });
 
 afterAll(async () => {
-  await prisma.$disconnect();
+  await resetIntegrationDatabase(prisma);
+  await prisma?.$disconnect();
 });
 
 describe("EventRepository tests", () => {

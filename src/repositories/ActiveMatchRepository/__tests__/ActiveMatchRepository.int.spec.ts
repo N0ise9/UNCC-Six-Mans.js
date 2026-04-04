@@ -3,10 +3,15 @@ import { ActiveMatchBuilder, BallChaserQueueBuilder } from "../../../../.jest/Bu
 import { ActiveMatchRepository } from "../ActiveMatchRepository";
 import { PlayerInActiveMatch } from "../types";
 import { Team } from "../../../types/common";
-import { ActiveMatch, BallChaser, PrismaClient, createPrismaClientFromEnv } from "../../../prisma";
+import { ActiveMatch, BallChaser, PrismaClient } from "../../../prisma";
 import { waitForAllPromises } from "../../../utils";
 import { LeaderboardRepository } from "../../LeaderboardRepository";
 import { EventRepository } from "../../EventRepository";
+import {
+  createIntegrationTestPrismaClient,
+  ensureDefaultIntegrationEvent,
+  resetIntegrationDatabase,
+} from "../../../../.jest/integrationPrisma";
 
 let prisma: PrismaClient;
 let eventRepository: EventRepository;
@@ -15,29 +20,21 @@ let activeMatchRepository: ActiveMatchRepository;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  await resetIntegrationDatabase(prisma);
+  await ensureDefaultIntegrationEvent(prisma);
   eventRepository = new EventRepository(prisma);
   leaderboardRepository = new LeaderboardRepository(prisma, eventRepository);
   activeMatchRepository = new ActiveMatchRepository(prisma, leaderboardRepository);
 });
 
 beforeAll(async () => {
-  prisma = createPrismaClientFromEnv();
+  prisma = createIntegrationTestPrismaClient();
   await prisma.$connect();
-  await prisma.leaderboard.deleteMany();
-  await prisma.activeMatch.deleteMany();
-  await prisma.queue.deleteMany();
-  await prisma.ballChaser.deleteMany();
-});
-
-afterEach(async () => {
-  await prisma.leaderboard.deleteMany();
-  await prisma.activeMatch.deleteMany();
-  await prisma.queue.deleteMany();
-  await prisma.ballChaser.deleteMany();
 });
 
 afterAll(async () => {
-  await prisma.$disconnect();
+  await resetIntegrationDatabase(prisma);
+  await prisma?.$disconnect();
 });
 
 async function manuallyAddActiveMatch(activeMatch: PlayerInActiveMatch | Array<PlayerInActiveMatch>) {

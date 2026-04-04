@@ -17,7 +17,7 @@
     "start": "tsx watch src/index.ts",
     "test": "jest --runInBand --testMatch='**/__tests__/*.unit.spec.ts' --testNamePattern=",
     "test:parallel": "jest --testMatch='**/__tests__/*.unit.spec.ts' --testNamePattern=",
-    "integration": "jest --runInBand --testMatch='**/__tests__/*.int.spec.ts' --testNamePattern="
+    "integration": "node scripts/require-test-database-url.mjs && jest --runInBand --testMatch='**/__tests__/*.int.spec.ts' --testNamePattern="
   },
   "repository": {
     "type": "git",

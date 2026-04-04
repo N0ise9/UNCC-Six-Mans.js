@@ -1,61 +1,58 @@
 # NormJS
 
-NormJS is a single-instance Discord bot for running Six Mans across multiple servers from one process.
+NormJS is a single-process Discord bot for running Six Mans across multiple guilds at once.
 
 Each guild is isolated from the others:
 - its own PostgreSQL database URL
-- its own queue, match, and leaderboard state
+- its own queue, match, leaderboard, and API status state
 - its own tracked Discord messages
 - its own OpenAI conversation state
 
-The bot uses one shared Discord client and one shared outbound Discord work scheduler so queue updates, embed edits, and follow-up messages stay coordinated when multiple guilds are active at once. OpenAI features are slash-command-only through `/norm` and optional `/sora`.
+The bot uses one shared Discord client and one shared outbound work scheduler so post-ack message edits, follow-up replies, and status updates stay coordinated across guilds.
 
-## How Norm Works
+## What Norm Is
 
-Norm boots once and loads guild-specific configuration from `.guild-instance-config.json`.
+Norm boots once and reads per-guild setup from `.guild-instance-config.json`.
 
-Per-guild configuration is created inside Discord with `/setup set`, not by editing `.env`.
+Bot-wide configuration lives in `.env`. Per-guild configuration does not.
 
-That means:
-- `.env` stores bot-wide secrets and runtime flags
-- `.guild-instance-config.json` stores per-guild configuration
-- each guild record stores its own encrypted `databaseUrl`
-- the `databaseUrl` is encrypted at rest with `CONFIG_ENCRYPTION_KEY`
+Important runtime behavior:
+- slash commands are registered per guild on startup
+- any old global application commands are pruned on startup
+- newly joined guilds get the current command set automatically
+- `/norm` and optional `/sora` are slash-command-only and only work in the configured `chat_channel`
+- one bad guild database URL should not block the rest of the process
+- stale queued button/select interactions are ignored when the authoritative state has already changed
+- queue timers refresh every minute so displayed wait times stay current
 
-If one guild has a bad database URL or an unreachable Docker-backed Postgres endpoint, that guild can fail to load without taking down the rest of the bot.
+## Requirements / Install
 
-## Requirements
-
-- Node.js 24.14.1 LTS recommended
+- Node.js `24.14.1` LTS recommended
 - npm
-- A Discord bot application and token
-- An OpenAI API key for `/norm`
-- One PostgreSQL database endpoint per guild
+- a Discord bot application and token
+- an OpenAI API key for `/norm`
+- one reachable PostgreSQL database per guild
 
-Docker is recommended for local hosting of those PostgreSQL databases, but the bot does not create or manage containers for you.
+Docker is recommended for local Postgres hosting, but Norm does not create or manage containers for you.
 
-## Installation
-
-1. Clone the repository.
-2. Install dependencies:
+Install and prepare the repo:
 
 ```powershell
 npm install
-```
-
-3. Generate the Prisma client:
-
-```powershell
 npm run generate
 ```
 
-4. Create a `.env` file in the project root.
+Start the bot in source mode:
 
-You can start from `.env.sample`.
+```powershell
+npm start
+```
 
-## Bot-Wide Configuration
+The current `start` script runs `tsx watch src/index.ts`.
 
-Only put bot-wide configuration in `.env`.
+## Configuration
+
+Only bot-wide values belong in `.env`.
 
 Example:
 
@@ -74,23 +71,28 @@ SORA_MODEL=
 What these do:
 - `token`: Discord bot token
 - `openai`: OpenAI API key
-- `CONFIG_ENCRYPTION_KEY`: used to encrypt and decrypt stored per-guild database URLs
-- `NORM_HOME`: optional runtime root override for `.env`, `.guild-instance-config.json`, and generated media
-- `ENVIRONMENT`: optional runtime mode; `dev` enables dev-only behavior in a few helper paths
-- `PRISMA_STUDIO_PASSWORD`: host-only password required by `/prisma` in addition to the `Bot Admin` role
-- `conversation_token_limit`: optional input-token threshold for rotating a guild's stored OpenAI conversation
-- `ENABLE_SORA`: enables the `/sora` slash command
+- `CONFIG_ENCRYPTION_KEY`: encrypts and decrypts stored per-guild database URLs
+- `NORM_HOME`: optional runtime-root override for `.env`, `.guild-instance-config.json`, generated media, and packaged extracted assets
+- `ENVIRONMENT`: optional runtime mode; `dev` enables development-only behavior in a few helper paths
+- `PRISMA_STUDIO_PASSWORD`: required by `/prisma` in addition to the `Bot Admin` role
+- `conversation_token_limit`: optional per-guild OpenAI conversation rotation threshold
+- `ENABLE_SORA`: enables `/sora`
 - `SORA_MODEL`: required only when `ENABLE_SORA=true`
 
-Important:
-- Do not rotate `CONFIG_ENCRYPTION_KEY` casually. If it changes, existing stored guild database URLs can no longer be decrypted.
-- If `NORM_HOME` is unset, source-mode runs use the current working directory and the packaged executable uses the folder beside `Norm.exe`.
-- Old `.env` values like `queue_channel_id`, `leaderboard_channel_id`, `guild_id`, `conversation_id`, and per-guild `DATABASE_URL` are legacy and are not the active per-guild setup path anymore.
-- `DATABASE_URL` is only needed for one-off Prisma CLI commands like `npx prisma db push`; the bot runtime itself reads per-guild database URLs from `.guild-instance-config.json`.
+Important notes:
+- `.env` is bot-wide only
+- `.guild-instance-config.json` stores guild config
+- each stored guild `databaseUrl` is encrypted at rest with `CONFIG_ENCRYPTION_KEY`
+- do not rotate `CONFIG_ENCRYPTION_KEY` casually or old stored guild DB URLs will stop decrypting
+- legacy `.env` values like `queue_channel_id`, `leaderboard_channel_id`, `guild_id`, `conversation_id`, and per-guild `DATABASE_URL` are not part of the active runtime anymore
+- `DATABASE_URL` is only for one-off Prisma CLI commands such as `npx prisma db push`
 
 ## Database Setup
 
-Norm expects each guild to point at its own PostgreSQL database URL. Those URLs can be separate Docker containers, separate databases on one server, or any other reachable Postgres endpoints.
+Each guild needs its own PostgreSQL endpoint. That can be:
+- one Docker container per guild
+- separate databases on one server
+- any other reachable Postgres layout
 
 Example Docker command for one guild database:
 
@@ -103,88 +105,44 @@ docker run --name norm-guild-a-db `
   -d postgres:latest
 ```
 
-Example connection string for that database:
+Example connection string:
 
 ```text
 postgresql://Norm:NormTheNiner@localhost:5432/SixMansGuildA
 ```
 
-Before using that URL in `/setup set`, initialize the schema against that database.
-
-PowerShell example:
+Before using that URL in `/setup set`, push the Prisma schema to that database:
 
 ```powershell
 $env:DATABASE_URL="postgresql://Norm:NormTheNiner@localhost:5432/SixMansGuildA"
 npx prisma db push
 ```
 
-Bash example:
-
-```bash
-DATABASE_URL="postgresql://Norm:NormTheNiner@localhost:5432/SixMansGuildA" npx prisma db push
-```
-
-Repeat that for each guild database you plan to use.
-
-When a guild database is loaded for the first time, Norm will automatically create a default active event if that database does not already have one. You do not need to seed the `Event` table manually just to get a fresh guild running.
-
-## Starting the Bot
-
-Start the bot with:
-
-```powershell
-npm start
-```
-
-The current start script runs `tsx watch src/index.ts`.
-
-When the bot starts successfully, it registers slash commands globally and logs the path to the per-guild config store.
-
-## Windows Portable EXE
-
-Norm can also be packaged into a Windows portable executable using Node SEA.
-
-Build it with:
-
-```powershell
-npm run package:windows
-```
-
-That creates a portable folder under `release/windows-portable` containing:
-- `Norm.exe`
-- `Norm.cmd`
-- `.env.sample`
-- `README.md`
-
-You do not need the source repo beside that packaged output. `Norm.exe` carries its Prisma Studio support files internally and extracts them on demand.
-
-Before the first launch, copy `.env.sample` to `.env` in that same folder and fill in your bot-wide values there.
-
-Use `Norm.cmd` as the default double-click launcher. It starts `Norm.exe` from its own folder and keeps the console window open after the process exits so you can read startup or crash output.
-
-Portable runtime behavior:
-- `.env` is read from the executable folder by default
-- `.guild-instance-config.json` is written beside the executable by default
-- generated media is written under `data/generated-media` beside the executable by default
-- `/prisma` launches Prisma Studio from runtime assets that `Norm.exe` extracts automatically under `.norm-internal/sea-assets/<version>/`
-- set `NORM_HOME` if you want those runtime files somewhere else
-
-Important packaging notes:
-- build the EXE on Windows with the same Node version you want to ship
-- the packaged path uses the official Node SEA workflow plus an `esbuild` bundle step
-- GitHub Actions keeps normal lint/build/test checks on push and PR, while the Windows packaging artifact is intended for manual `workflow_dispatch` runs
+When a guild database is loaded for the first time, Norm auto-creates a default active event if none exists yet. You do not need to seed the `Event` table manually for a fresh guild.
 
 ## Guild Setup
 
-After the bot is online in a guild, run `/setup set` in that server.
+After the bot is online in a guild, configure that server with `/setup set`.
 
-Current required setup fields:
+Current `/setup set` shape:
+
+```text
+/setup set
+queue_channel:<text channel>
+leaderboard_channel:<text channel>
+chat_channel:<text channel>
+database_url:<postgres connection string>
+[api_status_channel:<text channel>]
+[conversation_id:<existing OpenAI conversation id>]
+```
+
+Required fields:
 - `queue_channel`
 - `leaderboard_channel`
 - `chat_channel`
 - `database_url`
 
-Optional setup fields:
+Optional fields:
 - `api_status_channel`
 - `conversation_id`
 
@@ -200,113 +158,132 @@ database_url: postgresql://Norm:NormTheNiner@localhost:5432/SixMansGuildA
 conversation_id: conv_1234567890abcdef
 ```
 
-Use `/setup show` to inspect the stored config for the current guild.
+Other setup commands:
+- `/setup show`
+- `/setup disable`
 
-Use `/setup disable` to disable the guild runtime entry without deleting the stored file manually.
+`/setup show` displays the stored guild config with secrets masked.
 
-## Slash Commands
+## Commands
 
-### Queue/Admin
-- `/kick`
-- `/clear`
-- `/prisma password:<value>`
+Queue/admin commands:
 - `/setup show`
 - `/setup set`
 - `/setup disable`
+- `/kick`
+- `/clear`
+- `/prisma password:<value>`
 
-### OpenAI
+OpenAI commands:
 - `/norm`
 - `/sora` when `ENABLE_SORA=true`
 
-OpenAI behavior:
+Current command behavior:
+- commands are registered per guild, not globally
 - `/norm` uses a stored conversation per guild
 - `/norm` supports optional image attachments
 - `/norm` and `/sora` only work in the configured `chat_channel`
-- `/sora` uses the OpenAI Videos API through the current SDK
-- generated images and videos are written under `data/generated-media`
+- `/sora` writes generated media under `data/generated-media`
+- `/prisma` is not `chat_channel`-gated
 
-Prisma Studio behavior:
-- `/prisma` is a host-side admin tool for opening Prisma Studio against the current guild's configured database
-- `/prisma` is only for users with the `Bot Admin` role
-- `/prisma` also requires the global `PRISMA_STUDIO_PASSWORD` from the host `.env`
-- `/prisma` is not restricted to the configured `chat_channel`
-- `/prisma` opens the browser on the machine running Norm, not on the Discord user's machine
-- `/prisma` reuses one managed Studio process at a time and relaunches it when a different guild requests Studio
-- `/prisma` uses Discord's normal TLS transport, but it is not end-to-end encrypted from the Discord user directly to Norm because Discord processes slash command options
-- after a successful `/prisma` launch, there is a 60 second global cooldown
-- 3 failed `/prisma` password attempts inside 10 minutes trigger a 15 minute global lockout
+`/prisma` behavior:
+- requires the `Bot Admin` role
+- requires `PRISMA_STUDIO_PASSWORD` from the host `.env`
+- launches Prisma Studio on the machine running Norm
+- does not open anything on the Discord user's machine
+- reuses one managed Studio process at a time
+- applies a 60-second global cooldown after a successful launch
+- locks globally for 15 minutes after 3 failed password attempts within 10 minutes
+- uses Discord's normal TLS transport, but it is not end-to-end encrypted from the user directly to Norm because Discord processes slash command options
 
-## Operational Notes
+## Windows EXE / Packaging
 
-- Norm does not use `!norm` message triggers anymore. OpenAI interactions are slash-command-only.
-- Per-guild configuration is saved in `.guild-instance-config.json`.
-- The bot does not write guild setup back into `.env`.
-- If a guild was configured before `chat_channel` was required, rerun `/setup set` to enable `/norm` and `/sora` for that server.
-- Old generated source assets should not be committed; runtime media lives under `data/generated-media`.
-- The bot uses stale-interaction protection so outdated queued button/select interactions are ignored when the authoritative queue or match state has already changed.
+Norm can be packaged into a Windows single-EXE distribution using Node SEA.
 
-## Development Commands
-
-Lint:
-
-```powershell
-npm run lint
-```
-
-Build:
-
-```powershell
-npm run build
-```
-
-Build Windows portable EXE:
+Build it with:
 
 ```powershell
 npm run package:windows
 ```
 
-Generate Prisma client:
+That produces `release/windows-portable` with:
+- `Norm.exe`
+- `Norm.cmd`
+- `.env.sample`
+- `README.md`
+
+The packaged build does not require the source repo beside it.
+
+Packaged runtime behavior:
+- `Norm.exe` can be run directly on first launch
+- if companion files are missing, it auto-creates `.env.sample`, `README.md`, `Norm.cmd`, and `.env`
+- the generated `.env` is only a starter template; you still need to fill in real values before the bot can start successfully
+- runtime files live beside the EXE by default unless `NORM_HOME` is set
+- `.guild-instance-config.json` is written beside the EXE by default
+- generated media is written under `data/generated-media`
+- embedded Prisma Studio assets are extracted on demand under `.norm-internal/sea-assets/<version>/`
+
+Use `Norm.cmd` as the default double-click launcher. It runs `Norm.exe` from its own directory and keeps the console window open after exit so you can read startup or crash output.
+
+Packaging notes:
+- build the EXE on Windows with the same Node version you want to ship
+- `npm run package:windows` is the supported packaging path
+- GitHub Actions keeps normal lint/build/test checks on push and PR
+- the Windows package artifact is produced from the build workflow through manual `workflow_dispatch`
+
+## Tests / CI
+
+Useful local commands:
 
 ```powershell
+npm run lint
+npm run build
 npm run generate
-```
-
-## Tests
-
-Unit tests:
-
-```powershell
 npm run test
 ```
 
-Integration tests:
+Integration tests require an explicit test database:
 
 ```powershell
+$env:TEST_DATABASE_URL="postgresql://Norm:NormTheNiner@localhost:5432/SixMansIntegration"
 npm run integration
 ```
 
-Integration tests require a reachable PostgreSQL server.
+Current test contract:
+- unit tests do not load the runtime `.env`
+- unit tests are offline by default and must mock `fetch` explicitly
+- integration tests require explicit `TEST_DATABASE_URL`
+- `npm run integration` fails fast if `TEST_DATABASE_URL` is missing
 
-GitHub Actions runs lint, build, unit tests, and integration tests on branch pushes and pull requests. The Windows portable package can be produced from the build workflow through manual dispatch.
+GitHub Actions behavior:
+- lint, build, unit tests, and integration tests run on branch pushes and pull requests
+- GitHub integration tests use the workflow's own Postgres service container
+- GitHub does not connect to your host machine Docker or Postgres setup
+- the Windows portable package workflow is manual-only
 
 ## Troubleshooting
 
 If a guild fails to initialize:
-- verify the `database_url` provided in `/setup set`
-- verify that the Postgres endpoint is reachable from the machine running Norm
-- verify the schema has been pushed to that database
+- verify the `database_url` from `/setup set`
+- verify the Postgres endpoint is reachable from the machine running Norm
+- verify the Prisma schema has been pushed to that database
 - verify the configured Discord channels still exist
 - verify `CONFIG_ENCRYPTION_KEY` has not changed since the guild config was saved
 
 If `/norm` or `/sora` refuse to run:
 - make sure you are in the configured `chat_channel`
-- rerun `/setup set` if this guild was configured before `chat_channel` was added
+- rerun `/setup set` if the guild was configured before `chat_channel` became required
 
 If `/prisma` fails:
-- make sure this guild has already been configured with `/setup set`
+- make sure the guild has already been configured with `/setup set`
 - make sure the user running `/prisma` has the `Bot Admin` role
 - make sure `PRISMA_STUDIO_PASSWORD` is set in the host `.env`
-- check the bot console for Prisma Studio startup errors on the host machine
+- check the bot console for Prisma Studio startup errors
+
+If the packaged EXE starts and exits immediately:
+- open the generated `.env`
+- fill in the required bot-wide values like `token`, `openai`, and `CONFIG_ENCRYPTION_KEY`
+- run `Norm.exe` or `Norm.cmd` again
 
 If Sora fails at startup:
 - set `ENABLE_SORA=false`, or

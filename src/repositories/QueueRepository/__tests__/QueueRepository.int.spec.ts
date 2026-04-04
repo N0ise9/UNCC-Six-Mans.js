@@ -2,11 +2,17 @@ import * as faker from "faker";
 import { PlayerInQueue } from "../types";
 import { QueueRepository } from "../QueueRepository";
 import { BallChaserQueueBuilder } from "../../../../.jest/Builder";
-import { PrismaClient, createPrismaClientFromEnv } from "../../../prisma";
+import { PrismaClient } from "../../../prisma";
 import { DateTime } from "luxon";
 import { Team } from "../../../types/common";
 import { LeaderboardRepository } from "../../LeaderboardRepository";
 import { EventRepository } from "../../EventRepository";
+import {
+  createIntegrationTestPrismaClient,
+  DEFAULT_TEST_EVENT_ID,
+  ensureDefaultIntegrationEvent,
+  resetIntegrationDatabase,
+} from "../../../../.jest/integrationPrisma";
 
 function verifyBallChasersAreEqual(expectedBallChaser: PlayerInQueue, actualBallChaser: PlayerInQueue): void {
   expect(actualBallChaser).not.toBeNull();
@@ -19,44 +25,28 @@ function verifyBallChasersAreEqual(expectedBallChaser: PlayerInQueue, actualBall
 }
 
 let prisma: PrismaClient;
-let eventId: number = 1;
+let eventId: number = DEFAULT_TEST_EVENT_ID;
 let eventRepository: EventRepository;
 let leaderboardRepository: LeaderboardRepository;
 let queueRepository: QueueRepository;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  await resetIntegrationDatabase(prisma);
+  await ensureDefaultIntegrationEvent(prisma, eventId);
   eventRepository = new EventRepository(prisma);
   leaderboardRepository = new LeaderboardRepository(prisma, eventRepository);
   queueRepository = new QueueRepository(prisma, leaderboardRepository);
 });
 
 beforeAll(async () => {
-  prisma = createPrismaClientFromEnv();
+  prisma = createIntegrationTestPrismaClient();
   await prisma.$connect();
-  await prisma.leaderboard.deleteMany();
-  await prisma.activeMatch.deleteMany();
-  await prisma.queue.deleteMany();
-  await prisma.ballChaser.deleteMany();
-  await prisma.event.deleteMany();
-
-  await prisma.event.create({
-    data: {
-      id: 1,
-      name: "Test Event",
-    },
-  });
-});
-
-afterEach(async () => {
-  await prisma.leaderboard.deleteMany();
-  await prisma.activeMatch.deleteMany();
-  await prisma.queue.deleteMany();
-  await prisma.ballChaser.deleteMany();
 });
 
 afterAll(async () => {
-  await prisma.$disconnect();
+  await resetIntegrationDatabase(prisma);
+  await prisma?.$disconnect();
 });
 
 async function manuallyAddBallChaserToQueue(ballChaser: PlayerInQueue) {
