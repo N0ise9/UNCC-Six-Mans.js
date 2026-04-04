@@ -65,6 +65,7 @@ openai=YOUR_OPENAI_API_KEY
 CONFIG_ENCRYPTION_KEY=replace-this-with-a-long-random-secret
 NORM_HOME=
 ENVIRONMENT=dev
+PRISMA_STUDIO_PASSWORD=replace-this-with-a-host-only-password
 conversation_token_limit=120000
 ENABLE_SORA=false
 SORA_MODEL=
@@ -76,6 +77,7 @@ What these do:
 - `CONFIG_ENCRYPTION_KEY`: used to encrypt and decrypt stored per-guild database URLs
 - `NORM_HOME`: optional runtime root override for `.env`, `.guild-instance-config.json`, and generated media
 - `ENVIRONMENT`: optional runtime mode; `dev` enables dev-only behavior in a few helper paths
+- `PRISMA_STUDIO_PASSWORD`: host-only password required by `/prisma` in addition to the `Bot Admin` role
 - `conversation_token_limit`: optional input-token threshold for rotating a guild's stored OpenAI conversation
 - `ENABLE_SORA`: enables the `/sora` slash command
 - `SORA_MODEL`: required only when `ENABLE_SORA=true`
@@ -153,8 +155,8 @@ That creates a portable folder under `release/windows-portable` containing:
 - `Norm.cmd`
 - `.env.sample`
 - `README.md`
-- `studio-tools/` for the bundled Prisma Studio runtime
-- `studio-workspace/` for the bundled Prisma Studio config and schema
+
+You do not need the source repo beside that packaged output. `Norm.exe` carries its Prisma Studio support files internally and extracts them on demand.
 
 Before the first launch, copy `.env.sample` to `.env` in that same folder and fill in your bot-wide values there.
 
@@ -164,7 +166,7 @@ Portable runtime behavior:
 - `.env` is read from the executable folder by default
 - `.guild-instance-config.json` is written beside the executable by default
 - generated media is written under `data/generated-media` beside the executable by default
-- `/prisma` launches Prisma Studio from the bundled tooling on the host machine
+- `/prisma` launches Prisma Studio from runtime assets that `Norm.exe` extracts automatically under `.norm-internal/sea-assets/<version>/`
 - set `NORM_HOME` if you want those runtime files somewhere else
 
 Important packaging notes:
@@ -207,7 +209,7 @@ Use `/setup disable` to disable the guild runtime entry without deleting the sto
 ### Queue/Admin
 - `/kick`
 - `/clear`
-- `/prisma`
+- `/prisma password:<value>`
 - `/setup show`
 - `/setup set`
 - `/setup disable`
@@ -226,9 +228,13 @@ OpenAI behavior:
 Prisma Studio behavior:
 - `/prisma` is a host-side admin tool for opening Prisma Studio against the current guild's configured database
 - `/prisma` is only for users with the `Bot Admin` role
+- `/prisma` also requires the global `PRISMA_STUDIO_PASSWORD` from the host `.env`
 - `/prisma` is not restricted to the configured `chat_channel`
 - `/prisma` opens the browser on the machine running Norm, not on the Discord user's machine
 - `/prisma` reuses one managed Studio process at a time and relaunches it when a different guild requests Studio
+- `/prisma` uses Discord's normal TLS transport, but it is not end-to-end encrypted from the Discord user directly to Norm because Discord processes slash command options
+- after a successful `/prisma` launch, there is a 60 second global cooldown
+- 3 failed `/prisma` password attempts inside 10 minutes trigger a 15 minute global lockout
 
 ## Operational Notes
 
@@ -299,6 +305,7 @@ If `/norm` or `/sora` refuse to run:
 If `/prisma` fails:
 - make sure this guild has already been configured with `/setup set`
 - make sure the user running `/prisma` has the `Bot Admin` role
+- make sure `PRISMA_STUDIO_PASSWORD` is set in the host `.env`
 - check the bot console for Prisma Studio startup errors on the host machine
 
 If Sora fails at startup:

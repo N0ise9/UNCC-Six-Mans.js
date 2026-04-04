@@ -1,11 +1,13 @@
 import { ChildProcess, spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
+import { ensurePrismaStudioAssetsExtracted } from "./PrismaStudioAssets";
 import {
   getPrismaStudioCliPath,
   getPrismaStudioConfigPath,
   getPrismaStudioNodePath,
   getPrismaStudioWorkspaceRoot,
+  isPackagedRuntime,
 } from "./runtimePaths";
 import { GuildInstanceConfig } from "./types";
 
@@ -18,6 +20,7 @@ type ManagedStudioProcess = {
 
 type PrismaStudioManagerOptions = {
   browserOpener?: (url: string) => Promise<void>;
+  ensurePackagedAssets?: () => Promise<void> | void;
   isPortAvailable?: (port: number) => Promise<boolean>;
   isPortOpen?: (port: number) => Promise<boolean>;
   packaged?: boolean;
@@ -32,6 +35,7 @@ const LOCALHOST = "127.0.0.1";
 
 export class PrismaStudioManager {
   private readonly browserOpener: (url: string) => Promise<void>;
+  private readonly ensurePackagedAssets: () => Promise<void> | void;
   private readonly isPortAvailableFn: (port: number) => Promise<boolean>;
   private readonly isPortOpenFn: (port: number) => Promise<boolean>;
   private readonly portCandidates: number[];
@@ -42,6 +46,11 @@ export class PrismaStudioManager {
 
   constructor(private readonly options: PrismaStudioManagerOptions = {}) {
     this.browserOpener = options.browserOpener ?? openDefaultBrowser;
+    this.ensurePackagedAssets =
+      options.ensurePackagedAssets ??
+      (() => {
+        ensurePrismaStudioAssetsExtracted();
+      });
     this.isPortAvailableFn = options.isPortAvailable ?? isPortAvailable;
     this.isPortOpenFn = options.isPortOpen ?? isPortOpen;
     this.portCandidates = options.portCandidates ?? DEFAULT_PORT_CANDIDATES;
@@ -67,8 +76,13 @@ export class PrismaStudioManager {
 
     await this.stopActiveProcess();
 
+    const packaged = isPackagedRuntime({ packaged: this.options.packaged });
+    if (packaged) {
+      await this.ensurePackagedAssets();
+    }
+
     const port = await this.resolvePort();
-    const child = this.spawnStudio(config.databaseUrl, port);
+    const child = this.spawnStudio(config.databaseUrl, port, packaged);
     const managed: ManagedStudioProcess = {
       child,
       exited: false,
@@ -98,11 +112,11 @@ export class PrismaStudioManager {
     throw new Error("No localhost port is available for Prisma Studio.");
   }
 
-  private spawnStudio(databaseUrl: string, port: number): ChildProcess {
-    const nodePath = getPrismaStudioNodePath({ packaged: this.options.packaged });
-    const cliPath = getPrismaStudioCliPath({ packaged: this.options.packaged });
-    const workspaceRoot = getPrismaStudioWorkspaceRoot({ packaged: this.options.packaged });
-    const configPath = getPrismaStudioConfigPath({ packaged: this.options.packaged });
+  private spawnStudio(databaseUrl: string, port: number, packaged: boolean): ChildProcess {
+    const nodePath = getPrismaStudioNodePath({ packaged });
+    const cliPath = getPrismaStudioCliPath({ packaged });
+    const workspaceRoot = getPrismaStudioWorkspaceRoot({ packaged });
+    const configPath = getPrismaStudioConfigPath({ packaged });
 
     ensureFileExists(nodePath, "Prisma Studio node runtime");
     ensureFileExists(cliPath, "Prisma Studio CLI");

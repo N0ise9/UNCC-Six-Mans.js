@@ -1,6 +1,7 @@
 import path from "path";
 import {
   getGuildConfigPath,
+  getPrismaStudioAssetsRoot,
   getPrismaStudioCliPath,
   getPrismaStudioConfigPath,
   getPrismaStudioNodePath,
@@ -8,6 +9,7 @@ import {
   getRuntimeEnvPath,
   resolveRuntimeRoot,
 } from "../runtimePaths";
+import { APP_VERSION } from "../appMetadata";
 
 describe("runtimePaths", () => {
   const originalNormHome = process.env["NORM_HOME"];
@@ -65,16 +67,42 @@ describe("runtimePaths", () => {
     expect(getGuildConfigPath()).toBe(path.resolve(portableRoot, ".guild-instance-config.json"));
   });
 
-  it("builds packaged Prisma Studio paths beside the executable", () => {
+  it("builds packaged Prisma Studio paths under the internal extracted asset root", () => {
     process.env["NORM_HOME"] = portableRoot;
 
-    expect(getPrismaStudioNodePath({ packaged: true })).toBe(path.resolve(portableRoot, "studio-tools", "node.exe"));
-    expect(getPrismaStudioCliPath({ packaged: true })).toBe(
-      path.resolve(portableRoot, "studio-tools", "node_modules", "prisma", "build", "index.js")
+    expect(getPrismaStudioAssetsRoot({ packaged: true })).toBe(
+      path.resolve(portableRoot, ".norm-internal", "sea-assets", APP_VERSION, "prisma-studio")
     );
-    expect(getPrismaStudioWorkspaceRoot({ packaged: true })).toBe(path.resolve(portableRoot, "studio-workspace"));
+    expect(getPrismaStudioNodePath({ packaged: true })).toBe(
+      path.resolve(portableRoot, ".norm-internal", "sea-assets", APP_VERSION, "prisma-studio", "node.exe")
+    );
+    expect(getPrismaStudioCliPath({ packaged: true })).toBe(
+      path.resolve(
+        portableRoot,
+        ".norm-internal",
+        "sea-assets",
+        APP_VERSION,
+        "prisma-studio",
+        "tools",
+        "node_modules",
+        "prisma",
+        "build",
+        "index.js"
+      )
+    );
+    expect(getPrismaStudioWorkspaceRoot({ packaged: true })).toBe(
+      path.resolve(portableRoot, ".norm-internal", "sea-assets", APP_VERSION, "prisma-studio", "workspace")
+    );
     expect(getPrismaStudioConfigPath({ packaged: true })).toBe(
-      path.resolve(portableRoot, "studio-workspace", "prisma.studio.config.ts")
+      path.resolve(
+        portableRoot,
+        ".norm-internal",
+        "sea-assets",
+        APP_VERSION,
+        "prisma-studio",
+        "workspace",
+        "prisma.studio.config.ts"
+      )
     );
   });
 });

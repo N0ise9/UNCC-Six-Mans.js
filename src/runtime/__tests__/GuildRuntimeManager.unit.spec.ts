@@ -2,6 +2,7 @@ import { Client, Message, MessageFlags, TextChannel } from "discord.js";
 import OpenAI from "openai";
 import * as EasterEggsController from "../../controllers/EasterEggs";
 import { GuildConfigReadResult, GuildConfigStore } from "../GuildConfigStore";
+import { PrismaStudioAccessGate } from "../PrismaStudioAccessGate";
 import { GuildRuntimeManager } from "../GuildRuntimeManager";
 import { DiscordWorkScheduler } from "../DiscordWorkScheduler";
 import { PrismaStudioManager } from "../PrismaStudioManager";
@@ -425,6 +426,9 @@ describe("GuildRuntimeManager", () => {
       editReply: jest.fn(async () => undefined),
       guildId: "guild-1",
       id: "interaction-1",
+      options: {
+        getString: jest.fn(() => "secret"),
+      },
       member: {
         roles: {
           cache: [],
@@ -444,6 +448,10 @@ describe("GuildRuntimeManager", () => {
     const prismaStudioManager = {
       launchForGuild: jest.fn(async () => undefined),
     } as unknown as PrismaStudioManager;
+    const prismaStudioAccessGate = {
+      authorize: jest.fn(() => ({ allowed: true })),
+      recordSuccessfulLaunch: jest.fn(),
+    } as unknown as PrismaStudioAccessGate;
     const configStore = {
       getGuildConfigResult: jest.fn(() => createConfigResult("guild-1")),
     } as unknown as GuildConfigStore;
@@ -453,12 +461,16 @@ describe("GuildRuntimeManager", () => {
       configStore,
       new DiscordWorkScheduler(1, 0),
       undefined,
-      prismaStudioManager
+      prismaStudioManager,
+      prismaStudioAccessGate
     );
     const interaction = {
       editReply: jest.fn(async () => undefined),
       guildId: "guild-1",
       id: "interaction-2",
+      options: {
+        getString: jest.fn(() => "secret"),
+      },
       member: {
         roles: {
           cache: [{ name: "Bot Admin" }],
@@ -469,8 +481,56 @@ describe("GuildRuntimeManager", () => {
 
     await manager.handlePrismaCommand(interaction);
 
+    expect((prismaStudioAccessGate.authorize as jest.Mock)).toHaveBeenCalledWith("secret");
+    expect((prismaStudioAccessGate.recordSuccessfulLaunch as jest.Mock)).toHaveBeenCalledTimes(1);
     expect((prismaStudioManager.launchForGuild as jest.Mock)).toHaveBeenCalledWith(createConfig("guild-1"));
     expect(interaction.editReply).toHaveBeenCalledWith("Prisma Studio was launched on the host machine.");
     expect(interaction.editReply).not.toHaveBeenCalledWith(expect.stringContaining("postgresql://"));
+  });
+
+  it("rejects /prisma when the password gate denies the request", async () => {
+    const prismaStudioManager = {
+      launchForGuild: jest.fn(async () => undefined),
+    } as unknown as PrismaStudioManager;
+    const prismaStudioAccessGate = {
+      authorize: jest.fn(() => ({
+        allowed: false,
+        message: "Prisma Studio request was rejected.",
+        reason: "rejected",
+      })),
+      recordSuccessfulLaunch: jest.fn(),
+    } as unknown as PrismaStudioAccessGate;
+    const configStore = {
+      getGuildConfigResult: jest.fn(() => createConfigResult("guild-1")),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager(
+      {} as Client,
+      {} as OpenAI,
+      configStore,
+      new DiscordWorkScheduler(1, 0),
+      undefined,
+      prismaStudioManager,
+      prismaStudioAccessGate
+    );
+    const interaction = {
+      editReply: jest.fn(async () => undefined),
+      guildId: "guild-1",
+      id: "interaction-3",
+      options: {
+        getString: jest.fn(() => "wrong"),
+      },
+      member: {
+        roles: {
+          cache: [{ name: "Bot Admin" }],
+          some: (predicate: (role: { name: string }) => boolean) => predicate({ name: "Bot Admin" }),
+        },
+      },
+    } as unknown as Parameters<GuildRuntimeManager["handlePrismaCommand"]>[0];
+
+    await manager.handlePrismaCommand(interaction);
+
+    expect(interaction.editReply).toHaveBeenCalledWith("Prisma Studio request was rejected.");
+    expect((prismaStudioManager.launchForGuild as jest.Mock)).not.toHaveBeenCalled();
+    expect((prismaStudioAccessGate.recordSuccessfulLaunch as jest.Mock)).not.toHaveBeenCalled();
   });
 });

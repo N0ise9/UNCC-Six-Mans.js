@@ -27,6 +27,9 @@ export async function registerAllSlashCommands(clientId: string, token: string) 
   const prismaCommand = new SlashCommandBuilder()
     .setName("prisma")
     .setDescription("Launch Prisma Studio for this guild's database on the host machine.")
+    .addStringOption((option) =>
+      option.setName("password").setDescription("Host-side Prisma Studio password").setRequired(true)
+    )
     .toJSON();
 
   const norm = new SlashCommandBuilder()

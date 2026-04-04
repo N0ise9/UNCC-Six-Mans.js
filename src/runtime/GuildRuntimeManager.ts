@@ -26,6 +26,7 @@ import { DiscordWorkScheduler } from "./DiscordWorkScheduler";
 import { GuildRepositories } from "./GuildRepositories";
 import { InteractiveSurfaceRegistry } from "./InteractiveSurfaceRegistry";
 import { PrismaStudioManager } from "./PrismaStudioManager";
+import { PrismaStudioAccessGate } from "./PrismaStudioAccessGate";
 import { reconcileTrackedMessages } from "./reconcileTrackedMessages";
 import { createScheduledCommandResponder } from "./createScheduledCommandResponder";
 import {
@@ -76,7 +77,8 @@ export class GuildRuntimeManager {
     private readonly configStore: GuildConfigStore,
     private readonly scheduler: DiscordWorkScheduler,
     private readonly apiStatusRuntime?: ApiStatusRuntime,
-    private readonly prismaStudioManager: PrismaStudioManager = new PrismaStudioManager()
+    private readonly prismaStudioManager: PrismaStudioManager = new PrismaStudioManager(),
+    private readonly prismaStudioAccessGate: PrismaStudioAccessGate = new PrismaStudioAccessGate()
   ) {}
 
   async dispose(): Promise<void> {
@@ -212,6 +214,7 @@ export class GuildRuntimeManager {
 
   async handlePrismaCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     const responder = createScheduledCommandResponder(interaction, this.scheduler, "prisma", "high");
+    const password = interaction.options.getString("password", true);
 
     if (!interaction.guildId) {
       await responder.edit("This command only works inside a server.");
@@ -222,6 +225,12 @@ export class GuildRuntimeManager {
       await responder.edit(
         "What do you think you're doing? Trying to run an admin command when you're not a Bot Admin. Typical."
       );
+      return;
+    }
+
+    const accessDecision = this.prismaStudioAccessGate.authorize(password);
+    if (!accessDecision.allowed) {
+      await responder.edit(accessDecision.message);
       return;
     }
 
@@ -240,10 +249,11 @@ export class GuildRuntimeManager {
 
     try {
       await this.prismaStudioManager.launchForGuild(configResult.config);
+      this.prismaStudioAccessGate.recordSuccessfulLaunch();
       await responder.edit("Prisma Studio was launched on the host machine.");
     } catch (error) {
       console.error(`[${interaction.guildId}] Failed to launch Prisma Studio:`, error);
-      await responder.edit("Prisma Studio failed to launch. Check the bot console for details.");
+      await responder.edit("Prisma Studio request could not be completed. Check the bot console for details.");
     }
   }
 

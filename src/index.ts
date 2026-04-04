@@ -7,23 +7,18 @@ import { DiscordWorkScheduler } from "./runtime/DiscordWorkScheduler";
 import { GuildConfigStore } from "./runtime/GuildConfigStore";
 import { GuildRuntimeManager } from "./runtime/GuildRuntimeManager";
 import { startGeneratedMediaPruner } from "./runtime/generatedMediaRetention";
+import { ensurePrismaStudioAssetsExtracted } from "./runtime/PrismaStudioAssets";
 import { loadRuntimeEnv } from "./runtime/runtimePaths";
 import { getEnvVariable } from "./utils";
 
 loadRuntimeEnv();
 
-const NormClient = new Client({
-  intents: ["Guilds"],
-});
-
-const discordToken = getEnvVariable("token");
-const openai = new OpenAI({ apiKey: getEnvVariable("openai") });
-assertSoraRuntimeSupport(openai);
 const scheduler = new DiscordWorkScheduler(2, 75);
 const apiStatusRuntime = new ApiStatusRuntime(scheduler);
 const configStore = new GuildConfigStore();
-const runtimeManager = new GuildRuntimeManager(NormClient, openai, configStore, scheduler, apiStatusRuntime);
-const generatedMediaPruner = startGeneratedMediaPruner();
+let generatedMediaPruner: NodeJS.Timeout | null = null;
+let normClient: Client | null = null;
+let runtimeManager: GuildRuntimeManager | null = null;
 let shutdownInFlight: Promise<void> | null = null;
 
 async function runSafely(label: string, handler: () => Promise<void>): Promise<void> {
@@ -47,10 +42,13 @@ async function shutdown(code: number, reason: string, error?: unknown): Promise<
       console.info(`[Shutdown] ${reason}.`);
     }
 
-    clearInterval(generatedMediaPruner);
+    if (generatedMediaPruner) {
+      clearInterval(generatedMediaPruner);
+      generatedMediaPruner = null;
+    }
 
     try {
-      await runtimeManager.dispose();
+      await runtimeManager?.dispose();
     } catch (disposeError) {
       console.error("[Shutdown] Failed to dispose guild runtime manager:", disposeError);
     }
@@ -62,7 +60,7 @@ async function shutdown(code: number, reason: string, error?: unknown): Promise<
     }
 
     try {
-      await NormClient.destroy();
+      await normClient?.destroy();
     } catch (destroyError) {
       console.error("[Shutdown] Failed to destroy Discord client:", destroyError);
     }
@@ -73,66 +71,108 @@ async function shutdown(code: number, reason: string, error?: unknown): Promise<
   await shutdownInFlight;
 }
 
-NormClient.on("clientReady", async (client) => {
-  await runSafely("clientReady", async () => {
-    console.info("NormJS single-instance runtime is starting.");
+async function maybeRunCliMode(args: string[]): Promise<boolean> {
+  if (!args.includes("--extract-internal-assets")) {
+    return false;
+  }
 
-    if (!client.user) throw new Error("No client id");
-    await registerAllSlashCommands(client.user.id, discordToken);
-    await runtimeManager.initializeConfiguredGuilds();
+  const extractedRoot = ensurePrismaStudioAssetsExtracted();
+  console.info(`Extracted internal Prisma Studio assets to ${extractedRoot}.`);
+  return true;
+}
 
-    console.info(`NormJS is running with config store at ${configStore.getConfigPath()}.`);
+function registerProcessLifecycleHandlers(): void {
+  process.on("SIGINT", async () => {
+    await shutdown(0, "Received SIGINT");
   });
-});
 
-NormClient.on("interactionCreate", async (interaction) => {
-  await runSafely("interactionCreate", async () => {
-    if (!interaction.inCachedGuild()) {
-      return;
-    }
-
-    if (interaction.isButton()) {
-      await interaction.deferUpdate();
-      const context = await runtimeManager.ensureContext(interaction.guildId);
-      if (!context) return;
-      await runtimeManager.handleButtonInteraction(context, interaction);
-      return;
-    }
-
-    if (interaction.isStringSelectMenu()) {
-      await interaction.deferUpdate();
-      const context = await runtimeManager.ensureContext(interaction.guildId);
-      if (!context) return;
-      await runtimeManager.handleSelectMenuInteraction(context, interaction);
-      return;
-    }
-
-    if (interaction.isChatInputCommand()) {
-      await runtimeManager.handleSlashCommand(interaction);
-    }
+  process.on("SIGTERM", async () => {
+    await shutdown(0, "Received SIGTERM");
   });
-});
 
-NormClient.on("error", (error) => {
-  console.error("Discord client error:", error);
-});
+  process.on("uncaughtException", (error) => {
+    void shutdown(1, "Uncaught exception", error);
+  });
 
-process.on("SIGINT", async () => {
-  await shutdown(0, "Received SIGINT");
-});
+  process.on("unhandledRejection", (reason) => {
+    void shutdown(1, "Unhandled promise rejection", reason);
+  });
+}
 
-process.on("SIGTERM", async () => {
-  await shutdown(0, "Received SIGTERM");
-});
+function registerDiscordHandlers(client: Client, discordToken: string): void {
+  client.on("clientReady", async (readyClient) => {
+    await runSafely("clientReady", async () => {
+      console.info("NormJS single-instance runtime is starting.");
 
-process.on("uncaughtException", (error) => {
-  void shutdown(1, "Uncaught exception", error);
-});
+      if (!readyClient.user) throw new Error("No client id");
+      await registerAllSlashCommands(readyClient.user.id, discordToken);
+      await runtimeManager?.initializeConfiguredGuilds();
 
-process.on("unhandledRejection", (reason) => {
-  void shutdown(1, "Unhandled promise rejection", reason);
-});
+      console.info(`NormJS is running with config store at ${configStore.getConfigPath()}.`);
+    });
+  });
 
-void NormClient.login(discordToken).catch((error) => {
-  void shutdown(1, "Discord login failed", error);
+  client.on("interactionCreate", async (interaction) => {
+    await runSafely("interactionCreate", async () => {
+      if (!interaction.inCachedGuild() || !runtimeManager) {
+        return;
+      }
+
+      if (interaction.isButton()) {
+        await interaction.deferUpdate();
+        const context = await runtimeManager.ensureContext(interaction.guildId);
+        if (!context) return;
+        await runtimeManager.handleButtonInteraction(context, interaction);
+        return;
+      }
+
+      if (interaction.isStringSelectMenu()) {
+        await interaction.deferUpdate();
+        const context = await runtimeManager.ensureContext(interaction.guildId);
+        if (!context) return;
+        await runtimeManager.handleSelectMenuInteraction(context, interaction);
+        return;
+      }
+
+      if (interaction.isChatInputCommand()) {
+        await runtimeManager.handleSlashCommand(interaction);
+      }
+    });
+  });
+
+  client.on("error", (error) => {
+    console.error("Discord client error:", error);
+  });
+}
+
+async function startBot(): Promise<void> {
+  const discordToken = getEnvVariable("token");
+  const openai = new OpenAI({ apiKey: getEnvVariable("openai") });
+  assertSoraRuntimeSupport(openai);
+
+  normClient = new Client({
+    intents: ["Guilds"],
+  });
+  runtimeManager = new GuildRuntimeManager(normClient, openai, configStore, scheduler, apiStatusRuntime);
+  generatedMediaPruner = startGeneratedMediaPruner();
+
+  registerProcessLifecycleHandlers();
+  registerDiscordHandlers(normClient, discordToken);
+
+  await normClient.login(discordToken).catch((error) => {
+    return shutdown(1, "Discord login failed", error);
+  });
+}
+
+async function main(): Promise<void> {
+  if (await maybeRunCliMode(process.argv.slice(2))) {
+    return;
+  }
+
+  await startBot();
+}
+
+void main().catch((error) => {
+  console.error("NormJS failed to start:", error);
+  process.exit(1);
 });

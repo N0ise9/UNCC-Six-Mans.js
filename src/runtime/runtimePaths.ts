@@ -1,10 +1,13 @@
 import path from "path";
 import dotenv from "dotenv";
 import { isSea } from "node:sea";
+import { APP_VERSION } from "./appMetadata";
 
 const DEFAULT_CONFIG_FILENAME = ".guild-instance-config.json";
-const PRISMA_STUDIO_TOOLS_DIRECTORY = "studio-tools";
-const PRISMA_STUDIO_WORKSPACE_DIRECTORY = "studio-workspace";
+const INTERNAL_RUNTIME_DIRECTORY = ".norm-internal";
+const PRISMA_STUDIO_ASSET_DIRECTORY = "prisma-studio";
+const PRISMA_STUDIO_TOOLS_DIRECTORY = "tools";
+const PRISMA_STUDIO_WORKSPACE_DIRECTORY = "workspace";
 const PRISMA_STUDIO_CONFIG_FILENAME = "prisma.studio.config.ts";
 
 export function resolveRuntimeRoot(options?: {
@@ -47,9 +50,25 @@ export function getGeneratedMediaRoot(): string {
   return resolveRuntimePath("data", "generated-media");
 }
 
+export function getPackagedAssetRoot(options?: { packaged?: boolean }): string {
+  if (isPackagedRuntime(options)) {
+    return resolveRuntimePath(INTERNAL_RUNTIME_DIRECTORY, "sea-assets", APP_VERSION);
+  }
+
+  return resolveRuntimeRoot();
+}
+
+export function getPrismaStudioAssetsRoot(options?: { packaged?: boolean }): string {
+  if (isPackagedRuntime(options)) {
+    return path.resolve(getPackagedAssetRoot(options), PRISMA_STUDIO_ASSET_DIRECTORY);
+  }
+
+  return resolveRuntimeRoot();
+}
+
 export function getPrismaStudioToolsRoot(options?: { packaged?: boolean }): string {
   if (isPackagedRuntime(options)) {
-    return resolveRuntimePath(PRISMA_STUDIO_TOOLS_DIRECTORY);
+    return path.resolve(getPrismaStudioAssetsRoot(options), PRISMA_STUDIO_TOOLS_DIRECTORY);
   }
 
   return resolveRuntimeRoot();
@@ -57,7 +76,7 @@ export function getPrismaStudioToolsRoot(options?: { packaged?: boolean }): stri
 
 export function getPrismaStudioWorkspaceRoot(options?: { packaged?: boolean }): string {
   if (isPackagedRuntime(options)) {
-    return resolveRuntimePath(PRISMA_STUDIO_WORKSPACE_DIRECTORY);
+    return path.resolve(getPrismaStudioAssetsRoot(options), PRISMA_STUDIO_WORKSPACE_DIRECTORY);
   }
 
   return resolveRuntimeRoot();
@@ -65,7 +84,7 @@ export function getPrismaStudioWorkspaceRoot(options?: { packaged?: boolean }): 
 
 export function getPrismaStudioNodePath(options?: { packaged?: boolean }): string {
   if (isPackagedRuntime(options)) {
-    return path.resolve(getPrismaStudioToolsRoot(options), "node.exe");
+    return path.resolve(getPrismaStudioAssetsRoot(options), "node.exe");
   }
 
   return process.execPath;

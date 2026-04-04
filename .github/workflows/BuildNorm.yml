@@ -72,27 +72,45 @@ jobs:
           if (!(Test-Path ".\release\windows-portable\Norm.cmd")) {
             throw "Norm.cmd was not created."
           }
-          if (!(Test-Path ".\release\windows-portable\studio-tools\node.exe")) {
-            throw "Bundled Prisma Studio node runtime was not created."
+          if (Test-Path ".\release\windows-portable\studio-tools") {
+            throw "Portable package should not ship a studio-tools directory anymore."
           }
-          if (!(Test-Path ".\release\windows-portable\studio-tools\node_modules\prisma\build\index.js")) {
-            throw "Bundled Prisma Studio CLI was not created."
-          }
-          if (!(Test-Path ".\release\windows-portable\studio-workspace\prisma.studio.config.ts")) {
-            throw "Bundled Prisma Studio config was not created."
-          }
-          if (!(Test-Path ".\release\windows-portable\studio-workspace\prisma\schema.prisma")) {
-            throw "Bundled Prisma Studio schema was not created."
+          if (Test-Path ".\release\windows-portable\studio-workspace") {
+            throw "Portable package should not ship a studio-workspace directory anymore."
           }
 
-      - name: Smoke test bundled Prisma Studio CLI
+      - name: Extract embedded Prisma Studio assets
         shell: powershell
         run: |
-          & ".\release\windows-portable\studio-tools\node.exe" `
-            ".\release\windows-portable\studio-tools\node_modules\prisma\build\index.js" `
+          & ".\release\windows-portable\Norm.exe" --extract-internal-assets
+          if ($LASTEXITCODE -ne 0) {
+            throw "Norm.exe failed to extract its embedded Prisma Studio assets."
+          }
+
+      - name: Smoke test extracted Prisma Studio CLI
+        shell: powershell
+        run: |
+          $packageVersion = node -p "require('./package.json').version"
+          $assetRoot = ".\release\windows-portable\.norm-internal\sea-assets\$packageVersion\prisma-studio"
+
+          if (!(Test-Path "$assetRoot\node.exe")) {
+            throw "Extracted Prisma Studio node runtime was not found."
+          }
+          if (!(Test-Path "$assetRoot\tools\node_modules\prisma\build\index.js")) {
+            throw "Extracted Prisma Studio CLI was not found."
+          }
+          if (!(Test-Path "$assetRoot\workspace\prisma.studio.config.ts")) {
+            throw "Extracted Prisma Studio config was not found."
+          }
+          if (!(Test-Path "$assetRoot\workspace\prisma\schema.prisma")) {
+            throw "Extracted Prisma Studio schema was not found."
+          }
+
+          & "$assetRoot\node.exe" `
+            "$assetRoot\tools\node_modules\prisma\build\index.js" `
             studio --help
           if ($LASTEXITCODE -ne 0) {
-            throw "Bundled Prisma Studio CLI failed to start."
+            throw "Extracted Prisma Studio CLI failed to start."
           }
 
       - name: Smoke test packaged executable
@@ -108,6 +126,11 @@ jobs:
           if (($output | Out-String) -notmatch "No environment variable named token") {
             throw "Norm.exe did not report the expected missing token error."
           }
+
+      - name: Clean extracted internal assets before upload
+        shell: powershell
+        run: |
+          Remove-Item -Recurse -Force ".\release\windows-portable\.norm-internal" -ErrorAction SilentlyContinue
 
       - name: Upload Windows portable artifact
         uses: actions/upload-artifact@v6
