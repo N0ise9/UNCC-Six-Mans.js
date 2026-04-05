@@ -57,12 +57,30 @@ type QueueRender = {
 type PostCommitEffect = () => Promise<void> | void;
 
 type RenderCoordinator = {
-  cooldownMs: number;
   dirty: boolean;
+  editBudgetTimestamps: number[];
   inFlight: boolean;
   lastRenderStartedAt: number;
+  lastMutationAt: number;
+  liveIntervalMs: number;
+  liveTimer: NodeJS.Timeout | null;
   render: (() => Promise<void>) | null;
-  timer: NodeJS.Timeout | null;
+  trailingFlushMs: number;
+  trailingTimer: NodeJS.Timeout | null;
+};
+
+type ButtonSpamGuardState = {
+  cooldownUntil: number;
+  ignoredSameActionAt: number[];
+  lastAcceptedAction: string | null;
+  lastAcceptedAt: number;
+  warningSuppressedUntil: number;
+};
+
+type ButtonSpamDecision = {
+  allowed: boolean;
+  reason?: string;
+  shouldWarn: boolean;
 };
 
 type GuildRuntimeFailureCode = "bootstrap" | "channels" | "config" | "database" | "unknown";
@@ -100,12 +118,23 @@ class GuildRuntimeInitializationError extends Error {
 }
 
 export class GuildRuntimeManager {
-  private static readonly MATCH_RENDER_COOLDOWN_MS = 750;
-  private static readonly QUEUE_RENDER_COOLDOWN_MS = 1200;
+  private static readonly BUTTON_SPAM_ABUSE_COOLDOWN_MS = 3000;
+  private static readonly BUTTON_SPAM_ABUSE_THRESHOLD = 3;
+  private static readonly BUTTON_SPAM_ABUSE_WINDOW_MS = 5000;
+  private static readonly BUTTON_SPAM_SAME_ACTION_COOLDOWN_MS = 1500;
+  private static readonly BUTTON_SPAM_WARNING_SUPPRESSION_MS = 10000;
+  private static readonly HOT_SURFACE_EDIT_BUDGET_MAX_EDITS = 4;
+  private static readonly HOT_SURFACE_EDIT_BUDGET_WINDOW_MS = 5000;
+  private static readonly MATCH_RENDER_LIVE_INTERVAL_MS = 1500;
+  private static readonly MATCH_RENDER_TRAILING_FLUSH_MS = 250;
+  private static readonly QUEUE_RENDER_LIVE_INTERVAL_MS = 1500;
+  private static readonly QUEUE_RENDER_TRAILING_FLUSH_MS = 300;
+  private static readonly SPAM_WARNING_MESSAGE = "Slow down a bit. Repeated button spam is being ignored for a moment.";
 
   private readonly contexts = new Map<string, GuildContext>();
   private readonly contextLoads = new Map<string, Promise<GuildContext | null>>();
   private readonly queueTimers = new Map<string, NodeJS.Timeout>();
+  private readonly buttonSpamStates = new Map<string, ButtonSpamGuardState>();
   private readonly renderCoordinators = new Map<string, RenderCoordinator>();
 
   constructor(
@@ -124,11 +153,15 @@ export class GuildRuntimeManager {
     }
     this.queueTimers.clear();
     for (const coordinator of this.renderCoordinators.values()) {
-      if (coordinator.timer) {
-        clearTimeout(coordinator.timer);
+      if (coordinator.liveTimer) {
+        clearTimeout(coordinator.liveTimer);
+      }
+      if (coordinator.trailingTimer) {
+        clearTimeout(coordinator.trailingTimer);
       }
     }
     this.renderCoordinators.clear();
+    this.buttonSpamStates.clear();
     this.contextLoads.clear();
 
     for (const context of this.contexts.values()) {
@@ -669,10 +702,18 @@ export class GuildRuntimeManager {
     }
 
     const queueRenderCoordinator = this.renderCoordinators.get(this.getQueueRenderKey(guildId));
-    if (queueRenderCoordinator?.timer) {
-      clearTimeout(queueRenderCoordinator.timer);
+    if (queueRenderCoordinator?.liveTimer) {
+      clearTimeout(queueRenderCoordinator.liveTimer);
+    }
+    if (queueRenderCoordinator?.trailingTimer) {
+      clearTimeout(queueRenderCoordinator.trailingTimer);
     }
     this.renderCoordinators.delete(this.getQueueRenderKey(guildId));
+    for (const key of this.buttonSpamStates.keys()) {
+      if (key.startsWith(`${guildId}:`)) {
+        this.buttonSpamStates.delete(key);
+      }
+    }
 
     const existing = this.contexts.get(guildId);
     if (!existing) {
@@ -735,6 +776,24 @@ export class GuildRuntimeManager {
         username: interaction.user.username,
       });
       return;
+    }
+
+    const surfaceRecord = context.surfaceRegistry.get(message.id);
+    if (surfaceRecord && surfaceRecord.state !== "closed" && surfaceRecord.allowedActions.has(interaction.customId)) {
+      const spamDecision = this.evaluateButtonSpamDecision(context, interaction, surfaceRecord.kind);
+      if (!spamDecision.allowed) {
+        if (spamDecision.shouldWarn) {
+          await this.sendButtonSpamWarning(interaction);
+        }
+        logInteractionAudit({
+          action,
+          guildId: context.guildId,
+          reason: spamDecision.reason ?? "button interaction was ignored due to spam protection",
+          status: "ignored",
+          username: interaction.user.username,
+        });
+        return;
+      }
     }
 
     const postCommitEffects: PostCommitEffect[] = [];
@@ -1113,7 +1172,8 @@ export class GuildRuntimeManager {
   ): Promise<void> {
     this.requestCoalescedRender(
       this.getMatchRenderKey(message.id),
-      GuildRuntimeManager.MATCH_RENDER_COOLDOWN_MS,
+      GuildRuntimeManager.MATCH_RENDER_LIVE_INTERVAL_MS,
+      GuildRuntimeManager.MATCH_RENDER_TRAILING_FLUSH_MS,
       async () => {
         await this.scheduler.enqueue(async () => await message.edit(payload), {
           coalesce: "replace",
@@ -1130,8 +1190,11 @@ export class GuildRuntimeManager {
   private async deleteMatchSurface(message: Message): Promise<void> {
     const coordinatorKey = this.getMatchRenderKey(message.id);
     const coordinator = this.renderCoordinators.get(coordinatorKey);
-    if (coordinator?.timer) {
-      clearTimeout(coordinator.timer);
+    if (coordinator?.liveTimer) {
+      clearTimeout(coordinator.liveTimer);
+    }
+    if (coordinator?.trailingTimer) {
+      clearTimeout(coordinator.trailingTimer);
     }
     this.renderCoordinators.delete(coordinatorKey);
 
@@ -1152,104 +1215,192 @@ export class GuildRuntimeManager {
     return `queue:${guildId}`;
   }
 
-  private requestCoalescedRender(key: string, cooldownMs: number, render: () => Promise<void>): void {
-    const coordinator = this.getOrCreateRenderCoordinator(key, cooldownMs);
-    coordinator.cooldownMs = cooldownMs;
+  private requestCoalescedRender(
+    key: string,
+    liveIntervalMs: number,
+    trailingFlushMs: number,
+    render: () => Promise<void>
+  ): void {
+    const coordinator = this.getOrCreateRenderCoordinator(key, liveIntervalMs, trailingFlushMs);
+    coordinator.liveIntervalMs = liveIntervalMs;
+    coordinator.trailingFlushMs = trailingFlushMs;
     coordinator.render = render;
+    coordinator.dirty = true;
+    coordinator.lastMutationAt = Date.now();
 
-    const now = Date.now();
-    const earliestNextRenderAt =
-      coordinator.lastRenderStartedAt > 0 ? coordinator.lastRenderStartedAt + coordinator.cooldownMs : 0;
-
-    if (coordinator.inFlight || now < earliestNextRenderAt) {
-      coordinator.dirty = true;
-      this.scheduleCoalescedRender(key, Math.max(0, earliestNextRenderAt - now));
+    this.scheduleTrailingRender(key, trailingFlushMs);
+    if (coordinator.inFlight) {
       return;
     }
 
-    this.startCoalescedRender(key);
+    if (coordinator.lastRenderStartedAt === 0) {
+      this.startCoalescedRender(key, false);
+      return;
+    }
+
+    const liveDelay = this.getNextLiveRenderDelay(coordinator, Date.now());
+    if (liveDelay <= 0) {
+      this.startCoalescedRender(key, false);
+      return;
+    }
+
+    this.scheduleLiveRender(key, liveDelay);
   }
 
-  private getOrCreateRenderCoordinator(key: string, cooldownMs: number): RenderCoordinator {
+  private getOrCreateRenderCoordinator(
+    key: string,
+    liveIntervalMs: number,
+    trailingFlushMs: number
+  ): RenderCoordinator {
     const existing = this.renderCoordinators.get(key);
     if (existing) {
       return existing;
     }
 
     const created: RenderCoordinator = {
-      cooldownMs,
       dirty: false,
+      editBudgetTimestamps: [],
       inFlight: false,
+      lastMutationAt: 0,
       lastRenderStartedAt: 0,
+      liveIntervalMs,
+      liveTimer: null,
       render: null,
-      timer: null,
+      trailingFlushMs,
+      trailingTimer: null,
     };
     this.renderCoordinators.set(key, created);
     return created;
   }
 
-  private scheduleCoalescedRender(key: string, delayMs: number): void {
-    const coordinator = this.renderCoordinators.get(key);
-    if (!coordinator || coordinator.timer) {
-      return;
-    }
-
-    coordinator.timer = setTimeout(() => {
-      const currentCoordinator = this.renderCoordinators.get(key);
-      if (!currentCoordinator) {
-        return;
-      }
-
-      currentCoordinator.timer = null;
-      this.maybeRunCoalescedRender(key);
-    }, delayMs);
-    coordinator.timer.unref?.();
-  }
-
-  private maybeRunCoalescedRender(key: string): void {
+  private scheduleLiveRender(key: string, delayMs: number): void {
     const coordinator = this.renderCoordinators.get(key);
     if (!coordinator) {
       return;
     }
 
-    if (coordinator.inFlight) {
-      this.scheduleCoalescedRender(key, coordinator.cooldownMs);
-      return;
+    if (coordinator.liveTimer) {
+      clearTimeout(coordinator.liveTimer);
     }
 
-    const now = Date.now();
-    const earliestNextRenderAt =
-      coordinator.lastRenderStartedAt > 0 ? coordinator.lastRenderStartedAt + coordinator.cooldownMs : 0;
-    if (now < earliestNextRenderAt) {
-      this.scheduleCoalescedRender(key, earliestNextRenderAt - now);
-      return;
-    }
-
-    if (!coordinator.dirty) {
-      if (!coordinator.inFlight && !coordinator.timer) {
-        this.renderCoordinators.delete(key);
+    coordinator.liveTimer = setTimeout(() => {
+      const currentCoordinator = this.renderCoordinators.get(key);
+      if (!currentCoordinator) {
+        return;
       }
-      return;
-    }
 
-    if (!coordinator.render) {
-      this.renderCoordinators.delete(key);
-      return;
-    }
-
-    coordinator.dirty = false;
-    this.startCoalescedRender(key);
+      currentCoordinator.liveTimer = null;
+      this.maybeRunLiveRender(key);
+    }, delayMs);
+    coordinator.liveTimer.unref?.();
   }
 
-  private startCoalescedRender(key: string): void {
+  private scheduleTrailingRender(key: string, delayMs: number): void {
+    const coordinator = this.renderCoordinators.get(key);
+    if (!coordinator) {
+      return;
+    }
+
+    if (coordinator.trailingTimer) {
+      clearTimeout(coordinator.trailingTimer);
+    }
+
+    coordinator.trailingTimer = setTimeout(() => {
+      const currentCoordinator = this.renderCoordinators.get(key);
+      if (!currentCoordinator) {
+        return;
+      }
+
+      currentCoordinator.trailingTimer = null;
+      this.maybeRunTrailingRender(key);
+    }, delayMs);
+    coordinator.trailingTimer.unref?.();
+  }
+
+  private maybeRunLiveRender(key: string): void {
+    const coordinator = this.renderCoordinators.get(key);
+    if (!coordinator || !coordinator.dirty) {
+      this.cleanupRenderCoordinator(key);
+      return;
+    }
+
+    if (coordinator.inFlight) {
+      return;
+    }
+
+    const liveDelay = this.getNextLiveRenderDelay(coordinator, Date.now());
+    if (liveDelay > 0) {
+      this.scheduleLiveRender(key, liveDelay);
+      return;
+    }
+
+    this.startCoalescedRender(key, false);
+  }
+
+  private maybeRunTrailingRender(key: string): void {
+    const coordinator = this.renderCoordinators.get(key);
+    if (!coordinator || !coordinator.dirty) {
+      this.cleanupRenderCoordinator(key);
+      return;
+    }
+
+    if (coordinator.inFlight) {
+      const now = Date.now();
+      const trailingReadyAt = coordinator.lastMutationAt + coordinator.trailingFlushMs;
+      this.scheduleTrailingRender(key, Math.max(10, trailingReadyAt - now));
+      return;
+    }
+
+    const trailingDelay = this.getNextTrailingRenderDelay(coordinator, Date.now());
+    if (trailingDelay > 0) {
+      this.scheduleTrailingRender(key, trailingDelay);
+      return;
+    }
+
+    this.startCoalescedRender(key, true);
+  }
+
+  private startCoalescedRender(key: string, bypassLiveInterval: boolean): void {
     const coordinator = this.renderCoordinators.get(key);
     if (!coordinator || coordinator.inFlight || !coordinator.render) {
       return;
     }
 
+    const now = Date.now();
+    if (!bypassLiveInterval) {
+      const liveDelay = this.getNextLiveRenderDelay(coordinator, now);
+      if (coordinator.lastRenderStartedAt > 0 && liveDelay > 0) {
+        this.scheduleLiveRender(key, liveDelay);
+        return;
+      }
+    } else {
+      const budgetDelay = this.getEditBudgetReadyAt(coordinator, now) - now;
+      if (budgetDelay > 0) {
+        this.scheduleTrailingRender(key, budgetDelay);
+        return;
+      }
+    }
+
+    if (coordinator.lastRenderStartedAt > 0 && !bypassLiveInterval) {
+      const liveDelay = this.getNextLiveRenderDelay(coordinator, now);
+      if (liveDelay > 0) {
+        this.scheduleLiveRender(key, liveDelay);
+        return;
+      }
+    }
+
     coordinator.inFlight = true;
     coordinator.lastRenderStartedAt = Date.now();
+    coordinator.editBudgetTimestamps = this.pruneEditBudgetTimestamps(
+      [...coordinator.editBudgetTimestamps, coordinator.lastRenderStartedAt],
+      coordinator.lastRenderStartedAt
+    );
+    if (coordinator.liveTimer) {
+      clearTimeout(coordinator.liveTimer);
+      coordinator.liveTimer = null;
+    }
     const render = coordinator.render;
+    coordinator.dirty = false;
 
     void render()
       .catch((error) => {
@@ -1263,31 +1414,170 @@ export class GuildRuntimeManager {
 
         currentCoordinator.inFlight = false;
         if (currentCoordinator.dirty) {
-          if (currentCoordinator.timer) {
-            clearTimeout(currentCoordinator.timer);
-            currentCoordinator.timer = null;
+          const afterRenderNow = Date.now();
+          const trailingDelay = this.getNextTrailingRenderDelay(currentCoordinator, afterRenderNow);
+          if (trailingDelay <= 0) {
+            this.startCoalescedRender(key, true);
+            return;
           }
-          const nextDelay = Math.max(
-            0,
-            currentCoordinator.lastRenderStartedAt + currentCoordinator.cooldownMs - Date.now()
-          );
-          this.scheduleCoalescedRender(key, nextDelay);
+
+          this.scheduleTrailingRender(key, trailingDelay);
+          const liveDelay = this.getNextLiveRenderDelay(currentCoordinator, afterRenderNow);
+          if (liveDelay > 0) {
+            this.scheduleLiveRender(key, liveDelay);
+          }
           return;
         }
 
-        const cleanupDelay = Math.max(
-          0,
-          currentCoordinator.lastRenderStartedAt + currentCoordinator.cooldownMs - Date.now()
-        );
-        if (cleanupDelay > 0) {
-          this.scheduleCoalescedRender(key, cleanupDelay);
-          return;
-        }
-
-        if (!currentCoordinator.timer && !currentCoordinator.inFlight) {
-          this.renderCoordinators.delete(key);
-        }
+        this.cleanupRenderCoordinator(key);
       });
+  }
+
+  private cleanupRenderCoordinator(key: string): void {
+    const coordinator = this.renderCoordinators.get(key);
+    if (!coordinator) {
+      return;
+    }
+
+    if (coordinator.inFlight || coordinator.dirty || coordinator.liveTimer || coordinator.trailingTimer) {
+      return;
+    }
+
+    this.renderCoordinators.delete(key);
+  }
+
+  private evaluateButtonSpamDecision(
+    context: GuildContext,
+    interaction: ButtonInteraction,
+    surfaceKind: "queue" | "match"
+  ): ButtonSpamDecision {
+    const stateKey = this.getButtonSpamStateKey(context.guildId, interaction.user.id, interaction.message.id);
+    const now = Date.now();
+    const state = this.getOrCreateButtonSpamState(stateKey);
+
+    state.ignoredSameActionAt = state.ignoredSameActionAt.filter(
+      (timestamp) => timestamp > now - GuildRuntimeManager.BUTTON_SPAM_ABUSE_WINDOW_MS
+    );
+
+    if (state.cooldownUntil > now) {
+      const shouldWarn = state.warningSuppressedUntil <= now;
+      if (shouldWarn) {
+        state.warningSuppressedUntil = now + GuildRuntimeManager.BUTTON_SPAM_WARNING_SUPPRESSION_MS;
+      }
+      return {
+        allowed: false,
+        reason: `user is temporarily blocked from ${surfaceKind} interactions for spamming buttons`,
+        shouldWarn,
+      };
+    }
+
+    if (isSpamGuardExemptAction(interaction.customId)) {
+      state.lastAcceptedAction = interaction.customId;
+      state.lastAcceptedAt = now;
+      state.ignoredSameActionAt = [];
+      return {
+        allowed: true,
+        shouldWarn: false,
+      };
+    }
+
+    const isRepeatedSameAction =
+      state.lastAcceptedAction === interaction.customId &&
+      state.lastAcceptedAt > 0 &&
+      now - state.lastAcceptedAt < GuildRuntimeManager.BUTTON_SPAM_SAME_ACTION_COOLDOWN_MS;
+
+    if (!isRepeatedSameAction) {
+      state.lastAcceptedAction = interaction.customId;
+      state.lastAcceptedAt = now;
+      state.ignoredSameActionAt = [];
+      return {
+        allowed: true,
+        shouldWarn: false,
+      };
+    }
+
+    state.ignoredSameActionAt.push(now);
+    let shouldWarn = false;
+    let reason = "same action was pressed too quickly";
+
+    if (state.ignoredSameActionAt.length >= GuildRuntimeManager.BUTTON_SPAM_ABUSE_THRESHOLD) {
+      state.cooldownUntil = now + GuildRuntimeManager.BUTTON_SPAM_ABUSE_COOLDOWN_MS;
+      reason = `user is temporarily blocked from ${surfaceKind} interactions for spamming buttons`;
+      if (state.warningSuppressedUntil <= now) {
+        state.warningSuppressedUntil = now + GuildRuntimeManager.BUTTON_SPAM_WARNING_SUPPRESSION_MS;
+        shouldWarn = true;
+      }
+    }
+
+    return {
+      allowed: false,
+      reason,
+      shouldWarn,
+    };
+  }
+
+  private getButtonSpamStateKey(guildId: string, userId: string, messageId: string): string {
+    return `${guildId}:${messageId}:${userId}`;
+  }
+
+  private getOrCreateButtonSpamState(key: string): ButtonSpamGuardState {
+    const existing = this.buttonSpamStates.get(key);
+    if (existing) {
+      return existing;
+    }
+
+    const created: ButtonSpamGuardState = {
+      cooldownUntil: 0,
+      ignoredSameActionAt: [],
+      lastAcceptedAction: null,
+      lastAcceptedAt: 0,
+      warningSuppressedUntil: 0,
+    };
+    this.buttonSpamStates.set(key, created);
+    return created;
+  }
+
+  private async sendButtonSpamWarning(interaction: ButtonInteraction): Promise<void> {
+    await this.scheduler.enqueue(
+      async () =>
+        await interaction.followUp({
+          content: GuildRuntimeManager.SPAM_WARNING_MESSAGE,
+          flags: MessageFlags.Ephemeral,
+        }),
+      {
+        coalesce: "replace",
+        dedupeKey: `interaction-follow-up:${interaction.id}:spam-warning`,
+        label: "button-spam-warning",
+        priority: "high",
+        rateLimitKey: `interaction:${interaction.id}`,
+      }
+    );
+  }
+
+  private getNextLiveRenderDelay(coordinator: RenderCoordinator, now: number): number {
+    const liveReadyAt = coordinator.lastRenderStartedAt + coordinator.liveIntervalMs;
+    const budgetReadyAt = this.getEditBudgetReadyAt(coordinator, now);
+    return Math.max(0, Math.max(liveReadyAt, budgetReadyAt) - now);
+  }
+
+  private getNextTrailingRenderDelay(coordinator: RenderCoordinator, now: number): number {
+    const trailingReadyAt = coordinator.lastMutationAt + coordinator.trailingFlushMs;
+    const budgetReadyAt = this.getEditBudgetReadyAt(coordinator, now);
+    return Math.max(0, Math.max(trailingReadyAt, budgetReadyAt) - now);
+  }
+
+  private getEditBudgetReadyAt(coordinator: RenderCoordinator, now: number): number {
+    coordinator.editBudgetTimestamps = this.pruneEditBudgetTimestamps(coordinator.editBudgetTimestamps, now);
+    if (coordinator.editBudgetTimestamps.length < GuildRuntimeManager.HOT_SURFACE_EDIT_BUDGET_MAX_EDITS) {
+      return now;
+    }
+
+    return coordinator.editBudgetTimestamps[0]! + GuildRuntimeManager.HOT_SURFACE_EDIT_BUDGET_WINDOW_MS;
+  }
+
+  private pruneEditBudgetTimestamps(timestamps: number[], now: number): number[] {
+    const cutoff = now - GuildRuntimeManager.HOT_SURFACE_EDIT_BUDGET_WINDOW_MS;
+    return timestamps.filter((timestamp) => timestamp > cutoff);
   }
 
   private async refreshLeaderboard(context: GuildContext): Promise<void> {
@@ -1319,7 +1609,8 @@ export class GuildRuntimeManager {
 
     this.requestCoalescedRender(
       this.getQueueRenderKey(context.guildId),
-      GuildRuntimeManager.QUEUE_RENDER_COOLDOWN_MS,
+      GuildRuntimeManager.QUEUE_RENDER_LIVE_INTERVAL_MS,
+      GuildRuntimeManager.QUEUE_RENDER_TRAILING_FLUSH_MS,
       async () => {
         if (!context.queueMessage) {
           const queueMessage = await this.scheduler.enqueue(
@@ -1429,6 +1720,10 @@ function getMessageEditLane(messageId: string): string {
 
 function getMessageReplyLane(message: Message): string {
   return `channel:${message.channelId}:reply`;
+}
+
+function isSpamGuardExemptAction(customId: string): boolean {
+  return customId === ButtonCustomID.BrokenQueue;
 }
 
 function formatInteractionAuditTimestamp(now = DateTime.now()): string {

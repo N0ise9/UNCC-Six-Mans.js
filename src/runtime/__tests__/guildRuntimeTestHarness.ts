@@ -15,6 +15,8 @@ type FakeMessageOptions = {
   replyMessage?: Message;
 };
 
+let interactionSequence = 0;
+
 export function createGuildConfig(guildId = "guild-1"): GuildInstanceConfig {
   return {
     chatChannelId: `${guildId}-chat`,
@@ -54,6 +56,8 @@ export function createButtonInteraction(
 ) {
   return {
     customId,
+    followUp: jest.fn(async () => undefined),
+    id: `interaction-${++interactionSequence}-${customId}-${userId}`,
     message,
     user: {
       id: userId,
