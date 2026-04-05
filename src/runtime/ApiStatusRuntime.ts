@@ -659,7 +659,7 @@ function createSummaryEmbed(
   return new EmbedBuilder()
     .setColor(SUMMARY_COLOR)
     .setDescription(description)
-    .setFooter({ text: `${SUMMARY_MARKER} | key=summary:page:${pageNumber} | Page ${pageNumber}` })
+    .setFooter({ text: `${SUMMARY_MARKER} | Page ${pageNumber}` })
     .setTitle(`API and Platform Status (Page ${pageNumber})`);
 }
 
@@ -680,7 +680,7 @@ function calculateSummaryBaseLength(
   snapshotAt: number
 ): number {
   const title = `API and Platform Status (Page ${pageNumber})`;
-  const footer = `${SUMMARY_MARKER} | key=summary:page:${pageNumber} | Page ${pageNumber}`;
+  const footer = `${SUMMARY_MARKER} | Page ${pageNumber}`;
   return title.length + buildSummaryDescription(summary, snapshotAt).length + footer.length;
 }
 
@@ -736,7 +736,6 @@ function buildIncidentEmbed({
     calculateIncidentBaseLength({
       description,
       lastChecked: service.lastChecked,
-      serviceId: service.id,
       serviceTitle: title,
       status: service.status,
     }) +
@@ -870,7 +869,7 @@ function createIncidentEmbed({
   service: ServiceStatus;
   title: string;
 }): EmbedBuilder {
-  const footerText = `${INCIDENT_MARKER} | key=incident:service:${service.id}`;
+  const footerText = INCIDENT_MARKER;
   const summaryLine = description || humanizeStatus(service.status);
   const relativeTimestamp = `<t:${Math.floor(service.lastChecked.getTime() / 1000)}:R>`;
 
@@ -886,17 +885,15 @@ function createIncidentEmbed({
 function calculateIncidentBaseLength({
   description,
   lastChecked,
-  serviceId,
   serviceTitle,
   status,
 }: {
   description: string;
   lastChecked: Date;
-  serviceId: string;
   serviceTitle: string;
   status: ServiceStatus["status"];
 }): number {
-  const footerText = `${INCIDENT_MARKER} | key=incident:service:${serviceId}`;
+  const footerText = INCIDENT_MARKER;
   const relativeTimestamp = `<t:${Math.floor(lastChecked.getTime() / 1000)}:R>`;
   const incidentSummary =
     `${statusEmoji(status)} ${description || humanizeStatus(status)}\n` + `Last updated: ${relativeTimestamp}`;
