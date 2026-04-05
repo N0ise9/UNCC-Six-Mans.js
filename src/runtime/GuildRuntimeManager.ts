@@ -66,6 +66,17 @@ type GuildRuntimeLoadResult = {
   failure: GuildRuntimeLoadFailure | null;
 };
 
+type InteractionAuditStatus = "processed" | "ignored";
+
+type InteractionAuditResult = {
+  reason: string;
+  status: InteractionAuditStatus;
+};
+
+type QueueInteractionAuditResult = InteractionAuditResult & {
+  players: ReadonlyArray<PlayerInQueue> | null;
+};
+
 class GuildRuntimeInitializationError extends Error {
   constructor(
     readonly code: Exclude<GuildRuntimeFailureCode, "config" | "unknown">,
@@ -146,6 +157,15 @@ export class GuildRuntimeManager {
 
   async handleSlashCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
+      if (interaction.commandName === "norm") {
+        logInteractionAudit({
+          action: "/norm",
+          guildId: null,
+          reason: "command only works inside a server",
+          status: "ignored",
+          username: interaction.user.username,
+        });
+      }
       await interaction.reply({
         content: "This command only works inside a server.",
         flags: MessageFlags.Ephemeral,
@@ -169,6 +189,15 @@ export class GuildRuntimeManager {
     if (!context) {
       const configResult = this.configStore.getGuildConfigResult(interaction.guildId);
       if (configResult?.error) {
+        if (interaction.commandName === "norm") {
+          logInteractionAudit({
+            action: "/norm",
+            guildId: interaction.guildId,
+            reason: "stored guild configuration could not be decrypted",
+            status: "ignored",
+            username: interaction.user.username,
+          });
+        }
         await interaction.reply({
           content:
             "This guild is configured, but I couldn't read its stored configuration. " +
@@ -179,6 +208,15 @@ export class GuildRuntimeManager {
       }
 
       if (configResult?.config?.enabled) {
+        if (interaction.commandName === "norm") {
+          logInteractionAudit({
+            action: "/norm",
+            guildId: interaction.guildId,
+            reason: "guild runtime is configured but failed to load",
+            status: "ignored",
+            username: interaction.user.username,
+          });
+        }
         await interaction.reply({
           content:
             "This guild is configured, but the runtime failed to load. Check the configured channels " +
@@ -188,6 +226,15 @@ export class GuildRuntimeManager {
         return;
       }
 
+      if (interaction.commandName === "norm") {
+        logInteractionAudit({
+          action: "/norm",
+          guildId: interaction.guildId,
+          reason: "guild has not been configured yet",
+          status: "ignored",
+          username: interaction.user.username,
+        });
+      }
       await interaction.reply({
         content: "This guild has not been configured yet. Run /setup set first.",
         flags: MessageFlags.Ephemeral,
@@ -203,6 +250,15 @@ export class GuildRuntimeManager {
 
     if (interaction.commandName === "norm" || interaction.commandName === "sora") {
       if (!context.config.chatChannelId) {
+        if (interaction.commandName === "norm") {
+          logInteractionAudit({
+            action: "/norm",
+            guildId: interaction.guildId,
+            reason: "OpenAI chat channel is not configured",
+            status: "ignored",
+            username: interaction.user.username,
+          });
+        }
         await interaction.reply({
           content: "This guild is missing its OpenAI chat channel. A server admin needs to rerun /setup set.",
           flags: MessageFlags.Ephemeral,
@@ -211,6 +267,15 @@ export class GuildRuntimeManager {
       }
 
       if (interaction.channelId !== context.config.chatChannelId) {
+        if (interaction.commandName === "norm") {
+          logInteractionAudit({
+            action: "/norm",
+            guildId: interaction.guildId,
+            reason: `wrong channel; use ${context.config.chatChannelId}`,
+            status: "ignored",
+            username: interaction.user.username,
+          });
+        }
         await interaction.reply({
           content: `Use this command in <#${context.config.chatChannelId}>.`,
           flags: MessageFlags.Ephemeral,
@@ -218,6 +283,15 @@ export class GuildRuntimeManager {
         return;
       }
 
+      if (interaction.commandName === "norm") {
+        logInteractionAudit({
+          action: "/norm",
+          guildId: interaction.guildId,
+          reason: "forwarded to Norm handler",
+          status: "processed",
+          username: interaction.user.username,
+        });
+      }
       await interaction.deferReply();
       await handleEasterEggSlashInteraction(context, interaction);
     }
@@ -623,52 +697,131 @@ export class GuildRuntimeManager {
   }
 
   async handleButtonInteraction(context: GuildContext, interaction: ButtonInteraction): Promise<void> {
+    const action = describeButtonInteractionAction(interaction.customId);
     const message = interaction.message;
-    if (!(message instanceof Message)) return;
+    if (!(message instanceof Message)) {
+      logInteractionAudit({
+        action,
+        guildId: context.guildId,
+        reason: "interaction did not include a full Discord message",
+        status: "ignored",
+        username: interaction.user.username,
+      });
+      return;
+    }
 
     const release = await context.queueMutex.acquire();
     try {
       if (!context.surfaceRegistry.isInteractionAllowed(message.id, interaction.customId)) {
-        console.info(
-          `[${context.guildId}] Ignoring stale button interaction ${interaction.customId} on message ${message.id}.`
-        );
+        logInteractionAudit({
+          action,
+          guildId: context.guildId,
+          reason: `stale interaction on message ${message.id}`,
+          status: "ignored",
+          username: interaction.user.username,
+        });
         return;
       }
 
       switch (interaction.customId) {
         case ButtonCustomID.JoinQueue: {
-          const players = await joinQueue(context, interaction.user.id, interaction.user.username);
-          if (!players) return;
-          await this.refreshQueueSurface(context, players);
+          const result = await joinQueue(context, interaction.user.id, interaction.user.username);
+          if (result.players) {
+            await this.refreshQueueSurface(context, result.players);
+          }
+          logInteractionAudit({
+            action,
+            guildId: context.guildId,
+            reason: result.reason,
+            status: result.status,
+            username: interaction.user.username,
+          });
           return;
         }
         case ButtonCustomID.LeaveQueue: {
-          const players = await leaveQueue(context, interaction.user.id);
-          if (!players) return;
-          await this.refreshQueueSurface(context, players);
+          const result = await leaveQueue(context, interaction.user.id);
+          if (result.players) {
+            await this.refreshQueueSurface(context, result.players);
+          }
+          logInteractionAudit({
+            action,
+            guildId: context.guildId,
+            reason: result.reason,
+            status: result.status,
+            username: interaction.user.username,
+          });
           return;
         }
         case ButtonCustomID.Twos: {
-          await this.handleTwosVote(context, interaction.user.id);
+          const result = await this.handleTwosVote(context, interaction.user.id);
+          logInteractionAudit({
+            action,
+            guildId: context.guildId,
+            reason: result.reason,
+            status: result.status,
+            username: interaction.user.username,
+          });
           return;
         }
         case ButtonCustomID.ChooseTeam:
         case ButtonCustomID.CreateRandomTeam: {
-          await this.handleCaptainsOrRandomVote(context, interaction.customId, message, interaction.user.id);
+          const result = await this.handleCaptainsOrRandomVote(
+            context,
+            interaction.customId,
+            message,
+            interaction.user.id
+          );
+          logInteractionAudit({
+            action,
+            guildId: context.guildId,
+            reason: result.reason,
+            status: result.status,
+            username: interaction.user.username,
+          });
           return;
         }
         case ButtonCustomID.ReportBlue: {
-          await this.handleMatchReport(context, interaction, Team.Blue);
+          const result = await this.handleMatchReport(context, interaction, Team.Blue);
+          logInteractionAudit({
+            action,
+            guildId: context.guildId,
+            reason: result.reason,
+            status: result.status,
+            username: interaction.user.username,
+          });
           return;
         }
         case ButtonCustomID.ReportOrange: {
-          await this.handleMatchReport(context, interaction, Team.Orange);
+          const result = await this.handleMatchReport(context, interaction, Team.Orange);
+          logInteractionAudit({
+            action,
+            guildId: context.guildId,
+            reason: result.reason,
+            status: result.status,
+            username: interaction.user.username,
+          });
           return;
         }
         case ButtonCustomID.BrokenQueue: {
-          await this.handleBrokenQueueVote(context, interaction);
+          const result = await this.handleBrokenQueueVote(context, interaction);
+          logInteractionAudit({
+            action,
+            guildId: context.guildId,
+            reason: result.reason,
+            status: result.status,
+            username: interaction.user.username,
+          });
           return;
         }
+        default:
+          logInteractionAudit({
+            action,
+            guildId: context.guildId,
+            reason: "button action is not recognized by the runtime",
+            status: "ignored",
+            username: interaction.user.username,
+          });
+          return;
       }
     } finally {
       release();
@@ -717,14 +870,34 @@ export class GuildRuntimeManager {
     }
   }
 
-  private async handleBrokenQueueVote(context: GuildContext, interaction: ButtonInteraction): Promise<void> {
+  private async handleBrokenQueueVote(
+    context: GuildContext,
+    interaction: ButtonInteraction
+  ): Promise<InteractionAuditResult> {
     const message = interaction.message;
-    if (!(message instanceof Message)) return;
+    if (!(message instanceof Message)) {
+      return {
+        reason: "interaction did not include a full Discord message",
+        status: "ignored",
+      };
+    }
 
     const playerInMatch = await context.repositories.activeMatch.isPlayerInActiveMatch(interaction.user.id);
-    if (!playerInMatch) return;
+    if (!playerInMatch) {
+      return {
+        reason: "user is not part of the active match",
+        status: "ignored",
+      };
+    }
 
     const playerVoting = await context.repositories.activeMatch.getPlayerInActiveMatch(interaction.user.id);
+    if (!playerVoting) {
+      return {
+        reason: "active match state could not find the player",
+        status: "ignored",
+      };
+    }
+
     const vote = playerVoting?.brokenQueue === false;
     await context.repositories.activeMatch.updatePlayerInActiveMatch(interaction.user.id, {
       brokenQueue: vote,
@@ -740,7 +913,10 @@ export class GuildRuntimeManager {
         label: "match-delete",
         priority: "normal",
       });
-      return;
+      return {
+        reason: "broken queue vote reached threshold and cancelled the match",
+        status: "processed",
+      };
     }
 
     const teams = await context.repositories.activeMatch.getAllBrokenQueueVotersInActiveMatch(interaction.user.id);
@@ -761,6 +937,11 @@ export class GuildRuntimeManager {
         shouldRun: () => context.surfaceRegistry.hasRevision(message.id, revision),
       }
     );
+
+    return {
+      reason: vote ? "recorded broken queue vote" : "removed broken queue vote",
+      status: "processed",
+    };
   }
 
   private async handleCaptainsOrRandomVote(
@@ -768,13 +949,23 @@ export class GuildRuntimeManager {
     customId: ButtonCustomID.ChooseTeam | ButtonCustomID.CreateRandomTeam,
     sourceMessage: Message,
     userId: string
-  ): Promise<void> {
+  ): Promise<InteractionAuditResult> {
     const playerInQueue = await context.repositories.queue.isPlayerInQueue(userId);
-    if (!playerInQueue) return;
+    if (!playerInQueue) {
+      return {
+        reason: "user is not currently in the queue",
+        status: "ignored",
+      };
+    }
 
     const queue = await context.repositories.queue.getAllBallChasersInQueue();
     const target = getQueueTargetSize(context.voteState.twosEnabled);
-    if (queue.length !== target) return;
+    if (queue.length !== target) {
+      return {
+        reason: `queue is not ready for voting (${queue.length}/${target})`,
+        status: "ignored",
+      };
+    }
 
     context.voteState.captainsRandomVotes.set(userId, customId);
     const { captains, random } = countCaptainsRandomVotes(context.voteState.captainsRandomVotes);
@@ -783,34 +974,69 @@ export class GuildRuntimeManager {
     if (captains === threshold) {
       await setCaptains(context, queue);
       await this.refreshQueueSurface(context);
-      return;
+      return {
+        reason: "captains vote reached threshold",
+        status: "processed",
+      };
     }
 
     if (random === threshold) {
       const activeMatch = await createRandomMatch(context);
       await this.publishActiveMatch(context, sourceMessage, activeMatch);
-      return;
+      return {
+        reason: "random teams vote reached threshold",
+        status: "processed",
+      };
     }
 
     await this.refreshQueueSurface(context);
+    return {
+      reason:
+        customId === ButtonCustomID.ChooseTeam ? "recorded captains vote" : "recorded random teams vote",
+      status: "processed",
+    };
   }
 
-  private async handleMatchReport(context: GuildContext, interaction: ButtonInteraction, team: Team): Promise<void> {
+  private async handleMatchReport(
+    context: GuildContext,
+    interaction: ButtonInteraction,
+    team: Team
+  ): Promise<InteractionAuditResult> {
     const message = interaction.message;
-    if (!(message instanceof Message)) return;
+    if (!(message instanceof Message)) {
+      return {
+        reason: "interaction did not include a full Discord message",
+        status: "ignored",
+      };
+    }
 
     const playerInMatch = await context.repositories.activeMatch.isPlayerInActiveMatch(interaction.user.id);
-    if (!playerInMatch) return;
+    if (!playerInMatch) {
+      return {
+        reason: "user is not part of the active match",
+        status: "ignored",
+      };
+    }
 
-    const confirmed = await checkReport(context, team, interaction.user.id);
-    if (confirmed) {
+    const reportResolution = await checkReport(context, team, interaction.user.id);
+    if (reportResolution.kind === "confirm") {
       context.surfaceRegistry.close(message.id, "match");
       await this.scheduler.enqueue(async () => await message.delete(), {
         label: "match-delete",
         priority: "normal",
       });
       await this.refreshLeaderboard(context);
-      return;
+      return {
+        reason: `confirmed ${team === Team.Blue ? "blue" : "orange"} team match result`,
+        status: "processed",
+      };
+    }
+
+    if (reportResolution.kind === "ignore") {
+      return {
+        reason: "matching report from the same team is already recorded",
+        status: "ignored",
+      };
     }
 
     const revision = context.surfaceRegistry.upsert(message.id, "match", matchSurfaceState());
@@ -825,20 +1051,41 @@ export class GuildRuntimeManager {
         shouldRun: () => context.surfaceRegistry.hasRevision(message.id, revision),
       }
     );
+
+    return {
+      reason: `recorded ${team === Team.Blue ? "blue" : "orange"} team match report`,
+      status: "processed",
+    };
   }
 
-  private async handleTwosVote(context: GuildContext, userId: string): Promise<void> {
+  private async handleTwosVote(context: GuildContext, userId: string): Promise<InteractionAuditResult> {
     const ballChasers = await context.repositories.queue.getAllBallChasersInQueue();
-    if (ballChasers.length < 4) return;
-    if (!ballChasers.some((player) => player.id === userId)) return;
+    if (ballChasers.length < 4) {
+      return {
+        reason: "2s voting is unavailable until at least 4 players are queued",
+        status: "ignored",
+      };
+    }
+    if (!ballChasers.some((player) => player.id === userId)) {
+      return {
+        reason: "user is not currently in the queue",
+        status: "ignored",
+      };
+    }
 
     context.voteState.twosVotes.set(userId, ButtonCustomID.Twos);
+    let reason = "recorded 2s vote";
     if (countTwosVotes(context.voteState.twosVotes) >= 4) {
       context.voteState.twosEnabled = true;
       context.voteState.captainsRandomVotes.clear();
       context.voteState.twosVotes.clear();
+      reason = "2s vote reached threshold and enabled 2s queue";
     }
     await this.refreshQueueSurface(context);
+    return {
+      reason,
+      status: "processed",
+    };
   }
 
   private async publishActiveMatch(
@@ -968,6 +1215,48 @@ function matchSurfaceState(): ActiveSurfaceState {
   };
 }
 
+function formatInteractionAuditTimestamp(now = DateTime.now()): string {
+  return now.toFormat("MM-dd-yyyy hh:mm:ss");
+}
+
+export function describeButtonInteractionAction(customId: string): string {
+  switch (customId) {
+    case ButtonCustomID.JoinQueue:
+      return "Join Queue";
+    case ButtonCustomID.LeaveQueue:
+      return "Leave Queue";
+    case ButtonCustomID.Twos:
+      return "Vote 2s";
+    case ButtonCustomID.ChooseTeam:
+      return "Vote Captains";
+    case ButtonCustomID.CreateRandomTeam:
+      return "Vote Random Teams";
+    case ButtonCustomID.ReportBlue:
+      return "Report Blue Win";
+    case ButtonCustomID.ReportOrange:
+      return "Report Orange Win";
+    case ButtonCustomID.BrokenQueue:
+      return "Vote Broken Queue";
+    default:
+      return `Button:${customId}`;
+  }
+}
+
+export function logInteractionAudit(entry: {
+  action: string;
+  guildId: string | null;
+  reason: string;
+  status: InteractionAuditStatus;
+  username: string;
+}): void {
+  const guildPrefix = entry.guildId ? `[${entry.guildId}] ` : "";
+  const statusLabel = entry.status === "ignored" ? "IGNORED" : "PROCESSED";
+  console.info(
+    `${guildPrefix}(${formatInteractionAuditTimestamp()}) | ${entry.username} | ` +
+      `${entry.action} | ${statusLabel} | ${entry.reason}`
+  );
+}
+
 function isBotAdmin(interaction: ChatInputCommandInteraction): boolean {
   const memberRoles = interaction.member?.roles;
   if (!memberRoles) return false;
@@ -1065,16 +1354,26 @@ async function joinQueue(
   context: GuildContext,
   userId: string,
   userName: string
-): Promise<ReadonlyArray<PlayerInQueue> | null> {
+): Promise<QueueInteractionAuditResult> {
   const activeMatchMember = await context.repositories.activeMatch.isPlayerInActiveMatch(userId);
-  if (activeMatchMember) return null;
+  if (activeMatchMember) {
+    return {
+      players: null,
+      reason: "user is already in an active match",
+      status: "ignored",
+    };
+  }
 
   const queue = await context.repositories.queue.getAllBallChasersInQueue();
   const target = getQueueTargetSize(context.voteState.twosEnabled);
   const queueMember = await context.repositories.queue.getBallChaserInQueue(userId);
 
   if (!queueMember && queue.length >= target) {
-    return null;
+    return {
+      players: null,
+      reason: `queue is already full (${target}/${target})`,
+      status: "ignored",
+    };
   }
 
   const queuePayload: AddBallChaserToQueueInput = {
@@ -1100,16 +1399,30 @@ async function joinQueue(
     }
   }
 
-  return await context.repositories.queue.getAllBallChasersInQueue();
+  return {
+    players: await context.repositories.queue.getAllBallChasersInQueue(),
+    reason: queueMember ? "refreshed queue timer" : "joined the queue",
+    status: "processed",
+  };
 }
 
-async function leaveQueue(context: GuildContext, userId: string): Promise<ReadonlyArray<PlayerInQueue> | null> {
+async function leaveQueue(context: GuildContext, userId: string): Promise<QueueInteractionAuditResult> {
   const playerInQueue = await context.repositories.queue.getBallChaserInQueue(userId);
-  if (!playerInQueue) return null;
+  if (!playerInQueue) {
+    return {
+      players: null,
+      reason: "user is not currently in the queue",
+      status: "ignored",
+    };
+  }
 
   await context.repositories.queue.removeBallChaserFromQueue(userId);
   resetVoteState(context);
-  return await context.repositories.queue.getAllBallChasersInQueue();
+  return {
+    players: await context.repositories.queue.getAllBallChasersInQueue(),
+    reason: "left the queue",
+    status: "processed",
+  };
 }
 
 async function checkQueueTimes(context: GuildContext): Promise<ReadonlyArray<PlayerInQueue> | null> {
@@ -1141,7 +1454,7 @@ async function kickPlayerFromQueue(
   }
 
   const updatedList = await leaveQueue(context, playerIdToRemove);
-  return updatedList ?? playersInQueue;
+  return updatedList.players ?? playersInQueue;
 }
 
 async function setCaptains(
@@ -1251,19 +1564,23 @@ async function createMatchFromChosenTeams(context: GuildContext): Promise<Active
   return await startMatch(context, createdTeams);
 }
 
-async function checkReport(context: GuildContext, reportedTeam: Team, playerInMatchId: string): Promise<boolean> {
+async function checkReport(
+  context: GuildContext,
+  reportedTeam: Team,
+  playerInMatchId: string
+): Promise<ReturnType<typeof resolveMatchReport>> {
   const teams = await context.repositories.activeMatch.getAllPlayersInActiveMatch(playerInMatchId);
   const reportResolution = resolveMatchReport(teams, playerInMatchId, reportedTeam);
 
   switch (reportResolution.kind) {
     case "ignore":
-      return false;
+      return reportResolution;
     case "record":
       await reportMatch(context, reportedTeam, reportResolution.reporter, teams);
-      return false;
+      return reportResolution;
     case "confirm":
       await confirmMatch(context, reportedTeam, teams, playerInMatchId);
-      return true;
+      return reportResolution;
   }
 }
 

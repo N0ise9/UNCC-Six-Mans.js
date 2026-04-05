@@ -254,8 +254,15 @@ function createInMemoryRepositories(
 }
 
 describe("GuildRuntimeManager six mans interactions", () => {
+  let infoSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    infoSpy = jest.spyOn(console, "info").mockImplementation(() => undefined);
+  });
+
   afterEach(async () => {
     jest.useRealTimers();
+    infoSpy.mockRestore();
   });
 
   it("joins the queue when it is open", async () => {
@@ -278,12 +285,16 @@ describe("GuildRuntimeManager six mans interactions", () => {
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
     allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue, ButtonCustomID.Twos]);
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1", "Destroyer")
+    );
     await context.scheduler.drain();
 
     expect(context.repositories.queue.addBallChaserToQueue).toHaveBeenCalledTimes(1);
     expect(context.repositories.queue.updateBallChaserInQueue).not.toHaveBeenCalled();
     expect(queueMessage.edit).toHaveBeenCalledTimes(1);
+    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("Destroyer | Join Queue | PROCESSED | joined the queue"));
   });
 
   it("refreshes an existing queued player instead of duplicating them", async () => {
@@ -335,11 +346,15 @@ describe("GuildRuntimeManager six mans interactions", () => {
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
     allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "spectator"));
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "spectator", "SneakyUser")
+    );
     await context.scheduler.drain();
 
     expect(context.repositories.queue.addBallChaserToQueue).not.toHaveBeenCalled();
     expect(queueMessage.edit).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("SneakyUser | Join Queue | IGNORED | queue is already full"));
   });
 
   it("rejects queue joins from players already in an active match", async () => {
@@ -626,10 +641,16 @@ describe("GuildRuntimeManager six mans interactions", () => {
     const repositories = createMockRepositories();
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1", "Destroyer")
+    );
     await context.scheduler.drain();
 
     expect(context.repositories.queue.addBallChaserToQueue).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Destroyer | Join Queue | IGNORED | stale interaction on message queue-message-1")
+    );
   });
 
   it("does not let users outside the active match report or break the match", async () => {

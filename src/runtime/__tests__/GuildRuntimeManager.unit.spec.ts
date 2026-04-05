@@ -399,16 +399,25 @@ describe("GuildRuntimeManager", () => {
       commandName: "norm",
       guildId: "guild-1",
       reply: jest.fn(async () => undefined),
+      user: {
+        username: "Destroyer",
+      },
     } as unknown as Parameters<GuildRuntimeManager["handleSlashCommand"]>[0];
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => undefined);
 
-    jest.spyOn(manager, "ensureContext").mockResolvedValue(context);
+    try {
+      jest.spyOn(manager, "ensureContext").mockResolvedValue(context);
 
-    await manager.handleSlashCommand(interaction);
+      await manager.handleSlashCommand(interaction);
 
-    expect(interaction.reply).toHaveBeenCalledWith({
-      content: "Use this command in <#guild-1-chat>.",
-      flags: MessageFlags.Ephemeral,
-    });
+      expect(interaction.reply).toHaveBeenCalledWith({
+        content: "Use this command in <#guild-1-chat>.",
+        flags: MessageFlags.Ephemeral,
+      });
+      expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("Destroyer | /norm | IGNORED | wrong channel"));
+    } finally {
+      infoSpy.mockRestore();
+    }
   });
 
   it("rejects /sora when the guild has not configured an OpenAI chat channel yet", async () => {
@@ -450,10 +459,14 @@ describe("GuildRuntimeManager", () => {
       commandName: "norm",
       deferReply: jest.fn(async () => undefined),
       guildId: "guild-1",
+      user: {
+        username: "Destroyer",
+      },
     } as unknown as Parameters<GuildRuntimeManager["handleSlashCommand"]>[0];
     const handlerSpy = jest
       .spyOn(EasterEggsController, "handleEasterEggSlashInteraction")
       .mockResolvedValue(undefined);
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => undefined);
 
     try {
       jest.spyOn(manager, "ensureContext").mockResolvedValue(context);
@@ -462,7 +475,11 @@ describe("GuildRuntimeManager", () => {
 
       expect(interaction.deferReply).toHaveBeenCalledTimes(1);
       expect(handlerSpy).toHaveBeenCalledWith(context, interaction);
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Destroyer | /norm | PROCESSED | forwarded to Norm handler")
+      );
     } finally {
+      infoSpy.mockRestore();
       handlerSpy.mockRestore();
     }
   });

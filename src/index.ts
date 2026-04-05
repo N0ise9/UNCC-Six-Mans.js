@@ -5,7 +5,11 @@ import { assertSoraRuntimeSupport } from "./controllers/EasterEggs";
 import { ApiStatusRuntime } from "./runtime/ApiStatusRuntime";
 import { DiscordWorkScheduler } from "./runtime/DiscordWorkScheduler";
 import { GuildConfigStore } from "./runtime/GuildConfigStore";
-import { GuildRuntimeManager } from "./runtime/GuildRuntimeManager";
+import {
+  describeButtonInteractionAction,
+  GuildRuntimeManager,
+  logInteractionAudit,
+} from "./runtime/GuildRuntimeManager";
 import { ensurePackagedRuntimeSupportFiles } from "./runtime/PackagedRuntimeSupport";
 import { startGeneratedMediaPruner } from "./runtime/generatedMediaRetention";
 import { ensurePrismaStudioAssetsExtracted } from "./runtime/PrismaStudioAssets";
@@ -121,15 +125,39 @@ function registerDiscordHandlers(client: Client, discordToken: string): void {
 
   client.on("interactionCreate", async (interaction) => {
     await runSafely("interactionCreate", async () => {
-      if (!interaction.inCachedGuild() || !runtimeManager) {
+      if (!interaction.inCachedGuild()) {
         return;
       }
 
       if (interaction.isButton()) {
+        if (!runtimeManager) {
+          logInteractionAudit({
+            action: describeButtonInteractionAction(interaction.customId),
+            guildId: interaction.guildId,
+            reason: "guild runtime manager is not ready",
+            status: "ignored",
+            username: interaction.user.username,
+          });
+          return;
+        }
+
         await interaction.deferUpdate();
         const context = await runtimeManager.ensureContext(interaction.guildId);
-        if (!context) return;
+        if (!context) {
+          logInteractionAudit({
+            action: describeButtonInteractionAction(interaction.customId),
+            guildId: interaction.guildId,
+            reason: "guild runtime is unavailable or not configured",
+            status: "ignored",
+            username: interaction.user.username,
+          });
+          return;
+        }
         await runtimeManager.handleButtonInteraction(context, interaction);
+        return;
+      }
+
+      if (!runtimeManager) {
         return;
       }
 
