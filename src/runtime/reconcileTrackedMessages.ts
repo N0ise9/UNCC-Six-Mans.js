@@ -84,11 +84,22 @@ export async function reconcileKeyedTrackedMessages({
   scheduler,
   trackedMessages,
 }: ReconcileKeyedTrackedMessagesOptions): Promise<KeyedTrackedMessage[]> {
-  const trackedByKey = new Map(trackedMessages.map((trackedMessage) => [trackedMessage.key, trackedMessage]));
+  const normalizedPayloads = normalizeKeyedPayloads(payloads);
+  const trackedByKey = new Map<string, KeyedTrackedMessage>();
+  const duplicateTrackedMessages: KeyedTrackedMessage[] = [];
   const usedKeys = new Set<string>();
   const nextMessages: KeyedTrackedMessage[] = [];
 
-  for (const keyedPayload of payloads) {
+  for (const trackedMessage of trackedMessages) {
+    if (trackedByKey.has(trackedMessage.key)) {
+      duplicateTrackedMessages.push(trackedMessage);
+      continue;
+    }
+
+    trackedByKey.set(trackedMessage.key, trackedMessage);
+  }
+
+  for (const keyedPayload of normalizedPayloads) {
     const trackedMessage = trackedByKey.get(keyedPayload.key);
     if (trackedMessage) {
       const edited = await scheduler.enqueue(async () => await trackedMessage.message.edit(keyedPayload.payload), {
@@ -120,7 +131,24 @@ export async function reconcileKeyedTrackedMessages({
     usedKeys.add(keyedPayload.key);
   }
 
+  for (const duplicateTrackedMessage of duplicateTrackedMessages) {
+    await scheduler.enqueue(async () => await duplicateTrackedMessage.message.delete().catch(() => undefined), {
+      coalesce: "replace",
+      dedupeKey: `message-delete:${duplicateTrackedMessage.message.id}`,
+      label: `${labelPrefix}-delete-duplicate-${duplicateTrackedMessage.key}`,
+      priority,
+    });
+  }
+
   for (const trackedMessage of trackedMessages) {
+    if (!trackedByKey.has(trackedMessage.key)) {
+      continue;
+    }
+
+    if (trackedByKey.get(trackedMessage.key)?.message.id !== trackedMessage.message.id) {
+      continue;
+    }
+
     if (usedKeys.has(trackedMessage.key)) {
       continue;
     }
@@ -134,4 +162,24 @@ export async function reconcileKeyedTrackedMessages({
   }
 
   return nextMessages;
+}
+
+function normalizeKeyedPayloads(
+  payloads: Array<{ key: string; payload: BaseMessageOptions }>
+): Array<{ key: string; payload: BaseMessageOptions }> {
+  const orderedKeys: string[] = [];
+  const payloadByKey = new Map<string, BaseMessageOptions>();
+
+  for (const keyedPayload of payloads) {
+    if (!payloadByKey.has(keyedPayload.key)) {
+      orderedKeys.push(keyedPayload.key);
+    }
+
+    payloadByKey.set(keyedPayload.key, keyedPayload.payload);
+  }
+
+  return orderedKeys.map((key) => ({
+    key,
+    payload: payloadByKey.get(key)!,
+  }));
 }

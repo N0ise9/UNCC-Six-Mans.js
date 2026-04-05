@@ -95,6 +95,8 @@ export class ApiStatusRuntime {
   private latestSnapshotAt = 0;
   private pollInFlight = false;
   private pollTimer: NodeJS.Timeout | null = null;
+  private publishInFlight = false;
+  private publishQueued = false;
   private publishTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly scheduler: DiscordWorkScheduler, options: ApiStatusRuntimeOptions = {}) {
@@ -134,7 +136,7 @@ export class ApiStatusRuntime {
       clearTimeout(this.publishTimer);
       this.publishTimer = null;
     }
-    while (this.pollInFlight) {
+    while (this.pollInFlight || this.publishInFlight) {
       await delay(10);
     }
     this.registrations.clear();
@@ -173,6 +175,7 @@ export class ApiStatusRuntime {
         clearTimeout(this.publishTimer);
         this.publishTimer = null;
       }
+      this.publishQueued = false;
     }
   }
 
@@ -386,7 +389,16 @@ export class ApiStatusRuntime {
   }
 
   private schedulePublish(): void {
-    if (this.disposed || this.registrations.size === 0 || this.publishTimer) {
+    if (this.disposed || this.registrations.size === 0) {
+      return;
+    }
+
+    if (this.publishInFlight) {
+      this.publishQueued = true;
+      return;
+    }
+
+    if (this.publishTimer) {
       return;
     }
 
@@ -396,11 +408,32 @@ export class ApiStatusRuntime {
   }
 
   private async publishAllGuilds(): Promise<void> {
-    this.publishTimer = null;
-    this.refreshLatestPayloads();
+    if (this.disposed || this.registrations.size === 0) {
+      this.publishTimer = null;
+      return;
+    }
 
-    for (const [guildId, registration] of this.registrations.entries()) {
-      await this.publishRegistration(guildId, registration);
+    if (this.publishInFlight) {
+      this.publishQueued = true;
+      this.publishTimer = null;
+      return;
+    }
+
+    this.publishTimer = null;
+    this.publishInFlight = true;
+    try {
+      this.refreshLatestPayloads();
+
+      for (const [guildId, registration] of this.registrations.entries()) {
+        await this.publishRegistration(guildId, registration);
+      }
+    } finally {
+      this.publishInFlight = false;
+
+      if (this.publishQueued && !this.disposed && this.registrations.size > 0) {
+        this.publishQueued = false;
+        this.schedulePublish();
+      }
     }
   }
 

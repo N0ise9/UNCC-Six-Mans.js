@@ -7,6 +7,7 @@ import {
 } from "../../services/ApiStatusService";
 import { ApiStatusRuntime } from "../ApiStatusRuntime";
 import { DiscordWorkScheduler } from "../DiscordWorkScheduler";
+import { reconcileKeyedTrackedMessages } from "../reconcileTrackedMessages";
 
 type FakeMessage = Message & {
   delete: jest.Mock<Promise<void>, []>;
@@ -23,6 +24,19 @@ type EmbedPayload = {
 
 function asEmbedPayload(value: unknown): EmbedPayload {
   return value as EmbedPayload;
+}
+
+function createEmbedPayload(footerText = "NormJS Status Incident", title = "Incident"): EmbedPayload {
+  return {
+    embeds: [
+      {
+        toJSON: () => ({
+          footer: { text: footerText },
+          title,
+        }),
+      },
+    ],
+  };
 }
 
 function createManagedMessage(id: string, channelId: string, footerText = "NormJS Status Summary | Page 1"): FakeMessage {
@@ -131,6 +145,25 @@ function estimateEmbedLength(embed: { toJSON?: () => any } | any): number {
 async function flushScheduler(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
+}
+
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  reject: (error?: unknown) => void;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (error?: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+
+  return {
+    promise,
+    reject,
+    resolve,
+  };
 }
 
 describe("ApiStatusRuntime", () => {
@@ -684,6 +717,141 @@ describe("ApiStatusRuntime", () => {
         `Last updated: <t:${Math.floor(new Date(incidentCreatedAt).getTime() / 1000)}:R>`
       );
     } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("deletes duplicate tracked messages that share the same reconciliation key", async () => {
+    const scheduler = new DiscordWorkScheduler(1, 0);
+    const channel = createChannel("channel-1");
+    const firstMessage = createManagedMessage("incident-1", "channel-1", "NormJS Status Incident");
+    const duplicateMessage = createManagedMessage("incident-2", "channel-1", "NormJS Status Incident");
+
+    const nextMessages = await reconcileKeyedTrackedMessages({
+      channel,
+      labelPrefix: "api-status:guild-1",
+      payloads: [
+        {
+          key: "incident:service:elastic",
+          payload: createEmbedPayload("NormJS Status Incident", "Incident - Elastic Cloud"),
+        },
+      ],
+      priority: "low",
+      scheduler,
+      trackedMessages: [
+        { key: "incident:service:elastic", message: firstMessage },
+        { key: "incident:service:elastic", message: duplicateMessage },
+      ],
+    });
+
+    expect(firstMessage.edit).toHaveBeenCalledTimes(1);
+    expect(duplicateMessage.delete).toHaveBeenCalledTimes(1);
+    expect(nextMessages).toHaveLength(1);
+    expect(nextMessages[0]?.message).toBe(firstMessage);
+  });
+
+  it("serializes overlapping publish passes so one incident key cannot be posted twice", async () => {
+    const service = createService({
+      id: "elastic",
+      name: "Elastic Cloud",
+      pageUrl: "https://status.elastic.co/",
+      type: "statuspage",
+    });
+    const firstStatus = createStatus(service, {
+      description: "Elastic incident 1",
+      incidents: [
+        {
+          created_at: "2026-04-04T18:00:00.000Z",
+          id: "incident-1",
+          incident_updates: [],
+          name: "Elastic incident 1",
+          shortlink: "https://status.elastic.co/incidents/incident-1",
+          status: "identified",
+        },
+      ],
+      status: "partial_outage",
+    });
+    const secondStatus = createStatus(service, {
+      description: "Elastic incident 1 updated",
+      incidents: [
+        {
+          created_at: "2026-04-04T18:00:00.000Z",
+          id: "incident-1",
+          incident_updates: [
+            {
+              body: "Updated incident body",
+              created_at: "2026-04-04T18:05:00.000Z",
+            },
+          ],
+          name: "Elastic incident 1",
+          shortlink: "https://status.elastic.co/incidents/incident-1",
+          status: "identified",
+        },
+      ],
+      status: "partial_outage",
+    });
+    const checkService = jest
+      .fn<Promise<ServiceStatus>, [ServiceConfig]>()
+      .mockResolvedValueOnce(firstStatus)
+      .mockResolvedValueOnce(secondStatus);
+    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), {
+      catalog: createCatalog([{ name: "Monitoring", services: [service] }], [{ categoryName: "Monitoring", service }]),
+      checkService,
+      generalSweepMs: 5,
+      publishDebounceMs: 0,
+    });
+    const channel = createChannel("channel-1");
+    const blockedIncidentSend = createDeferred<Message>();
+    let incidentSendReleased = false;
+    const originalSend = channel.send as jest.Mock;
+
+    originalSend.mockImplementation(async (payload: unknown) => {
+      const embed = asEmbedPayload(payload).embeds?.[0];
+      const title = embed?.toJSON().title;
+
+      if (title === "Incident - Elastic Cloud") {
+        return await blockedIncidentSend.promise;
+      }
+
+      const footerText = embed?.toJSON().footer?.text ?? "NormJS Status Summary | Page 1";
+      const message = createManagedMessage(`sent-${channel.id}-${channel.__sentMessages.length + 1}`, channel.id, footerText);
+      channel.__sentMessages.push(message);
+      return message;
+    });
+
+    try {
+      await runtime.registerGuild("guild-1", channel);
+
+      await jest.advanceTimersByTimeAsync(1);
+      await flushScheduler();
+      expect(originalSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          embeds: expect.any(Array),
+        })
+      );
+
+      await jest.advanceTimersByTimeAsync(5);
+      await flushScheduler();
+
+      const incidentMessage = createManagedMessage("elastic-incident", "channel-1", "NormJS Status Incident");
+      incidentSendReleased = true;
+      blockedIncidentSend.resolve(incidentMessage as unknown as Message);
+      await flushScheduler();
+      await jest.advanceTimersByTimeAsync(0);
+      await flushScheduler();
+
+      const incidentCreates = originalSend.mock.calls.filter((call) => {
+        const embed = asEmbedPayload(call[0]).embeds?.[0];
+        return embed?.toJSON().title === "Incident - Elastic Cloud";
+      });
+
+      expect(incidentCreates).toHaveLength(1);
+      expect(incidentMessage.edit).toHaveBeenCalledTimes(1);
+    } finally {
+      if (!incidentSendReleased) {
+        incidentSendReleased = true;
+        blockedIncidentSend.resolve(createManagedMessage("elastic-cleanup", "channel-1") as unknown as Message);
+      }
       await runtime.dispose();
     }
   });
