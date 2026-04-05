@@ -60,27 +60,9 @@ type RenderCoordinator = {
   dirty: boolean;
   editBudgetTimestamps: number[];
   inFlight: boolean;
-  lastRenderStartedAt: number;
-  lastMutationAt: number;
-  liveIntervalMs: number;
-  liveTimer: NodeJS.Timeout | null;
+  nextAllowedRenderAt: number;
   render: (() => Promise<void>) | null;
-  trailingFlushMs: number;
-  trailingTimer: NodeJS.Timeout | null;
-};
-
-type ButtonSpamGuardState = {
-  cooldownUntil: number;
-  ignoredSameActionAt: number[];
-  lastAcceptedAction: string | null;
-  lastAcceptedAt: number;
-  warningSuppressedUntil: number;
-};
-
-type ButtonSpamDecision = {
-  allowed: boolean;
-  reason?: string;
-  shouldWarn: boolean;
+  scheduledTimer: NodeJS.Timeout | null;
 };
 
 type GuildRuntimeFailureCode = "bootstrap" | "channels" | "config" | "database" | "unknown";
@@ -118,23 +100,12 @@ class GuildRuntimeInitializationError extends Error {
 }
 
 export class GuildRuntimeManager {
-  private static readonly BUTTON_SPAM_ABUSE_COOLDOWN_MS = 3000;
-  private static readonly BUTTON_SPAM_ABUSE_THRESHOLD = 3;
-  private static readonly BUTTON_SPAM_ABUSE_WINDOW_MS = 5000;
-  private static readonly BUTTON_SPAM_SAME_ACTION_COOLDOWN_MS = 1500;
-  private static readonly BUTTON_SPAM_WARNING_SUPPRESSION_MS = 10000;
   private static readonly HOT_SURFACE_EDIT_BUDGET_MAX_EDITS = 4;
   private static readonly HOT_SURFACE_EDIT_BUDGET_WINDOW_MS = 5000;
-  private static readonly MATCH_RENDER_LIVE_INTERVAL_MS = 1500;
-  private static readonly MATCH_RENDER_TRAILING_FLUSH_MS = 250;
-  private static readonly QUEUE_RENDER_LIVE_INTERVAL_MS = 1500;
-  private static readonly QUEUE_RENDER_TRAILING_FLUSH_MS = 300;
-  private static readonly SPAM_WARNING_MESSAGE = "Slow down a bit. Repeated button spam is being ignored for a moment.";
 
   private readonly contexts = new Map<string, GuildContext>();
   private readonly contextLoads = new Map<string, Promise<GuildContext | null>>();
   private readonly queueTimers = new Map<string, NodeJS.Timeout>();
-  private readonly buttonSpamStates = new Map<string, ButtonSpamGuardState>();
   private readonly renderCoordinators = new Map<string, RenderCoordinator>();
 
   constructor(
@@ -153,15 +124,11 @@ export class GuildRuntimeManager {
     }
     this.queueTimers.clear();
     for (const coordinator of this.renderCoordinators.values()) {
-      if (coordinator.liveTimer) {
-        clearTimeout(coordinator.liveTimer);
-      }
-      if (coordinator.trailingTimer) {
-        clearTimeout(coordinator.trailingTimer);
+      if (coordinator.scheduledTimer) {
+        clearTimeout(coordinator.scheduledTimer);
       }
     }
     this.renderCoordinators.clear();
-    this.buttonSpamStates.clear();
     this.contextLoads.clear();
 
     for (const context of this.contexts.values()) {
@@ -702,18 +669,10 @@ export class GuildRuntimeManager {
     }
 
     const queueRenderCoordinator = this.renderCoordinators.get(this.getQueueRenderKey(guildId));
-    if (queueRenderCoordinator?.liveTimer) {
-      clearTimeout(queueRenderCoordinator.liveTimer);
-    }
-    if (queueRenderCoordinator?.trailingTimer) {
-      clearTimeout(queueRenderCoordinator.trailingTimer);
+    if (queueRenderCoordinator?.scheduledTimer) {
+      clearTimeout(queueRenderCoordinator.scheduledTimer);
     }
     this.renderCoordinators.delete(this.getQueueRenderKey(guildId));
-    for (const key of this.buttonSpamStates.keys()) {
-      if (key.startsWith(`${guildId}:`)) {
-        this.buttonSpamStates.delete(key);
-      }
-    }
 
     const existing = this.contexts.get(guildId);
     if (!existing) {
@@ -776,24 +735,6 @@ export class GuildRuntimeManager {
         username: interaction.user.username,
       });
       return;
-    }
-
-    const surfaceRecord = context.surfaceRegistry.get(message.id);
-    if (surfaceRecord && surfaceRecord.state !== "closed" && surfaceRecord.allowedActions.has(interaction.customId)) {
-      const spamDecision = this.evaluateButtonSpamDecision(context, interaction, surfaceRecord.kind);
-      if (!spamDecision.allowed) {
-        if (spamDecision.shouldWarn) {
-          await this.sendButtonSpamWarning(interaction);
-        }
-        logInteractionAudit({
-          action,
-          guildId: context.guildId,
-          reason: spamDecision.reason ?? "button interaction was ignored due to spam protection",
-          status: "ignored",
-          username: interaction.user.username,
-        });
-        return;
-      }
     }
 
     const postCommitEffects: PostCommitEffect[] = [];
@@ -1155,7 +1096,7 @@ export class GuildRuntimeManager {
         console.error(`[${context.guildId}] Failed to publish active match message:`, error);
       });
 
-    await this.refreshQueueSurface(context);
+    this.refreshQueueSurface(context);
   }
 
   private async runPostCommitEffects(effects: PostCommitEffect[]): Promise<void> {
@@ -1164,37 +1105,29 @@ export class GuildRuntimeManager {
     }
   }
 
-  private async editMatchSurface(
+  private editMatchSurface(
     context: GuildContext,
     message: Message,
     payload: Parameters<Message["edit"]>[0],
     revision: number
-  ): Promise<void> {
-    this.requestCoalescedRender(
-      this.getMatchRenderKey(message.id),
-      GuildRuntimeManager.MATCH_RENDER_LIVE_INTERVAL_MS,
-      GuildRuntimeManager.MATCH_RENDER_TRAILING_FLUSH_MS,
-      async () => {
-        await this.scheduler.enqueue(async () => await message.edit(payload), {
-          coalesce: "replace",
-          dedupeKey: `message-edit:${message.id}`,
-          label: "match-edit",
-          priority: "normal",
-          rateLimitKey: getMessageEditLane(message.id),
-          shouldRun: () => context.surfaceRegistry.hasRevision(message.id, revision),
-        });
-      }
-    );
+  ): void {
+    this.requestCollapsedRender(this.getMatchRenderKey(message.id), async () => {
+      await this.scheduler.enqueue(async () => await message.edit(payload), {
+        coalesce: "replace",
+        dedupeKey: `message-edit:${message.id}`,
+        label: "match-edit",
+        priority: "normal",
+        rateLimitKey: getMessageEditLane(message.id),
+        shouldRun: () => context.surfaceRegistry.hasRevision(message.id, revision),
+      });
+    });
   }
 
   private async deleteMatchSurface(message: Message): Promise<void> {
     const coordinatorKey = this.getMatchRenderKey(message.id);
     const coordinator = this.renderCoordinators.get(coordinatorKey);
-    if (coordinator?.liveTimer) {
-      clearTimeout(coordinator.liveTimer);
-    }
-    if (coordinator?.trailingTimer) {
-      clearTimeout(coordinator.trailingTimer);
+    if (coordinator?.scheduledTimer) {
+      clearTimeout(coordinator.scheduledTimer);
     }
     this.renderCoordinators.delete(coordinatorKey);
 
@@ -1215,43 +1148,14 @@ export class GuildRuntimeManager {
     return `queue:${guildId}`;
   }
 
-  private requestCoalescedRender(
-    key: string,
-    liveIntervalMs: number,
-    trailingFlushMs: number,
-    render: () => Promise<void>
-  ): void {
-    const coordinator = this.getOrCreateRenderCoordinator(key, liveIntervalMs, trailingFlushMs);
-    coordinator.liveIntervalMs = liveIntervalMs;
-    coordinator.trailingFlushMs = trailingFlushMs;
+  private requestCollapsedRender(key: string, render: () => Promise<void>): void {
+    const coordinator = this.getOrCreateRenderCoordinator(key);
     coordinator.render = render;
     coordinator.dirty = true;
-    coordinator.lastMutationAt = Date.now();
-
-    this.scheduleTrailingRender(key, trailingFlushMs);
-    if (coordinator.inFlight) {
-      return;
-    }
-
-    if (coordinator.lastRenderStartedAt === 0) {
-      this.startCoalescedRender(key, false);
-      return;
-    }
-
-    const liveDelay = this.getNextLiveRenderDelay(coordinator, Date.now());
-    if (liveDelay <= 0) {
-      this.startCoalescedRender(key, false);
-      return;
-    }
-
-    this.scheduleLiveRender(key, liveDelay);
+    this.maybeScheduleLatestRender(key);
   }
 
-  private getOrCreateRenderCoordinator(
-    key: string,
-    liveIntervalMs: number,
-    trailingFlushMs: number
-  ): RenderCoordinator {
+  private getOrCreateRenderCoordinator(key: string): RenderCoordinator {
     const existing = this.renderCoordinators.get(key);
     if (existing) {
       return existing;
@@ -1261,143 +1165,81 @@ export class GuildRuntimeManager {
       dirty: false,
       editBudgetTimestamps: [],
       inFlight: false,
-      lastMutationAt: 0,
-      lastRenderStartedAt: 0,
-      liveIntervalMs,
-      liveTimer: null,
+      nextAllowedRenderAt: 0,
       render: null,
-      trailingFlushMs,
-      trailingTimer: null,
+      scheduledTimer: null,
     };
     this.renderCoordinators.set(key, created);
     return created;
   }
 
-  private scheduleLiveRender(key: string, delayMs: number): void {
+  private scheduleRender(key: string, delayMs: number): void {
     const coordinator = this.renderCoordinators.get(key);
     if (!coordinator) {
       return;
     }
 
-    if (coordinator.liveTimer) {
-      clearTimeout(coordinator.liveTimer);
+    if (coordinator.scheduledTimer) {
+      clearTimeout(coordinator.scheduledTimer);
     }
 
-    coordinator.liveTimer = setTimeout(() => {
+    coordinator.scheduledTimer = setTimeout(() => {
       const currentCoordinator = this.renderCoordinators.get(key);
       if (!currentCoordinator) {
         return;
       }
 
-      currentCoordinator.liveTimer = null;
-      this.maybeRunLiveRender(key);
+      currentCoordinator.scheduledTimer = null;
+      this.maybeScheduleLatestRender(key);
     }, delayMs);
-    coordinator.liveTimer.unref?.();
+    coordinator.scheduledTimer.unref?.();
   }
 
-  private scheduleTrailingRender(key: string, delayMs: number): void {
+  private maybeScheduleLatestRender(key: string): void {
     const coordinator = this.renderCoordinators.get(key);
-    if (!coordinator) {
-      return;
-    }
-
-    if (coordinator.trailingTimer) {
-      clearTimeout(coordinator.trailingTimer);
-    }
-
-    coordinator.trailingTimer = setTimeout(() => {
-      const currentCoordinator = this.renderCoordinators.get(key);
-      if (!currentCoordinator) {
-        return;
-      }
-
-      currentCoordinator.trailingTimer = null;
-      this.maybeRunTrailingRender(key);
-    }, delayMs);
-    coordinator.trailingTimer.unref?.();
-  }
-
-  private maybeRunLiveRender(key: string): void {
-    const coordinator = this.renderCoordinators.get(key);
-    if (!coordinator || !coordinator.dirty) {
+    if (!coordinator || !coordinator.dirty || !coordinator.render) {
       this.cleanupRenderCoordinator(key);
       return;
     }
 
     if (coordinator.inFlight) {
-      return;
-    }
-
-    const liveDelay = this.getNextLiveRenderDelay(coordinator, Date.now());
-    if (liveDelay > 0) {
-      this.scheduleLiveRender(key, liveDelay);
-      return;
-    }
-
-    this.startCoalescedRender(key, false);
-  }
-
-  private maybeRunTrailingRender(key: string): void {
-    const coordinator = this.renderCoordinators.get(key);
-    if (!coordinator || !coordinator.dirty) {
-      this.cleanupRenderCoordinator(key);
-      return;
-    }
-
-    if (coordinator.inFlight) {
-      const now = Date.now();
-      const trailingReadyAt = coordinator.lastMutationAt + coordinator.trailingFlushMs;
-      this.scheduleTrailingRender(key, Math.max(10, trailingReadyAt - now));
-      return;
-    }
-
-    const trailingDelay = this.getNextTrailingRenderDelay(coordinator, Date.now());
-    if (trailingDelay > 0) {
-      this.scheduleTrailingRender(key, trailingDelay);
-      return;
-    }
-
-    this.startCoalescedRender(key, true);
-  }
-
-  private startCoalescedRender(key: string, bypassLiveInterval: boolean): void {
-    const coordinator = this.renderCoordinators.get(key);
-    if (!coordinator || coordinator.inFlight || !coordinator.render) {
       return;
     }
 
     const now = Date.now();
-    if (!bypassLiveInterval) {
-      const liveDelay = this.getNextLiveRenderDelay(coordinator, now);
-      if (coordinator.lastRenderStartedAt > 0 && liveDelay > 0) {
-        this.scheduleLiveRender(key, liveDelay);
-        return;
-      }
-    } else {
-      const budgetDelay = this.getEditBudgetReadyAt(coordinator, now) - now;
-      if (budgetDelay > 0) {
-        this.scheduleTrailingRender(key, budgetDelay);
-        return;
-      }
+    const readyAt = this.getEditBudgetReadyAt(coordinator, now);
+    coordinator.nextAllowedRenderAt = readyAt;
+    if (readyAt > now) {
+      this.scheduleRender(key, readyAt - now);
+      return;
     }
 
-    if (coordinator.lastRenderStartedAt > 0 && !bypassLiveInterval) {
-      const liveDelay = this.getNextLiveRenderDelay(coordinator, now);
-      if (liveDelay > 0) {
-        this.scheduleLiveRender(key, liveDelay);
-        return;
-      }
+    this.startLatestRender(key);
+  }
+
+  private startLatestRender(key: string): void {
+    const coordinator = this.renderCoordinators.get(key);
+    if (!coordinator || coordinator.inFlight || !coordinator.render || !coordinator.dirty) {
+      return;
+    }
+
+    const now = Date.now();
+    const readyAt = this.getEditBudgetReadyAt(coordinator, now);
+    coordinator.nextAllowedRenderAt = readyAt;
+    if (readyAt > now) {
+      this.scheduleRender(key, readyAt - now);
+      return;
     }
 
     coordinator.inFlight = true;
-    coordinator.lastRenderStartedAt = Date.now();
+    coordinator.nextAllowedRenderAt = now;
     coordinator.editBudgetTimestamps = this.pruneEditBudgetTimestamps(
-      [...coordinator.editBudgetTimestamps, coordinator.lastRenderStartedAt],
-      coordinator.lastRenderStartedAt
+      [...coordinator.editBudgetTimestamps, now],
+      now
     );
-    if (coordinator.liveTimer) {
-      clearTimeout(coordinator.liveTimer);
-      coordinator.liveTimer = null;
+    if (coordinator.scheduledTimer) {
+      clearTimeout(coordinator.scheduledTimer);
+      coordinator.scheduledTimer = null;
     }
     const render = coordinator.render;
     coordinator.dirty = false;
@@ -1414,18 +1256,7 @@ export class GuildRuntimeManager {
 
         currentCoordinator.inFlight = false;
         if (currentCoordinator.dirty) {
-          const afterRenderNow = Date.now();
-          const trailingDelay = this.getNextTrailingRenderDelay(currentCoordinator, afterRenderNow);
-          if (trailingDelay <= 0) {
-            this.startCoalescedRender(key, true);
-            return;
-          }
-
-          this.scheduleTrailingRender(key, trailingDelay);
-          const liveDelay = this.getNextLiveRenderDelay(currentCoordinator, afterRenderNow);
-          if (liveDelay > 0) {
-            this.scheduleLiveRender(key, liveDelay);
-          }
+          this.maybeScheduleLatestRender(key);
           return;
         }
 
@@ -1439,131 +1270,16 @@ export class GuildRuntimeManager {
       return;
     }
 
-    if (coordinator.inFlight || coordinator.dirty || coordinator.liveTimer || coordinator.trailingTimer) {
+    coordinator.editBudgetTimestamps = this.pruneEditBudgetTimestamps(coordinator.editBudgetTimestamps, Date.now());
+    if (coordinator.inFlight || coordinator.dirty || coordinator.scheduledTimer) {
+      return;
+    }
+
+    if (coordinator.editBudgetTimestamps.length > 0) {
       return;
     }
 
     this.renderCoordinators.delete(key);
-  }
-
-  private evaluateButtonSpamDecision(
-    context: GuildContext,
-    interaction: ButtonInteraction,
-    surfaceKind: "queue" | "match"
-  ): ButtonSpamDecision {
-    const stateKey = this.getButtonSpamStateKey(context.guildId, interaction.user.id, interaction.message.id);
-    const now = Date.now();
-    const state = this.getOrCreateButtonSpamState(stateKey);
-
-    state.ignoredSameActionAt = state.ignoredSameActionAt.filter(
-      (timestamp) => timestamp > now - GuildRuntimeManager.BUTTON_SPAM_ABUSE_WINDOW_MS
-    );
-
-    if (state.cooldownUntil > now) {
-      const shouldWarn = state.warningSuppressedUntil <= now;
-      if (shouldWarn) {
-        state.warningSuppressedUntil = now + GuildRuntimeManager.BUTTON_SPAM_WARNING_SUPPRESSION_MS;
-      }
-      return {
-        allowed: false,
-        reason: `user is temporarily blocked from ${surfaceKind} interactions for spamming buttons`,
-        shouldWarn,
-      };
-    }
-
-    if (isSpamGuardExemptAction(interaction.customId)) {
-      state.lastAcceptedAction = interaction.customId;
-      state.lastAcceptedAt = now;
-      state.ignoredSameActionAt = [];
-      return {
-        allowed: true,
-        shouldWarn: false,
-      };
-    }
-
-    const isRepeatedSameAction =
-      state.lastAcceptedAction === interaction.customId &&
-      state.lastAcceptedAt > 0 &&
-      now - state.lastAcceptedAt < GuildRuntimeManager.BUTTON_SPAM_SAME_ACTION_COOLDOWN_MS;
-
-    if (!isRepeatedSameAction) {
-      state.lastAcceptedAction = interaction.customId;
-      state.lastAcceptedAt = now;
-      state.ignoredSameActionAt = [];
-      return {
-        allowed: true,
-        shouldWarn: false,
-      };
-    }
-
-    state.ignoredSameActionAt.push(now);
-    let shouldWarn = false;
-    let reason = "same action was pressed too quickly";
-
-    if (state.ignoredSameActionAt.length >= GuildRuntimeManager.BUTTON_SPAM_ABUSE_THRESHOLD) {
-      state.cooldownUntil = now + GuildRuntimeManager.BUTTON_SPAM_ABUSE_COOLDOWN_MS;
-      reason = `user is temporarily blocked from ${surfaceKind} interactions for spamming buttons`;
-      if (state.warningSuppressedUntil <= now) {
-        state.warningSuppressedUntil = now + GuildRuntimeManager.BUTTON_SPAM_WARNING_SUPPRESSION_MS;
-        shouldWarn = true;
-      }
-    }
-
-    return {
-      allowed: false,
-      reason,
-      shouldWarn,
-    };
-  }
-
-  private getButtonSpamStateKey(guildId: string, userId: string, messageId: string): string {
-    return `${guildId}:${messageId}:${userId}`;
-  }
-
-  private getOrCreateButtonSpamState(key: string): ButtonSpamGuardState {
-    const existing = this.buttonSpamStates.get(key);
-    if (existing) {
-      return existing;
-    }
-
-    const created: ButtonSpamGuardState = {
-      cooldownUntil: 0,
-      ignoredSameActionAt: [],
-      lastAcceptedAction: null,
-      lastAcceptedAt: 0,
-      warningSuppressedUntil: 0,
-    };
-    this.buttonSpamStates.set(key, created);
-    return created;
-  }
-
-  private async sendButtonSpamWarning(interaction: ButtonInteraction): Promise<void> {
-    await this.scheduler.enqueue(
-      async () =>
-        await interaction.followUp({
-          content: GuildRuntimeManager.SPAM_WARNING_MESSAGE,
-          flags: MessageFlags.Ephemeral,
-        }),
-      {
-        coalesce: "replace",
-        dedupeKey: `interaction-follow-up:${interaction.id}:spam-warning`,
-        label: "button-spam-warning",
-        priority: "high",
-        rateLimitKey: `interaction:${interaction.id}`,
-      }
-    );
-  }
-
-  private getNextLiveRenderDelay(coordinator: RenderCoordinator, now: number): number {
-    const liveReadyAt = coordinator.lastRenderStartedAt + coordinator.liveIntervalMs;
-    const budgetReadyAt = this.getEditBudgetReadyAt(coordinator, now);
-    return Math.max(0, Math.max(liveReadyAt, budgetReadyAt) - now);
-  }
-
-  private getNextTrailingRenderDelay(coordinator: RenderCoordinator, now: number): number {
-    const trailingReadyAt = coordinator.lastMutationAt + coordinator.trailingFlushMs;
-    const budgetReadyAt = this.getEditBudgetReadyAt(coordinator, now);
-    return Math.max(0, Math.max(trailingReadyAt, budgetReadyAt) - now);
   }
 
   private getEditBudgetReadyAt(coordinator: RenderCoordinator, now: number): number {
@@ -1607,50 +1323,45 @@ export class GuildRuntimeManager {
       ? context.surfaceRegistry.upsert(existingQueueMessage.id, "queue", render.surface)
       : null;
 
-    this.requestCoalescedRender(
-      this.getQueueRenderKey(context.guildId),
-      GuildRuntimeManager.QUEUE_RENDER_LIVE_INTERVAL_MS,
-      GuildRuntimeManager.QUEUE_RENDER_TRAILING_FLUSH_MS,
-      async () => {
-        if (!context.queueMessage) {
-          const queueMessage = await this.scheduler.enqueue(
-            async () => await context.channels.queueChannel.send(render.view),
-            {
-              label: "queue-message-create",
-              priority: "normal",
-              rateLimitKey: getChannelSendLane(context.channels.queueChannel.id),
-            }
-          );
-
-          if (!queueMessage) {
-            throw new Error(`Failed to create queue message for guild ${context.guildId}.`);
+    this.requestCollapsedRender(this.getQueueRenderKey(context.guildId), async () => {
+      if (!context.queueMessage) {
+        const queueMessage = await this.scheduler.enqueue(
+          async () => await context.channels.queueChannel.send(render.view),
+          {
+            label: "queue-message-create",
+            priority: "normal",
+            rateLimitKey: getChannelSendLane(context.channels.queueChannel.id),
           }
+        );
 
-          context.queueMessage = queueMessage;
-          context.config = context.configStore.updateGuildRuntimeFields(context.guildId, {
-            queueMessageId: queueMessage.id,
-          });
-          context.surfaceRegistry.upsert(queueMessage.id, "queue", render.surface);
-          return;
+        if (!queueMessage) {
+          throw new Error(`Failed to create queue message for guild ${context.guildId}.`);
         }
 
-        const currentQueueMessage = context.queueMessage;
-        const currentMessageId = currentQueueMessage.id;
-        const currentRevision =
-          existingQueueMessage && existingQueueMessage.id === currentMessageId && revision !== null
-            ? revision
-            : context.surfaceRegistry.upsert(currentMessageId, "queue", render.surface);
-
-        await this.scheduler.enqueue(async () => await currentQueueMessage.edit(render.view), {
-          coalesce: "replace",
-          dedupeKey: `message-edit:${currentMessageId}`,
-          label: "queue-message-edit",
-          priority: "normal",
-          rateLimitKey: getMessageEditLane(currentMessageId),
-          shouldRun: () => context.surfaceRegistry.hasRevision(currentMessageId, currentRevision),
+        context.queueMessage = queueMessage;
+        context.config = context.configStore.updateGuildRuntimeFields(context.guildId, {
+          queueMessageId: queueMessage.id,
         });
+        context.surfaceRegistry.upsert(queueMessage.id, "queue", render.surface);
+        return;
       }
-    );
+
+      const currentQueueMessage = context.queueMessage;
+      const currentMessageId = currentQueueMessage.id;
+      const currentRevision =
+        existingQueueMessage && existingQueueMessage.id === currentMessageId && revision !== null
+          ? revision
+          : context.surfaceRegistry.upsert(currentMessageId, "queue", render.surface);
+
+      await this.scheduler.enqueue(async () => await currentQueueMessage.edit(render.view), {
+        coalesce: "replace",
+        dedupeKey: `message-edit:${currentMessageId}`,
+        label: "queue-message-edit",
+        priority: "normal",
+        rateLimitKey: getMessageEditLane(currentMessageId),
+        shouldRun: () => context.surfaceRegistry.hasRevision(currentMessageId, currentRevision),
+      });
+    });
   }
 
   private startQueueTimer(context: GuildContext): void {
@@ -1720,10 +1431,6 @@ function getMessageEditLane(messageId: string): string {
 
 function getMessageReplyLane(message: Message): string {
   return `channel:${message.channelId}:reply`;
-}
-
-function isSpamGuardExemptAction(customId: string): boolean {
-  return customId === ButtonCustomID.BrokenQueue;
 }
 
 function formatInteractionAuditTimestamp(now = DateTime.now()): string {

@@ -328,28 +328,26 @@ describe("GuildRuntimeManager six mans interactions", () => {
     expect(context.voteState.captainsRandomVotes.size).toBe(1);
   });
 
-  it("ignores repeated same-action queue presses inside the 1.5 second user cooldown", async () => {
-    jest.useFakeTimers({ now: new Date("2026-04-04T12:00:00.000Z").getTime() });
+  it("processes rapid alternating queue presses without ignoring valid backend actions", async () => {
     const manager = createManager();
     const queueMessage = createDiscordMessage({ id: "queue-message-1" });
     const repositories = createInMemoryRepositories();
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
     allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
-    await manager.handleButtonInteraction(
-      context,
-      createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1", "Destroyer")
-    );
-    await manager.handleButtonInteraction(
-      context,
-      createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1", "Destroyer")
-    );
+    const join = createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1", "Destroyer");
+    const leave = createButtonInteraction(ButtonCustomID.LeaveQueue, queueMessage, "player-1", "Destroyer");
+
+    await manager.handleButtonInteraction(context, join);
+    await manager.handleButtonInteraction(context, leave);
     await context.scheduler.drain();
 
-    expect(context.repositories.queue.addBallChaserToQueue).toHaveBeenCalledTimes(1);
-    expect(infoSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Destroyer | Join Queue | IGNORED | same action was pressed too quickly")
-    );
+    const finalQueue = await context.repositories.queue.getAllBallChasersInQueue();
+    expect(finalQueue).toHaveLength(0);
+    expect(join.followUp).not.toHaveBeenCalled();
+    expect(leave.followUp).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("Destroyer | Join Queue | PROCESSED | joined the queue"));
+    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("Destroyer | Leave Queue | PROCESSED | left the queue"));
   });
 
   it("rejects a new join when the queue is already full", async () => {
@@ -524,7 +522,7 @@ describe("GuildRuntimeManager six mans interactions", () => {
     expect(context.voteState.twosVotes.size).toBe(1);
   });
 
-  it("warns once and applies a temporary surface cooldown after sustained same-action spam", async () => {
+  it("flushes the latest queue state when the hot-surface edit budget opens again", async () => {
     jest.useFakeTimers({ now: new Date("2026-04-04T12:00:00.000Z").getTime() });
     const manager = createManager();
     const queueMessage = createDiscordMessage({ id: "queue-message-1" });
@@ -532,30 +530,31 @@ describe("GuildRuntimeManager six mans interactions", () => {
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
     allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
-    const acceptedJoin = createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1", "Destroyer");
-    const spamJoinOne = createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1", "Destroyer");
-    const spamJoinTwo = createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1", "Destroyer");
-    const spamJoinThree = createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1", "Destroyer");
-    const blockedLeave = createButtonInteraction(ButtonCustomID.LeaveQueue, queueMessage, "player-1", "Destroyer");
-
-    await manager.handleButtonInteraction(context, acceptedJoin);
-    await manager.handleButtonInteraction(context, spamJoinOne);
-    await manager.handleButtonInteraction(context, spamJoinTwo);
-    await manager.handleButtonInteraction(context, spamJoinThree);
-    await manager.handleButtonInteraction(context, blockedLeave);
+    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
+    await context.scheduler.drain();
+    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.LeaveQueue, queueMessage, "player-1"));
+    await context.scheduler.drain();
+    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
+    await context.scheduler.drain();
+    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.LeaveQueue, queueMessage, "player-1"));
     await context.scheduler.drain();
 
-    expect(spamJoinThree.followUp).toHaveBeenCalledTimes(1);
-    expect(blockedLeave.followUp).not.toHaveBeenCalled();
-    expect(context.repositories.queue.removeBallChaserFromQueue).not.toHaveBeenCalled();
-    expect(infoSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Destroyer | Leave Queue | IGNORED | user is temporarily blocked from queue interactions for spamming buttons")
-    );
+    expect(queueMessage.edit).toHaveBeenCalledTimes(4);
 
-    const extraSpamJoin = createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1", "Destroyer");
-    await manager.handleButtonInteraction(context, extraSpamJoin);
+    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
     await context.scheduler.drain();
-    expect(extraSpamJoin.followUp).not.toHaveBeenCalled();
+
+    const queuedPlayersBeforeBudgetFlush = await context.repositories.queue.getAllBallChasersInQueue();
+    expect(queuedPlayersBeforeBudgetFlush.map((player) => player.id)).toEqual(["player-1"]);
+    expect(queueMessage.edit).toHaveBeenCalledTimes(4);
+
+    await jest.advanceTimersByTimeAsync(4999);
+    await context.scheduler.drain();
+    expect(queueMessage.edit).toHaveBeenCalledTimes(4);
+
+    await jest.advanceTimersByTimeAsync(1);
+    await context.scheduler.drain();
+    expect(queueMessage.edit).toHaveBeenCalledTimes(5);
   });
 
   it("enables 2s after four unique queued votes and clears the vote maps", async () => {
@@ -608,7 +607,7 @@ describe("GuildRuntimeManager six mans interactions", () => {
     await context.scheduler.drain();
 
     expect(context.voteState.captainsRandomVotes.get("player-1")).toBe(ButtonCustomID.CreateRandomTeam);
-    expect(queueMessage.edit).toHaveBeenCalledTimes(1);
+    expect(queueMessage.edit).toHaveBeenCalledTimes(2);
   });
 
   it("uses a threshold of three random votes after 2s is enabled", async () => {
@@ -816,7 +815,6 @@ describe("GuildRuntimeManager six mans interactions", () => {
   });
 
   it("does not hold the queue mutex while a queue render is still in flight", async () => {
-    jest.useFakeTimers({ now: new Date("2026-04-04T12:00:00.000Z").getTime() });
     const manager = createManager();
     const queueMessage = createDiscordMessage({ id: "queue-message-1" });
     let releaseFirstEdit: (() => void) | undefined;
@@ -848,36 +846,54 @@ describe("GuildRuntimeManager six mans interactions", () => {
 
     releaseFirstEdit?.();
     await Promise.resolve();
-    await jest.advanceTimersByTimeAsync(300);
+    await new Promise<void>((resolve) => setImmediate(resolve));
     await context.scheduler.drain();
 
     expect(queueMessage.edit).toHaveBeenCalledTimes(2);
   });
 
   it("coalesces burst queue renders instead of editing once per join click", async () => {
-    jest.useFakeTimers({ now: new Date("2026-04-04T12:00:00.000Z").getTime() });
     const manager = createManager();
     const queueMessage = createDiscordMessage({ id: "queue-message-1" });
+    let releaseFirstEdit: (() => void) | undefined;
+    let editCalls = 0;
+    (queueMessage.edit as jest.Mock).mockImplementation(async () => {
+      editCalls += 1;
+      if (editCalls === 1) {
+        await new Promise<void>((resolve) => {
+          releaseFirstEdit = resolve;
+        });
+      }
+
+      return queueMessage;
+    });
+
     const repositories = createInMemoryRepositories();
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
     allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
+    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
+    await Promise.resolve();
+    expect(queueMessage.edit).toHaveBeenCalledTimes(1);
+
     await Promise.all([
-      manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")),
       manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-2")),
       manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-3")),
     ]);
 
-    await context.scheduler.drain();
+    const queuedPlayersBeforeRenderRelease = await context.repositories.queue.getAllBallChasersInQueue();
+    expect(queuedPlayersBeforeRenderRelease.map((player) => player.id).sort()).toEqual(["player-1", "player-2", "player-3"]);
     expect(queueMessage.edit).toHaveBeenCalledTimes(1);
 
-    await jest.advanceTimersByTimeAsync(300);
+    releaseFirstEdit?.();
+    await Promise.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     await context.scheduler.drain();
+
     expect(queueMessage.edit).toHaveBeenCalledTimes(2);
   });
 
   it("coalesces rapid broken-queue vote updates on the active match surface", async () => {
-    jest.useFakeTimers({ now: new Date("2026-04-04T12:00:00.000Z").getTime() });
     const manager = createManager();
     const matchMessage = createDiscordMessage({
       embeds: [{ title: "Current Match" }],
@@ -902,10 +918,6 @@ describe("GuildRuntimeManager six mans interactions", () => {
       manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.BrokenQueue, matchMessage, "orange-1")),
     ]);
 
-    await context.scheduler.drain();
-    expect(matchMessage.edit).toHaveBeenCalledTimes(1);
-
-    await jest.advanceTimersByTimeAsync(250);
     await context.scheduler.drain();
     expect(matchMessage.edit).toHaveBeenCalledTimes(2);
   });
