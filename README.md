@@ -242,18 +242,42 @@ npm run generate
 npm run test
 ```
 
-Integration tests require an explicit test database:
+Integration tests use `TEST_DATABASE_URL`. The value can come from:
+- a shell environment variable
+- or a local `.env.test.local` file
+
+Recommended local setup:
 
 ```powershell
-$env:TEST_DATABASE_URL="postgresql://Norm:NormTheNiner@localhost:5432/SixMansIntegration"
+Copy-Item .env.test.sample .env.test.local
+```
+
+Default sample file:
+
+```env
+TEST_DATABASE_URL=postgresql://Norm:NormTheNiner@localhost:5432/SixMansTesting
+```
+
+If your local test database uses a different name or host, change only `TEST_DATABASE_URL` in `.env.test.local`.
+
+Push the Prisma schema to the integration database:
+
+```powershell
+npm run integration:db:push
+```
+
+Then run the integration suite:
+
+```powershell
 npm run integration
 ```
 
 Current test contract:
 - unit tests do not load the runtime `.env`
 - unit tests are offline by default and must mock `fetch` explicitly
-- integration tests require explicit `TEST_DATABASE_URL`
-- `npm run integration` fails fast if `TEST_DATABASE_URL` is missing
+- integration tests use `TEST_DATABASE_URL` from the shell first, then `.env.test.local`
+- integration tests reset the database they point at, so `TEST_DATABASE_URL` must be a dedicated test database and must not match any live guild/runtime database
+- `npm run integration` and `npm run integration:db:push` fail fast if `TEST_DATABASE_URL` is missing or unsafe
 
 GitHub Actions behavior:
 - lint, build, unit tests, and integration tests run on branch pushes and pull requests
