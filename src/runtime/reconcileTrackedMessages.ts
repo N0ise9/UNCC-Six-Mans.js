@@ -45,6 +45,7 @@ export async function reconcileTrackedMessages({
         dedupeKey: `message-edit:${message.id}`,
         label: `${labelPrefix}-edit-${index}`,
         priority,
+        rateLimitKey: `message:${message.id}:edit`,
       });
 
       nextMessages.push(edited ?? message);
@@ -55,6 +56,7 @@ export async function reconcileTrackedMessages({
       const created = await scheduler.enqueue(async () => await channel.send(payload), {
         label: `${labelPrefix}-create-${index}`,
         priority,
+        rateLimitKey: `channel:${channel.id}:send`,
       });
 
       if (created) {
@@ -69,6 +71,7 @@ export async function reconcileTrackedMessages({
         dedupeKey: `message-delete:${message.id}`,
         label: `${labelPrefix}-delete-${index}`,
         priority,
+        rateLimitKey: `message:${message.id}:delete`,
       });
     }
   }
@@ -107,6 +110,7 @@ export async function reconcileKeyedTrackedMessages({
         dedupeKey: `message-edit:${trackedMessage.message.id}`,
         label: `${labelPrefix}-edit-${keyedPayload.key}`,
         priority,
+        rateLimitKey: `message:${trackedMessage.message.id}:edit`,
       });
 
       nextMessages.push({
@@ -120,6 +124,7 @@ export async function reconcileKeyedTrackedMessages({
     const created = await scheduler.enqueue(async () => await channel.send(keyedPayload.payload), {
       label: `${labelPrefix}-create-${keyedPayload.key}`,
       priority,
+      rateLimitKey: `channel:${channel.id}:send`,
     });
 
     if (created) {
@@ -137,6 +142,7 @@ export async function reconcileKeyedTrackedMessages({
       dedupeKey: `message-delete:${duplicateTrackedMessage.message.id}`,
       label: `${labelPrefix}-delete-duplicate-${duplicateTrackedMessage.key}`,
       priority,
+      rateLimitKey: `message:${duplicateTrackedMessage.message.id}:delete`,
     });
   }
 
@@ -158,6 +164,7 @@ export async function reconcileKeyedTrackedMessages({
       dedupeKey: `message-delete:${trackedMessage.message.id}`,
       label: `${labelPrefix}-delete-${trackedMessage.key}`,
       priority,
+      rateLimitKey: `message:${trackedMessage.message.id}:delete`,
     });
   }
 

@@ -11,6 +11,7 @@ interface ScheduledTask<T> {
   label: string;
   maxRetries: number;
   priority: TaskPriority;
+  rateLimitKey?: string;
   reject: (reason?: unknown) => void;
   resolve: (value: T | undefined) => void;
   shouldRun?: () => boolean;
@@ -26,7 +27,8 @@ export class DiscordWorkScheduler {
   private readonly queue: Array<ScheduledTask<unknown>> = [];
   private running = 0;
   private nextTaskId = 1;
-  private pausedUntil = 0;
+  private globalPausedUntil = 0;
+  private readonly pausedUntilByLane = new Map<string, number>();
   private nextDispatchAt = 0;
 
   constructor(
@@ -48,6 +50,7 @@ export class DiscordWorkScheduler {
       label?: string;
       maxRetries?: number;
       priority?: TaskPriority;
+      rateLimitKey?: string;
       shouldRun?: () => boolean;
     }
   ): Promise<T | undefined> {
@@ -62,6 +65,7 @@ export class DiscordWorkScheduler {
         label: options?.label ?? "discord-task",
         maxRetries: options?.maxRetries ?? 3,
         priority: options?.priority ?? "normal",
+        rateLimitKey: options?.rateLimitKey,
         reject,
         resolve,
         shouldRun: options?.shouldRun,
@@ -86,12 +90,17 @@ export class DiscordWorkScheduler {
   }
 
   private handleFailure(task: ScheduledTask<unknown>, error: unknown): void {
-    const retryAfterMs = getRetryAfterMs(error);
-    if (retryAfterMs && task.attempts < task.maxRetries) {
-      this.pausedUntil = Math.max(this.pausedUntil, Date.now() + retryAfterMs);
+    const retry = getRetryAfter(error);
+    if (retry && task.attempts < task.maxRetries) {
+      const resumeAt = Date.now() + retry.retryAfterMs;
+      if (retry.global || !task.rateLimitKey) {
+        this.globalPausedUntil = Math.max(this.globalPausedUntil, resumeAt);
+      } else {
+        this.pausedUntilByLane.set(task.rateLimitKey, Math.max(this.getLanePause(task.rateLimitKey), resumeAt));
+      }
       task.attempts += 1;
       this.queue.unshift(task);
-      console.warn(`[DiscordWorkScheduler] ${task.label} rate limited; retrying in ${retryAfterMs}ms`);
+      console.warn(`[DiscordWorkScheduler] ${task.label} rate limited; retrying in ${retry.retryAfterMs}ms`);
       this.pump();
       return;
     }
@@ -104,17 +113,28 @@ export class DiscordWorkScheduler {
     if (this.running >= this.maxConcurrent) return;
 
     const now = Date.now();
-    if (this.pausedUntil > now) {
-      setTimeout(() => this.pump(), this.pausedUntil - now);
+    this.cleanupExpiredLanePauses(now);
+
+    if (this.globalPausedUntil > now) {
+      scheduleTimer(this.globalPausedUntil - now, () => this.pump());
       return;
     }
 
     if (this.nextDispatchAt > now) {
-      setTimeout(() => this.pump(), this.nextDispatchAt - now);
+      scheduleTimer(this.nextDispatchAt - now, () => this.pump());
       return;
     }
 
-    const task = this.queue.shift();
+    const nextTaskIndex = this.findNextRunnableTaskIndex(now);
+    if (nextTaskIndex < 0) {
+      const nextWakeAt = this.getNextWakeAt(now);
+      if (nextWakeAt !== null) {
+        scheduleTimer(Math.max(0, nextWakeAt - now), () => this.pump());
+      }
+      return;
+    }
+
+    const [task] = this.queue.splice(nextTaskIndex, 1);
     if (!task) return;
 
     if (task.shouldRun && !task.shouldRun()) {
@@ -139,26 +159,76 @@ export class DiscordWorkScheduler {
         this.pump();
       });
   }
+
+  private cleanupExpiredLanePauses(now: number): void {
+    for (const [laneKey, pausedUntil] of this.pausedUntilByLane) {
+      if (pausedUntil <= now) {
+        this.pausedUntilByLane.delete(laneKey);
+      }
+    }
+  }
+
+  private findNextRunnableTaskIndex(now: number): number {
+    for (let index = 0; index < this.queue.length; index += 1) {
+      const task = this.queue[index];
+      if (!task) continue;
+
+      const lanePause = task.rateLimitKey ? this.getLanePause(task.rateLimitKey) : 0;
+      if (lanePause > now) {
+        continue;
+      }
+
+      return index;
+    }
+
+    return -1;
+  }
+
+  private getLanePause(laneKey: string): number {
+    return this.pausedUntilByLane.get(laneKey) ?? 0;
+  }
+
+  private getNextWakeAt(now: number): number | null {
+    let nextWakeAt: number | null = null;
+    for (const pausedUntil of this.pausedUntilByLane.values()) {
+      if (pausedUntil > now) {
+        nextWakeAt = nextWakeAt === null ? pausedUntil : Math.min(nextWakeAt, pausedUntil);
+      }
+    }
+
+    return nextWakeAt;
+  }
 }
 
-function getRetryAfterMs(error: unknown): number | null {
+function getRetryAfter(error: unknown): { global: boolean; retryAfterMs: number } | null {
   if (typeof error !== "object" || error === null) return null;
 
   const candidate = error as {
     code?: number | string;
-    rawError?: { retry_after?: number };
+    rawError?: { global?: boolean; retry_after?: number };
     retryAfter?: number;
     status?: number;
   };
 
   const retryAfterSeconds = candidate.retryAfter ?? candidate.rawError?.retry_after;
   if (retryAfterSeconds !== undefined) {
-    return Math.ceil(retryAfterSeconds * 1000);
+    return {
+      global: candidate.rawError?.global === true,
+      retryAfterMs: Math.ceil(retryAfterSeconds * 1000),
+    };
   }
 
   if (candidate.status === 429) {
-    return 1000;
+    return {
+      global: false,
+      retryAfterMs: 1000,
+    };
   }
 
   return null;
+}
+
+function scheduleTimer(delayMs: number, callback: () => void): void {
+  const timer = setTimeout(callback, delayMs);
+  timer.unref?.();
 }

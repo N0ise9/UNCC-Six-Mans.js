@@ -54,6 +54,17 @@ type QueueRender = {
   view: Awaited<ReturnType<typeof MessageBuilder.activeMatchMessage>> | ReturnType<typeof MessageBuilder.queueMessage>;
 };
 
+type PostCommitEffect = () => Promise<void> | void;
+
+type RenderCoordinator = {
+  cooldownMs: number;
+  dirty: boolean;
+  inFlight: boolean;
+  lastRenderStartedAt: number;
+  render: (() => Promise<void>) | null;
+  timer: NodeJS.Timeout | null;
+};
+
 type GuildRuntimeFailureCode = "bootstrap" | "channels" | "config" | "database" | "unknown";
 
 type GuildRuntimeLoadFailure = {
@@ -89,9 +100,13 @@ class GuildRuntimeInitializationError extends Error {
 }
 
 export class GuildRuntimeManager {
+  private static readonly MATCH_RENDER_COOLDOWN_MS = 750;
+  private static readonly QUEUE_RENDER_COOLDOWN_MS = 1200;
+
   private readonly contexts = new Map<string, GuildContext>();
   private readonly contextLoads = new Map<string, Promise<GuildContext | null>>();
   private readonly queueTimers = new Map<string, NodeJS.Timeout>();
+  private readonly renderCoordinators = new Map<string, RenderCoordinator>();
 
   constructor(
     private readonly client: Client,
@@ -108,6 +123,12 @@ export class GuildRuntimeManager {
       clearInterval(timer);
     }
     this.queueTimers.clear();
+    for (const coordinator of this.renderCoordinators.values()) {
+      if (coordinator.timer) {
+        clearTimeout(coordinator.timer);
+      }
+    }
+    this.renderCoordinators.clear();
     this.contextLoads.clear();
 
     for (const context of this.contexts.values()) {
@@ -647,6 +668,12 @@ export class GuildRuntimeManager {
       this.queueTimers.delete(guildId);
     }
 
+    const queueRenderCoordinator = this.renderCoordinators.get(this.getQueueRenderKey(guildId));
+    if (queueRenderCoordinator?.timer) {
+      clearTimeout(queueRenderCoordinator.timer);
+    }
+    this.renderCoordinators.delete(this.getQueueRenderKey(guildId));
+
     const existing = this.contexts.get(guildId);
     if (!existing) {
       this.apiStatusRuntime?.unregisterGuild(guildId);
@@ -710,121 +737,98 @@ export class GuildRuntimeManager {
       return;
     }
 
+    const postCommitEffects: PostCommitEffect[] = [];
+    let auditResult!: InteractionAuditResult;
+
     const release = await context.queueMutex.acquire();
     try {
       if (!context.surfaceRegistry.isInteractionAllowed(message.id, interaction.customId)) {
-        logInteractionAudit({
-          action,
-          guildId: context.guildId,
+        auditResult = {
           reason: `stale interaction on message ${message.id}`,
           status: "ignored",
-          username: interaction.user.username,
-        });
-        return;
-      }
-
-      switch (interaction.customId) {
-        case ButtonCustomID.JoinQueue: {
-          const result = await joinQueue(context, interaction.user.id, interaction.user.username);
-          if (result.players) {
-            await this.refreshQueueSurface(context, result.players);
+        };
+      } else {
+        switch (interaction.customId) {
+          case ButtonCustomID.JoinQueue: {
+            const result = await joinQueue(context, interaction.user.id, interaction.user.username);
+            if (result.players) {
+              const players = result.players;
+              postCommitEffects.push(() => this.refreshQueueSurface(context, players));
+            }
+            auditResult = {
+              reason: result.reason,
+              status: result.status,
+            };
+            break;
           }
-          logInteractionAudit({
-            action,
-            guildId: context.guildId,
-            reason: result.reason,
-            status: result.status,
-            username: interaction.user.username,
-          });
-          return;
-        }
-        case ButtonCustomID.LeaveQueue: {
-          const result = await leaveQueue(context, interaction.user.id);
-          if (result.players) {
-            await this.refreshQueueSurface(context, result.players);
+          case ButtonCustomID.LeaveQueue: {
+            const result = await leaveQueue(context, interaction.user.id);
+            if (result.players) {
+              const players = result.players;
+              postCommitEffects.push(() => this.refreshQueueSurface(context, players));
+            }
+            auditResult = {
+              reason: result.reason,
+              status: result.status,
+            };
+            break;
           }
-          logInteractionAudit({
-            action,
-            guildId: context.guildId,
-            reason: result.reason,
-            status: result.status,
-            username: interaction.user.username,
-          });
-          return;
+          case ButtonCustomID.Twos: {
+            const result = await this.handleTwosVote(context, interaction.user.id);
+            if (result.status === "processed") {
+              postCommitEffects.push(() => this.refreshQueueSurface(context));
+            }
+            auditResult = {
+              reason: result.reason,
+              status: result.status,
+            };
+            break;
+          }
+          case ButtonCustomID.ChooseTeam:
+          case ButtonCustomID.CreateRandomTeam: {
+            auditResult = await this.handleCaptainsOrRandomVote(
+              context,
+              interaction.customId,
+              message,
+              interaction.user.id,
+              postCommitEffects
+            );
+            break;
+          }
+          case ButtonCustomID.ReportBlue: {
+            auditResult = await this.handleMatchReport(context, interaction, Team.Blue, postCommitEffects);
+            break;
+          }
+          case ButtonCustomID.ReportOrange: {
+            auditResult = await this.handleMatchReport(context, interaction, Team.Orange, postCommitEffects);
+            break;
+          }
+          case ButtonCustomID.BrokenQueue: {
+            auditResult = await this.handleBrokenQueueVote(context, interaction, postCommitEffects);
+            break;
+          }
+          default:
+            auditResult = {
+              reason: "button action is not recognized by the runtime",
+              status: "ignored",
+            };
+            break;
         }
-        case ButtonCustomID.Twos: {
-          const result = await this.handleTwosVote(context, interaction.user.id);
-          logInteractionAudit({
-            action,
-            guildId: context.guildId,
-            reason: result.reason,
-            status: result.status,
-            username: interaction.user.username,
-          });
-          return;
-        }
-        case ButtonCustomID.ChooseTeam:
-        case ButtonCustomID.CreateRandomTeam: {
-          const result = await this.handleCaptainsOrRandomVote(
-            context,
-            interaction.customId,
-            message,
-            interaction.user.id
-          );
-          logInteractionAudit({
-            action,
-            guildId: context.guildId,
-            reason: result.reason,
-            status: result.status,
-            username: interaction.user.username,
-          });
-          return;
-        }
-        case ButtonCustomID.ReportBlue: {
-          const result = await this.handleMatchReport(context, interaction, Team.Blue);
-          logInteractionAudit({
-            action,
-            guildId: context.guildId,
-            reason: result.reason,
-            status: result.status,
-            username: interaction.user.username,
-          });
-          return;
-        }
-        case ButtonCustomID.ReportOrange: {
-          const result = await this.handleMatchReport(context, interaction, Team.Orange);
-          logInteractionAudit({
-            action,
-            guildId: context.guildId,
-            reason: result.reason,
-            status: result.status,
-            username: interaction.user.username,
-          });
-          return;
-        }
-        case ButtonCustomID.BrokenQueue: {
-          const result = await this.handleBrokenQueueVote(context, interaction);
-          logInteractionAudit({
-            action,
-            guildId: context.guildId,
-            reason: result.reason,
-            status: result.status,
-            username: interaction.user.username,
-          });
-          return;
-        }
-        default:
-          logInteractionAudit({
-            action,
-            guildId: context.guildId,
-            reason: "button action is not recognized by the runtime",
-            status: "ignored",
-            username: interaction.user.username,
-          });
-          return;
       }
     } finally {
       release();
+    }
+
+    try {
+      await this.runPostCommitEffects(postCommitEffects);
+    } finally {
+      logInteractionAudit({
+        action,
+        guildId: context.guildId,
+        reason: auditResult.reason,
+        status: auditResult.status,
+        username: interaction.user.username,
+      });
     }
   }
 
@@ -832,47 +836,52 @@ export class GuildRuntimeManager {
     const message = interaction.message;
     if (!(message instanceof Message)) return;
 
+    const postCommitEffects: PostCommitEffect[] = [];
     const release = await context.queueMutex.acquire();
     try {
       if (!context.surfaceRegistry.isInteractionAllowed(message.id, interaction.customId, interaction.values)) {
         console.info(
           `[${context.guildId}] Ignoring stale select interaction ${interaction.customId} on message ${message.id}.`
         );
-        return;
-      }
+      } else {
+        switch (interaction.customId) {
+          case MenuCustomID.BlueSelect: {
+            const isCaptain = await context.repositories.queue.isTeamCaptain(interaction.user.id, Team.Blue);
+            if (!isCaptain && !isDevEnvironment()) break;
 
-      switch (interaction.customId) {
-        case MenuCustomID.BlueSelect: {
-          const isCaptain = await context.repositories.queue.isTeamCaptain(interaction.user.id, Team.Blue);
-          if (!isCaptain && !isDevEnvironment()) return;
-
-          const playersLeft = await bluePlayerChosen(context, interaction.values[0]);
-          if (context.voteState.twosEnabled) {
-            const activeMatch = await createMatchFromChosenTeams(context);
-            await this.publishActiveMatch(context, message, activeMatch);
-          } else {
-            await this.refreshQueueSurface(context, playersLeft);
+            const playersLeft = await bluePlayerChosen(context, interaction.values[0]);
+            if (context.voteState.twosEnabled) {
+              const activeMatch = await createMatchFromChosenTeams(context);
+              resetVoteState(context);
+              postCommitEffects.push(() => this.publishActiveMatch(context, message, activeMatch));
+            } else {
+              postCommitEffects.push(() => this.refreshQueueSurface(context, playersLeft));
+            }
+            break;
           }
-          return;
-        }
-        case MenuCustomID.OrangeSelect: {
-          const isCaptain = await context.repositories.queue.isTeamCaptain(interaction.user.id, Team.Orange);
-          if (!isCaptain && !isDevEnvironment()) return;
+          case MenuCustomID.OrangeSelect: {
+            const isCaptain = await context.repositories.queue.isTeamCaptain(interaction.user.id, Team.Orange);
+            if (!isCaptain && !isDevEnvironment()) break;
 
-          await orangePlayerChosen(context, interaction.values);
-          const activeMatch = await createMatchFromChosenTeams(context);
-          await this.publishActiveMatch(context, message, activeMatch);
-          return;
+            await orangePlayerChosen(context, interaction.values);
+            const activeMatch = await createMatchFromChosenTeams(context);
+            resetVoteState(context);
+            postCommitEffects.push(() => this.publishActiveMatch(context, message, activeMatch));
+            break;
+          }
         }
       }
     } finally {
       release();
     }
+
+    await this.runPostCommitEffects(postCommitEffects);
   }
 
   private async handleBrokenQueueVote(
     context: GuildContext,
-    interaction: ButtonInteraction
+    interaction: ButtonInteraction,
+    postCommitEffects: PostCommitEffect[]
   ): Promise<InteractionAuditResult> {
     const message = interaction.message;
     if (!(message instanceof Message)) {
@@ -909,10 +918,7 @@ export class GuildRuntimeManager {
     if (brokenQueueVotes >= 4) {
       context.surfaceRegistry.close(message.id, "match");
       await context.repositories.activeMatch.removeAllPlayersInActiveMatch(interaction.user.id);
-      await this.scheduler.enqueue(async () => await message.delete(), {
-        label: "match-delete",
-        priority: "normal",
-      });
+      postCommitEffects.push(() => this.deleteMatchSurface(message));
       return {
         reason: "broken queue vote reached threshold and cancelled the match",
         status: "processed",
@@ -923,20 +929,9 @@ export class GuildRuntimeManager {
     const currentMatch = await getActiveMatch(context, interaction.user.id);
     const event = await context.repositories.event.getCurrentEvent();
     const revision = context.surfaceRegistry.upsert(message.id, "match", matchSurfaceState());
+    const payload = await MessageBuilder.voteBrokenQueueMessage(currentMatch, teams, brokenQueueVotes, event.mmrMult);
 
-    await this.scheduler.enqueue(
-      async () =>
-        await message.edit(
-          await MessageBuilder.voteBrokenQueueMessage(currentMatch, teams, brokenQueueVotes, event.mmrMult)
-        ),
-      {
-        coalesce: "replace",
-        dedupeKey: `message-edit:${message.id}`,
-        label: "match-edit",
-        priority: "normal",
-        shouldRun: () => context.surfaceRegistry.hasRevision(message.id, revision),
-      }
-    );
+    postCommitEffects.push(() => this.editMatchSurface(context, message, payload, revision));
 
     return {
       reason: vote ? "recorded broken queue vote" : "removed broken queue vote",
@@ -948,7 +943,8 @@ export class GuildRuntimeManager {
     context: GuildContext,
     customId: ButtonCustomID.ChooseTeam | ButtonCustomID.CreateRandomTeam,
     sourceMessage: Message,
-    userId: string
+    userId: string,
+    postCommitEffects: PostCommitEffect[]
   ): Promise<InteractionAuditResult> {
     const playerInQueue = await context.repositories.queue.isPlayerInQueue(userId);
     if (!playerInQueue) {
@@ -973,7 +969,7 @@ export class GuildRuntimeManager {
 
     if (captains === threshold) {
       await setCaptains(context, queue);
-      await this.refreshQueueSurface(context);
+      postCommitEffects.push(() => this.refreshQueueSurface(context));
       return {
         reason: "captains vote reached threshold",
         status: "processed",
@@ -982,14 +978,15 @@ export class GuildRuntimeManager {
 
     if (random === threshold) {
       const activeMatch = await createRandomMatch(context);
-      await this.publishActiveMatch(context, sourceMessage, activeMatch);
+      resetVoteState(context);
+      postCommitEffects.push(() => this.publishActiveMatch(context, sourceMessage, activeMatch));
       return {
         reason: "random teams vote reached threshold",
         status: "processed",
       };
     }
 
-    await this.refreshQueueSurface(context);
+    postCommitEffects.push(() => this.refreshQueueSurface(context));
     return {
       reason:
         customId === ButtonCustomID.ChooseTeam ? "recorded captains vote" : "recorded random teams vote",
@@ -1000,7 +997,8 @@ export class GuildRuntimeManager {
   private async handleMatchReport(
     context: GuildContext,
     interaction: ButtonInteraction,
-    team: Team
+    team: Team,
+    postCommitEffects: PostCommitEffect[]
   ): Promise<InteractionAuditResult> {
     const message = interaction.message;
     if (!(message instanceof Message)) {
@@ -1021,11 +1019,8 @@ export class GuildRuntimeManager {
     const reportResolution = await checkReport(context, team, interaction.user.id);
     if (reportResolution.kind === "confirm") {
       context.surfaceRegistry.close(message.id, "match");
-      await this.scheduler.enqueue(async () => await message.delete(), {
-        label: "match-delete",
-        priority: "normal",
-      });
-      await this.refreshLeaderboard(context);
+      postCommitEffects.push(() => this.deleteMatchSurface(message));
+      postCommitEffects.push(() => this.refreshLeaderboard(context));
       return {
         reason: `confirmed ${team === Team.Blue ? "blue" : "orange"} team match result`,
         status: "processed",
@@ -1041,16 +1036,8 @@ export class GuildRuntimeManager {
 
     const revision = context.surfaceRegistry.upsert(message.id, "match", matchSurfaceState());
     const previousEmbed = message.embeds[0];
-    await this.scheduler.enqueue(
-      async () => await message.edit(MessageBuilder.reportedTeamButtons(interaction, EmbedBuilder.from(previousEmbed))),
-      {
-        coalesce: "replace",
-        dedupeKey: `message-edit:${message.id}`,
-        label: "match-edit",
-        priority: "normal",
-        shouldRun: () => context.surfaceRegistry.hasRevision(message.id, revision),
-      }
-    );
+    const payload = MessageBuilder.reportedTeamButtons(interaction, EmbedBuilder.from(previousEmbed));
+    postCommitEffects.push(() => this.editMatchSurface(context, message, payload, revision));
 
     return {
       reason: `recorded ${team === Team.Blue ? "blue" : "orange"} team match report`,
@@ -1081,7 +1068,6 @@ export class GuildRuntimeManager {
       context.voteState.twosVotes.clear();
       reason = "2s vote reached threshold and enabled 2s queue";
     }
-    await this.refreshQueueSurface(context);
     return {
       reason,
       status: "processed",
@@ -1094,20 +1080,214 @@ export class GuildRuntimeManager {
     activeMatch: ActiveMatchCreated
   ): Promise<void> {
     const event = await context.repositories.event.getCurrentEvent();
-    const activeMatchMessage = await this.scheduler.enqueue(
-      async () => await sourceMessage.reply(await MessageBuilder.activeMatchMessage(activeMatch, event.mmrMult)),
-      {
+    const payload = await MessageBuilder.activeMatchMessage(activeMatch, event.mmrMult);
+    void this.scheduler
+      .enqueue(async () => await sourceMessage.reply(payload), {
         label: "match-send",
         priority: "normal",
+        rateLimitKey: getMessageReplyLane(sourceMessage),
+      })
+      .then((activeMatchMessage) => {
+        if (activeMatchMessage) {
+          context.surfaceRegistry.upsert(activeMatchMessage.id, "match", matchSurfaceState());
+        }
+      })
+      .catch((error) => {
+        console.error(`[${context.guildId}] Failed to publish active match message:`, error);
+      });
+
+    await this.refreshQueueSurface(context);
+  }
+
+  private async runPostCommitEffects(effects: PostCommitEffect[]): Promise<void> {
+    for (const effect of effects) {
+      await effect();
+    }
+  }
+
+  private async editMatchSurface(
+    context: GuildContext,
+    message: Message,
+    payload: Parameters<Message["edit"]>[0],
+    revision: number
+  ): Promise<void> {
+    this.requestCoalescedRender(
+      this.getMatchRenderKey(message.id),
+      GuildRuntimeManager.MATCH_RENDER_COOLDOWN_MS,
+      async () => {
+        await this.scheduler.enqueue(async () => await message.edit(payload), {
+          coalesce: "replace",
+          dedupeKey: `message-edit:${message.id}`,
+          label: "match-edit",
+          priority: "normal",
+          rateLimitKey: getMessageEditLane(message.id),
+          shouldRun: () => context.surfaceRegistry.hasRevision(message.id, revision),
+        });
       }
     );
+  }
 
-    if (activeMatchMessage) {
-      context.surfaceRegistry.upsert(activeMatchMessage.id, "match", matchSurfaceState());
+  private async deleteMatchSurface(message: Message): Promise<void> {
+    const coordinatorKey = this.getMatchRenderKey(message.id);
+    const coordinator = this.renderCoordinators.get(coordinatorKey);
+    if (coordinator?.timer) {
+      clearTimeout(coordinator.timer);
+    }
+    this.renderCoordinators.delete(coordinatorKey);
+
+    await this.scheduler.enqueue(async () => await message.delete(), {
+      coalesce: "replace",
+      dedupeKey: `message-delete:${message.id}`,
+      label: "match-delete",
+      priority: "normal",
+      rateLimitKey: getMessageDeleteLane(message.id),
+    });
+  }
+
+  private getMatchRenderKey(messageId: string): string {
+    return `match:${messageId}`;
+  }
+
+  private getQueueRenderKey(guildId: string): string {
+    return `queue:${guildId}`;
+  }
+
+  private requestCoalescedRender(key: string, cooldownMs: number, render: () => Promise<void>): void {
+    const coordinator = this.getOrCreateRenderCoordinator(key, cooldownMs);
+    coordinator.cooldownMs = cooldownMs;
+    coordinator.render = render;
+
+    const now = Date.now();
+    const earliestNextRenderAt =
+      coordinator.lastRenderStartedAt > 0 ? coordinator.lastRenderStartedAt + coordinator.cooldownMs : 0;
+
+    if (coordinator.inFlight || now < earliestNextRenderAt) {
+      coordinator.dirty = true;
+      this.scheduleCoalescedRender(key, Math.max(0, earliestNextRenderAt - now));
+      return;
     }
 
-    resetVoteState(context);
-    await this.refreshQueueSurface(context);
+    this.startCoalescedRender(key);
+  }
+
+  private getOrCreateRenderCoordinator(key: string, cooldownMs: number): RenderCoordinator {
+    const existing = this.renderCoordinators.get(key);
+    if (existing) {
+      return existing;
+    }
+
+    const created: RenderCoordinator = {
+      cooldownMs,
+      dirty: false,
+      inFlight: false,
+      lastRenderStartedAt: 0,
+      render: null,
+      timer: null,
+    };
+    this.renderCoordinators.set(key, created);
+    return created;
+  }
+
+  private scheduleCoalescedRender(key: string, delayMs: number): void {
+    const coordinator = this.renderCoordinators.get(key);
+    if (!coordinator || coordinator.timer) {
+      return;
+    }
+
+    coordinator.timer = setTimeout(() => {
+      const currentCoordinator = this.renderCoordinators.get(key);
+      if (!currentCoordinator) {
+        return;
+      }
+
+      currentCoordinator.timer = null;
+      this.maybeRunCoalescedRender(key);
+    }, delayMs);
+    coordinator.timer.unref?.();
+  }
+
+  private maybeRunCoalescedRender(key: string): void {
+    const coordinator = this.renderCoordinators.get(key);
+    if (!coordinator) {
+      return;
+    }
+
+    if (coordinator.inFlight) {
+      this.scheduleCoalescedRender(key, coordinator.cooldownMs);
+      return;
+    }
+
+    const now = Date.now();
+    const earliestNextRenderAt =
+      coordinator.lastRenderStartedAt > 0 ? coordinator.lastRenderStartedAt + coordinator.cooldownMs : 0;
+    if (now < earliestNextRenderAt) {
+      this.scheduleCoalescedRender(key, earliestNextRenderAt - now);
+      return;
+    }
+
+    if (!coordinator.dirty) {
+      if (!coordinator.inFlight && !coordinator.timer) {
+        this.renderCoordinators.delete(key);
+      }
+      return;
+    }
+
+    if (!coordinator.render) {
+      this.renderCoordinators.delete(key);
+      return;
+    }
+
+    coordinator.dirty = false;
+    this.startCoalescedRender(key);
+  }
+
+  private startCoalescedRender(key: string): void {
+    const coordinator = this.renderCoordinators.get(key);
+    if (!coordinator || coordinator.inFlight || !coordinator.render) {
+      return;
+    }
+
+    coordinator.inFlight = true;
+    coordinator.lastRenderStartedAt = Date.now();
+    const render = coordinator.render;
+
+    void render()
+      .catch((error) => {
+        console.error(`[${key}] Failed to flush Discord surface render:`, error);
+      })
+      .finally(() => {
+        const currentCoordinator = this.renderCoordinators.get(key);
+        if (!currentCoordinator) {
+          return;
+        }
+
+        currentCoordinator.inFlight = false;
+        if (currentCoordinator.dirty) {
+          if (currentCoordinator.timer) {
+            clearTimeout(currentCoordinator.timer);
+            currentCoordinator.timer = null;
+          }
+          const nextDelay = Math.max(
+            0,
+            currentCoordinator.lastRenderStartedAt + currentCoordinator.cooldownMs - Date.now()
+          );
+          this.scheduleCoalescedRender(key, nextDelay);
+          return;
+        }
+
+        const cleanupDelay = Math.max(
+          0,
+          currentCoordinator.lastRenderStartedAt + currentCoordinator.cooldownMs - Date.now()
+        );
+        if (cleanupDelay > 0) {
+          this.scheduleCoalescedRender(key, cleanupDelay);
+          return;
+        }
+
+        if (!currentCoordinator.timer && !currentCoordinator.inFlight) {
+          this.renderCoordinators.delete(key);
+        }
+      });
   }
 
   private async refreshLeaderboard(context: GuildContext): Promise<void> {
@@ -1132,36 +1312,54 @@ export class GuildRuntimeManager {
     cachedPlayers?: ReadonlyArray<Readonly<PlayerInQueue>>
   ): Promise<void> {
     const render = await buildQueueRender(context, cachedPlayers);
+    const existingQueueMessage = context.queueMessage;
+    const revision = existingQueueMessage
+      ? context.surfaceRegistry.upsert(existingQueueMessage.id, "queue", render.surface)
+      : null;
 
-    if (!context.queueMessage) {
-      const queueMessage = await this.scheduler.enqueue(
-        async () => await context.channels.queueChannel.send(render.view),
-        {
-          label: "queue-message-create",
-          priority: "normal",
+    this.requestCoalescedRender(
+      this.getQueueRenderKey(context.guildId),
+      GuildRuntimeManager.QUEUE_RENDER_COOLDOWN_MS,
+      async () => {
+        if (!context.queueMessage) {
+          const queueMessage = await this.scheduler.enqueue(
+            async () => await context.channels.queueChannel.send(render.view),
+            {
+              label: "queue-message-create",
+              priority: "normal",
+              rateLimitKey: getChannelSendLane(context.channels.queueChannel.id),
+            }
+          );
+
+          if (!queueMessage) {
+            throw new Error(`Failed to create queue message for guild ${context.guildId}.`);
+          }
+
+          context.queueMessage = queueMessage;
+          context.config = context.configStore.updateGuildRuntimeFields(context.guildId, {
+            queueMessageId: queueMessage.id,
+          });
+          context.surfaceRegistry.upsert(queueMessage.id, "queue", render.surface);
+          return;
         }
-      );
 
-      if (!queueMessage) {
-        throw new Error(`Failed to create queue message for guild ${context.guildId}.`);
+        const currentQueueMessage = context.queueMessage;
+        const currentMessageId = currentQueueMessage.id;
+        const currentRevision =
+          existingQueueMessage && existingQueueMessage.id === currentMessageId && revision !== null
+            ? revision
+            : context.surfaceRegistry.upsert(currentMessageId, "queue", render.surface);
+
+        await this.scheduler.enqueue(async () => await currentQueueMessage.edit(render.view), {
+          coalesce: "replace",
+          dedupeKey: `message-edit:${currentMessageId}`,
+          label: "queue-message-edit",
+          priority: "normal",
+          rateLimitKey: getMessageEditLane(currentMessageId),
+          shouldRun: () => context.surfaceRegistry.hasRevision(currentMessageId, currentRevision),
+        });
       }
-
-      context.queueMessage = queueMessage;
-      context.config = context.configStore.updateGuildRuntimeFields(context.guildId, {
-        queueMessageId: queueMessage.id,
-      });
-      context.surfaceRegistry.upsert(queueMessage.id, "queue", render.surface);
-      return;
-    }
-
-    const revision = context.surfaceRegistry.upsert(context.queueMessage.id, "queue", render.surface);
-    await this.scheduler.enqueue(async () => await context.queueMessage!.edit(render.view), {
-      coalesce: "replace",
-      dedupeKey: `message-edit:${context.queueMessage.id}`,
-      label: "queue-message-edit",
-      priority: "normal",
-      shouldRun: () => context.surfaceRegistry.hasRevision(context.queueMessage!.id, revision),
-    });
+    );
   }
 
   private startQueueTimer(context: GuildContext): void {
@@ -1173,25 +1371,27 @@ export class GuildRuntimeManager {
   }
 
   private async runQueueTimer(context: GuildContext): Promise<void> {
+    let playersToRender: ReadonlyArray<Readonly<PlayerInQueue>> | null = null;
     const release = await context.queueMutex.acquire();
     try {
       const updatedList = await checkQueueTimes(context);
       if (updatedList) {
         resetVoteState(context);
-        await this.refreshQueueSurface(context, updatedList);
-        return;
+        playersToRender = updatedList;
+      } else {
+        const queuedPlayers = await context.repositories.queue.getAllBallChasersInQueue();
+        if (queuedPlayers.length > 0) {
+          playersToRender = queuedPlayers;
+        }
       }
-
-      const queuedPlayers = await context.repositories.queue.getAllBallChasersInQueue();
-      if (queuedPlayers.length === 0) {
-        return;
-      }
-
-      await this.refreshQueueSurface(context, queuedPlayers);
     } catch (error) {
       console.error(`[${context.guildId}] Queue timer refresh failed:`, error);
     } finally {
       release();
+    }
+
+    if (playersToRender) {
+      await this.refreshQueueSurface(context, playersToRender);
     }
   }
 }
@@ -1213,6 +1413,22 @@ function matchSurfaceState(): ActiveSurfaceState {
     ]),
     state: "match_active",
   };
+}
+
+function getChannelSendLane(channelId: string): string {
+  return `channel:${channelId}:send`;
+}
+
+function getMessageDeleteLane(messageId: string): string {
+  return `message:${messageId}:delete`;
+}
+
+function getMessageEditLane(messageId: string): string {
+  return `message:${messageId}:edit`;
+}
+
+function getMessageReplyLane(message: Message): string {
+  return `channel:${message.channelId}:reply`;
 }
 
 function formatInteractionAuditTimestamp(now = DateTime.now()): string {

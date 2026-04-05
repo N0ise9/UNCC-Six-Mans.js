@@ -228,6 +228,7 @@ export class ApiStatusRuntime {
           dedupeKey: `message-delete:${message.id}`,
           label: `api-status:${guildId}:startup-delete:${message.id}`,
           priority: "low",
+          rateLimitKey: `message:${message.id}:delete`,
         });
       } catch (error) {
         console.warn(`[ApiStatusRuntime] Failed to delete stale API status message ${message.id}:`, error);

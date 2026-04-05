@@ -19,12 +19,14 @@ export function createScheduledCommandResponder(
         dedupeKey: `interaction-edit:${interaction.id}`,
         label: `${labelPrefix}-edit-reply`,
         priority,
+        rateLimitKey: `interaction:${interaction.id}`,
       });
     },
     followUp: async (payload) => {
       await scheduler.enqueue(async () => await interaction.followUp(payload), {
         label: `${labelPrefix}-follow-up`,
         priority,
+        rateLimitKey: `interaction:${interaction.id}`,
       });
     },
   };

@@ -550,7 +550,7 @@ describe("GuildRuntimeManager six mans interactions", () => {
     await context.scheduler.drain();
 
     expect(context.voteState.captainsRandomVotes.get("player-1")).toBe(ButtonCustomID.CreateRandomTeam);
-    expect(queueMessage.edit).toHaveBeenCalledTimes(2);
+    expect(queueMessage.edit).toHaveBeenCalledTimes(1);
   });
 
   it("uses a threshold of three random votes after 2s is enabled", async () => {
@@ -755,5 +755,100 @@ describe("GuildRuntimeManager six mans interactions", () => {
     expect(activeTeams.blueTeam).toHaveLength(0);
     expect(activeTeams.orangeTeam).toHaveLength(0);
     expect(context.repositories.leaderboard.updatePlayersStats).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not hold the queue mutex while a queue render is still in flight", async () => {
+    jest.useFakeTimers({ now: new Date("2026-04-04T12:00:00.000Z").getTime() });
+    const manager = createManager();
+    const queueMessage = createDiscordMessage({ id: "queue-message-1" });
+    let releaseFirstEdit: (() => void) | undefined;
+    let editCalls = 0;
+    (queueMessage.edit as jest.Mock).mockImplementation(async () => {
+      editCalls += 1;
+      if (editCalls === 1) {
+        await new Promise<void>((resolve) => {
+          releaseFirstEdit = resolve;
+        });
+      }
+
+      return queueMessage;
+    });
+
+    const repositories = createInMemoryRepositories();
+    const context = createGuildRuntimeTestContext(repositories, { queueMessage });
+    allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
+
+    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
+    await Promise.resolve();
+    expect(queueMessage.edit).toHaveBeenCalledTimes(1);
+
+    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-2"));
+
+    const queuedPlayersBeforeRenderRelease = await context.repositories.queue.getAllBallChasersInQueue();
+    expect(queuedPlayersBeforeRenderRelease.map((player) => player.id).sort()).toEqual(["player-1", "player-2"]);
+    expect(queueMessage.edit).toHaveBeenCalledTimes(1);
+
+    releaseFirstEdit?.();
+    await Promise.resolve();
+    await jest.advanceTimersByTimeAsync(1200);
+    await context.scheduler.drain();
+
+    expect(queueMessage.edit).toHaveBeenCalledTimes(2);
+  });
+
+  it("coalesces burst queue renders instead of editing once per join click", async () => {
+    jest.useFakeTimers({ now: new Date("2026-04-04T12:00:00.000Z").getTime() });
+    const manager = createManager();
+    const queueMessage = createDiscordMessage({ id: "queue-message-1" });
+    const repositories = createInMemoryRepositories();
+    const context = createGuildRuntimeTestContext(repositories, { queueMessage });
+    allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
+
+    await Promise.all([
+      manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")),
+      manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-2")),
+      manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-3")),
+    ]);
+
+    await context.scheduler.drain();
+    expect(queueMessage.edit).toHaveBeenCalledTimes(1);
+
+    await jest.advanceTimersByTimeAsync(1200);
+    await context.scheduler.drain();
+    expect(queueMessage.edit).toHaveBeenCalledTimes(2);
+  });
+
+  it("coalesces rapid broken-queue vote updates on the active match surface", async () => {
+    jest.useFakeTimers({ now: new Date("2026-04-04T12:00:00.000Z").getTime() });
+    const manager = createManager();
+    const matchMessage = createDiscordMessage({
+      embeds: [{ title: "Current Match" }],
+      id: "match-message-1",
+    });
+    const repositories = createInMemoryRepositories([], [
+      activeMatchPlayer("blue-1", Team.Blue),
+      activeMatchPlayer("blue-2", Team.Blue),
+      activeMatchPlayer("orange-1", Team.Orange),
+      activeMatchPlayer("orange-2", Team.Orange),
+    ]);
+    const context = createGuildRuntimeTestContext(repositories, {
+      queueMessage: createDiscordMessage({ id: "queue-message-1" }),
+    });
+    context.surfaceRegistry.upsert(matchMessage.id, "match", {
+      allowedActions: new Set<string>([ButtonCustomID.BrokenQueue, ButtonCustomID.ReportBlue, ButtonCustomID.ReportOrange]),
+      state: "match_active",
+    });
+
+    await Promise.all([
+      manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.BrokenQueue, matchMessage, "blue-1")),
+      manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.BrokenQueue, matchMessage, "orange-1")),
+    ]);
+
+    await context.scheduler.drain();
+    expect(matchMessage.edit).toHaveBeenCalledTimes(1);
+
+    await jest.advanceTimersByTimeAsync(750);
+    await context.scheduler.drain();
+    expect(matchMessage.edit).toHaveBeenCalledTimes(2);
   });
 });

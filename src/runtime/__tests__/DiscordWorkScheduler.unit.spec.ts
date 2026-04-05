@@ -88,4 +88,99 @@ describe("DiscordWorkScheduler", () => {
       warnSpy.mockRestore();
     }
   });
+
+  it("does not pause unrelated lanes when one lane is rate limited", async () => {
+    const scheduler = new DiscordWorkScheduler(1, 0);
+    let laneAAttempts = 0;
+    const executionOrder: string[] = [];
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      const laneAPromise = scheduler.enqueue(
+        async () => {
+          laneAAttempts += 1;
+          if (laneAAttempts === 1) {
+            throw { retryAfter: 0.05 };
+          }
+
+          executionOrder.push("lane-a");
+          return "lane-a";
+        },
+        {
+          label: "lane-a-edit",
+          rateLimitKey: "lane:a",
+        }
+      );
+
+      const laneBTask = jest.fn(async () => {
+        executionOrder.push("lane-b");
+        return "lane-b";
+      });
+
+      const laneBPromise = scheduler.enqueue(laneBTask, {
+        label: "lane-b-edit",
+        rateLimitKey: "lane:b",
+      });
+
+      await expect(laneBPromise).resolves.toBe("lane-b");
+      await expect(laneAPromise).resolves.toBe("lane-a");
+      await scheduler.drain();
+
+      expect(laneBTask).toHaveBeenCalledTimes(1);
+      expect(executionOrder[0]).toBe("lane-b");
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("still pauses all lanes for a global rate limit", async () => {
+    const scheduler = new DiscordWorkScheduler(1, 0);
+    let laneAAttempts = 0;
+    const executionOrder: string[] = [];
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      const laneAPromise = scheduler.enqueue(
+        async () => {
+          laneAAttempts += 1;
+          if (laneAAttempts === 1) {
+            throw {
+              rawError: {
+                global: true,
+                retry_after: 0.05,
+              },
+            };
+          }
+
+          executionOrder.push("lane-a");
+          return "lane-a";
+        },
+        {
+          label: "lane-a-edit",
+          rateLimitKey: "lane:a",
+        }
+      );
+
+      const laneBTask = jest.fn(async () => {
+        executionOrder.push("lane-b");
+        return "lane-b";
+      });
+
+      const laneBPromise = scheduler.enqueue(laneBTask, {
+        label: "lane-b-edit",
+        rateLimitKey: "lane:b",
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(laneBTask).not.toHaveBeenCalled();
+
+      await expect(laneAPromise).resolves.toBe("lane-a");
+      await expect(laneBPromise).resolves.toBe("lane-b");
+      await scheduler.drain();
+
+      expect(executionOrder).toEqual(["lane-a", "lane-b"]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });
