@@ -94,7 +94,7 @@ const isWorseStatus = (candidate: StatusLevel, current: StatusLevel, rank = STAT
   rank[candidate] > rank[current];
 
 function buildStatus(service: ServiceConfig, overrides: Partial<ServiceStatus> = {}): ServiceStatus {
-  return {
+  const status: ServiceStatus = {
     id: service.id,
     groupId: service.groupId,
     isGroupRoot: service.isGroupRoot,
@@ -106,10 +106,97 @@ function buildStatus(service: ServiceConfig, overrides: Partial<ServiceStatus> =
     incidents: [],
     ...overrides,
   };
+
+  return {
+    ...status,
+    incidents: normalizeIncidentInfos(status.incidents),
+  };
 }
 
 function errorStatus(service: ServiceConfig, description: string, status: StatusLevel = "unknown"): ServiceStatus {
   return buildStatus(service, { status, description, incidents: [] });
+}
+
+function normalizeIncidentInfos(incidents: IncidentInfo[] | undefined): IncidentInfo[] {
+  const normalizedByKey = new Map<string, IncidentInfo>();
+
+  for (const incident of incidents ?? []) {
+    const normalizedIncident = {
+      ...incident,
+      incident_updates: [...(incident.incident_updates ?? [])].sort(
+        (left, right) => incidentTimestampMs(right.created_at) - incidentTimestampMs(left.created_at)
+      ),
+      name: htmlToText(incident.name),
+    };
+    const key = getIncidentIdentity(normalizedIncident);
+    const existing = normalizedByKey.get(key);
+
+    if (!existing || compareIncidentInfoPriority(normalizedIncident, existing) < 0) {
+      normalizedByKey.set(key, normalizedIncident);
+    }
+  }
+
+  return [...normalizedByKey.values()].sort(compareIncidentInfoPriority);
+}
+
+function getIncidentIdentity(incident: IncidentInfo): string {
+  const id = (incident.id ?? "").trim().toLowerCase();
+  if (id) {
+    return id;
+  }
+
+  const shortlink = (incident.shortlink ?? "").trim().toLowerCase();
+  if (shortlink) {
+    return shortlink;
+  }
+
+  return `${(incident.name ?? "").trim().toLowerCase()}|${(incident.status ?? "").trim().toLowerCase()}`;
+}
+
+function compareIncidentInfoPriority(left: IncidentInfo, right: IncidentInfo): number {
+  const activeDelta = incidentActivityRank(right) - incidentActivityRank(left);
+  if (activeDelta !== 0) {
+    return activeDelta;
+  }
+
+  const severityDelta = incidentSeverityRank(right) - incidentSeverityRank(left);
+  if (severityDelta !== 0) {
+    return severityDelta;
+  }
+
+  return incidentRecencyMs(right) - incidentRecencyMs(left);
+}
+
+function incidentActivityRank(incident: IncidentInfo): number {
+  const status = (incident.status ?? "").toLowerCase();
+  if (/resolved|completed|postmortem/.test(status)) {
+    return 0;
+  }
+
+  if (/scheduled/.test(status)) {
+    return 1;
+  }
+
+  return 2;
+}
+
+function incidentSeverityRank(incident: IncidentInfo): number {
+  return STATUS_RANK[impactToStatusWithState(incident.impact, incident.status)];
+}
+
+function incidentRecencyMs(incident: IncidentInfo): number {
+  const createdAt = incidentTimestampMs(incident.created_at);
+  const updateTimes = (incident.incident_updates ?? []).map((update) => incidentTimestampMs(update.created_at));
+  return Math.max(createdAt, ...updateTimes);
+}
+
+function incidentTimestampMs(value: string | undefined): number {
+  if (!value) {
+    return 0;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 function createFeedParser(): XMLParser {

@@ -55,9 +55,18 @@ function createChannel(id: string, existingMessages: Message[] = []): FakeChanne
     client: { user: { id: "bot-user" } },
     id,
     messages: {
-      fetch: jest.fn(async () => {
+      fetch: jest.fn(async (options?: { before?: string; limit?: number }) => {
+        const limit = options?.limit ?? 50;
+        const sortedMessages = [...existingMessages].sort((left, right) => right.createdTimestamp - left.createdTimestamp);
+        let startIndex = 0;
+        if (options?.before) {
+          const beforeIndex = sortedMessages.findIndex((message) => message.id === options.before);
+          startIndex = beforeIndex >= 0 ? beforeIndex + 1 : sortedMessages.length;
+        }
+
+        const pageMessages = sortedMessages.slice(startIndex, startIndex + limit);
         const collection = new Collection<string, Message>();
-        for (const message of existingMessages) {
+        for (const message of pageMessages) {
           collection.set(message.id, message);
         }
         return collection;
@@ -163,7 +172,7 @@ describe("ApiStatusRuntime", () => {
     }
   });
 
-  it("reuses bot-owned managed status messages instead of reposting", async () => {
+  it("replaces bot-owned managed status messages during startup self-heal", async () => {
     const service = createService({
       id: "openai",
       name: "OpenAI",
@@ -185,8 +194,67 @@ describe("ApiStatusRuntime", () => {
     try {
       await runtime.registerGuild("guild-1", channel);
 
-      expect(channel.send).not.toHaveBeenCalled();
-      expect(existingMessage.edit).toHaveBeenCalledTimes(1);
+      expect(existingMessage.delete).toHaveBeenCalledTimes(1);
+      expect(channel.send).toHaveBeenCalledTimes(1);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("self-heals stale API status messages on startup before publishing a clean set", async () => {
+    const service = createService({
+      id: "openai",
+      name: "OpenAI",
+      pageUrl: "https://status.openai.com/",
+      type: "statuspage",
+    });
+    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), {
+      catalog: createCatalog([{ name: "Developer Tools", services: [service] }], [{ categoryName: "Developer Tools", service }]),
+      checkService: async () => createStatus(service, { status: "operational" }),
+      publishDebounceMs: 0,
+    });
+    const staleSummary = createManagedMessage("stale-summary", "channel-1");
+    const staleIncident = createManagedMessage("stale-incident", "channel-1", "NormJS Status Incident");
+    const channel = createChannel("channel-1", [staleSummary, staleIncident]);
+
+    try {
+      await runtime.registerGuild("guild-1", channel);
+
+      expect(staleSummary.delete).toHaveBeenCalledTimes(1);
+      expect(staleIncident.delete).toHaveBeenCalledTimes(1);
+      expect(channel.send).toHaveBeenCalledTimes(1);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("cleans up more than 50 pre-existing status messages on startup", async () => {
+    const service = createService({
+      id: "openai",
+      name: "OpenAI",
+      pageUrl: "https://status.openai.com/",
+      type: "statuspage",
+    });
+    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), {
+      catalog: createCatalog([{ name: "Developer Tools", services: [service] }], [{ categoryName: "Developer Tools", service }]),
+      checkService: async () => createStatus(service, { status: "operational" }),
+      publishDebounceMs: 0,
+    });
+    const existingMessages = Array.from({ length: 120 }, (_, index) => {
+      const footerText = index % 2 === 0 ? "NormJS Status Summary | Page 1" : "NormJS Status Incident";
+      const message = createManagedMessage(`managed-${index}`, "channel-1", footerText);
+      message.createdTimestamp = index;
+      return message;
+    });
+    const channel = createChannel("channel-1", existingMessages);
+
+    try {
+      await runtime.registerGuild("guild-1", channel);
+
+      expect(channel.messages.fetch).toHaveBeenCalledTimes(2);
+      for (const message of existingMessages) {
+        expect(message.delete).toHaveBeenCalledTimes(1);
+      }
     } finally {
       await runtime.dispose();
     }
@@ -373,6 +441,137 @@ describe("ApiStatusRuntime", () => {
 
       const recoveredPayload = asEmbedPayload(channel.__sentMessages[0].edit.mock.calls.at(-1)?.[0]);
       expect(recoveredPayload.embeds[0].toJSON().fields[0].value).toContain("\u2705 LastPass");
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("keeps one incident card per service and edits it in place across polls", async () => {
+    const service = createService({
+      id: "elastic",
+      name: "Elastic Cloud",
+      pageUrl: "https://status.elastic.co/",
+      type: "statuspage",
+    });
+    const firstStatus = createStatus(service, {
+      description: "Connectivity disruption for AWS Bahrain (me-south-1)",
+      incidents: [
+        {
+          created_at: "2026-04-04T18:00:00.000Z",
+          id: "incident-1",
+          incident_updates: [
+            {
+              body: "Initial update",
+              created_at: "2026-04-04T18:00:00.000Z",
+            },
+          ],
+          name: "Connectivity disruption for AWS Bahrain (me-south-1)",
+          shortlink: "https://status.elastic.co/incidents/incident-1",
+          status: "identified",
+        },
+      ],
+      status: "partial_outage",
+    });
+    const secondStatus = createStatus(service, {
+      description: "Connectivity disruption for AWS Bahrain (me-south-1)",
+      incidents: [
+        {
+          created_at: "2026-04-04T18:00:00.000Z",
+          id: "incident-1",
+          incident_updates: [
+            {
+              body: "Follow-up update",
+              created_at: "2026-04-04T18:05:00.000Z",
+            },
+            {
+              body: "Initial update",
+              created_at: "2026-04-04T18:00:00.000Z",
+            },
+          ],
+          name: "Connectivity disruption for AWS Bahrain (me-south-1)",
+          shortlink: "https://status.elastic.co/incidents/incident-1",
+          status: "identified",
+        },
+      ],
+      status: "partial_outage",
+    });
+    const checkService = jest
+      .fn<Promise<ServiceStatus>, [ServiceConfig]>()
+      .mockResolvedValueOnce(firstStatus)
+      .mockResolvedValueOnce(secondStatus);
+    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), {
+      catalog: createCatalog([{ name: "Monitoring", services: [service] }], [{ categoryName: "Monitoring", service }]),
+      checkService,
+      generalSweepMs: 10,
+      publishDebounceMs: 0,
+    });
+    const channel = createChannel("channel-1");
+
+    try {
+      await runtime.registerGuild("guild-1", channel);
+      await jest.advanceTimersByTimeAsync(1);
+      await flushScheduler();
+      await jest.advanceTimersByTimeAsync(10);
+      await flushScheduler();
+
+      const incidentCreates = (channel.send as jest.Mock).mock.calls.filter(
+        (call) => call[0].embeds[0].toJSON().title === "Incident - Elastic Cloud"
+      );
+
+      expect(incidentCreates).toHaveLength(1);
+      expect(channel.__sentMessages[1].edit).toHaveBeenCalled();
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("renders one incident card for noisy services and summarizes older updates", async () => {
+    const service = createService({
+      id: "ibmsecurity",
+      name: "IBM Security",
+      pageUrl: "https://statuspage.ibmcloudsecurity.com/",
+      type: "statuspage",
+    });
+    const incidentUpdates = Array.from({ length: 10 }, (_, index) => ({
+      body: `Incident update ${index + 1} ${"x".repeat(120)}`,
+      created_at: `2026-04-04T1${index}:00:00.000Z`,
+    }));
+    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), {
+      catalog: createCatalog([{ name: "Monitoring", services: [service] }], [{ categoryName: "Monitoring", service }]),
+      checkService: async () =>
+        createStatus(service, {
+          description: "US & EU - Issues with AI Chatbot",
+          incidents: [
+            {
+              created_at: "2026-04-04T10:00:00.000Z",
+              id: "incident-ibm-1",
+              incident_updates: incidentUpdates,
+              name: "US & EU - Issues with AI Chatbot",
+              shortlink: "https://statuspage.ibmcloudsecurity.com/incidents/incident-ibm-1",
+              status: "investigating",
+            },
+          ],
+          status: "major_outage",
+        }),
+      generalSweepMs: 10,
+      publishDebounceMs: 0,
+    });
+    const channel = createChannel("channel-1");
+
+    try {
+      await runtime.registerGuild("guild-1", channel);
+      await jest.advanceTimersByTimeAsync(1);
+      await flushScheduler();
+
+      const incidentCreate = (channel.send as jest.Mock).mock.calls.find(
+        (call) => call[0].embeds[0].toJSON().title === "Incident - IBM Security"
+      );
+      const incidentEmbed = incidentCreate?.[0].embeds[0].toJSON();
+
+      expect(incidentEmbed).toBeDefined();
+      expect(incidentEmbed.fields).toHaveLength(2);
+      expect(incidentEmbed.fields[1].name).toBe("Updates (latest 3)");
+      expect(incidentEmbed.fields[1].value).toContain("+7 older updates on the status page");
     } finally {
       await runtime.dispose();
     }

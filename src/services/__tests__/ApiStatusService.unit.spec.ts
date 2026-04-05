@@ -163,6 +163,101 @@ describe("ApiStatusService statuspage fetching", () => {
     expect(status.incidents?.[0]?.name).toBe("WARP connectivity");
   });
 
+  it("keeps one canonical active incident when a statuspage service exposes multiple unresolved incidents", async () => {
+    const fetchMock = jest.fn(async () =>
+      jsonResponse({
+        incidents: [
+          {
+            created_at: "2026-04-03T12:00:00.000Z",
+            id: "incident-older",
+            impact: "minor",
+            incident_updates: [
+              {
+                body: "Older update",
+                created_at: "2026-04-03T12:05:00.000Z",
+              },
+            ],
+            name: "Older degraded incident",
+            shortlink: "https://status.example.com/incidents/incident-older",
+            status: "identified",
+          },
+          {
+            created_at: "2026-04-04T16:00:00.000Z",
+            id: "incident-newer",
+            impact: "critical",
+            incident_updates: [
+              {
+                body: "Newest update",
+                created_at: "2026-04-04T16:10:00.000Z",
+              },
+            ],
+            name: "Newer critical incident",
+            shortlink: "https://status.example.com/incidents/incident-newer",
+            status: "investigating",
+          },
+        ],
+        status: {
+          description: "Partial System Outage",
+          indicator: "major",
+        },
+      })
+    );
+    global.fetch = fetchMock as typeof fetch;
+
+    const service = createStatuspageService();
+    const status = await checkSingleService(service);
+
+    expect(status.incidents).toHaveLength(2);
+    expect(status.incidents?.[0]?.id).toBe("incident-newer");
+    expect(status.incidents?.[0]?.name).toBe("Newer critical incident");
+  });
+
+  it("does not add a fallback component incident when a real unresolved incident already exists", async () => {
+    const fetchMock = jest.fn(async () =>
+      jsonResponse({
+        components: [
+          {
+            group: false,
+            id: "component-1",
+            name: "AI ChatBot (Chat with watsonx)",
+            status: "major_outage",
+            updated_at: "2026-04-04T16:45:00.000Z",
+          },
+        ],
+        incidents: [
+          {
+            created_at: "2026-04-04T16:00:00.000Z",
+            id: "incident-1",
+            impact: "critical",
+            incident_updates: [
+              {
+                body: "We are continuing to investigate this issue.",
+                created_at: "2026-04-04T16:10:00.000Z",
+              },
+            ],
+            name: "US & EU - Issues with AI Chatbot",
+            shortlink: "https://status.example.com/incidents/incident-1",
+            status: "investigating",
+          },
+        ],
+        status: {
+          description: "Partial System Outage",
+          indicator: "major",
+        },
+      })
+    );
+    global.fetch = fetchMock as typeof fetch;
+
+    const service = createStatuspageService({
+      name: "IBM Security",
+      pageUrl: "https://statuspage.ibmcloudsecurity.com/",
+    });
+    const status = await checkSingleService(service);
+
+    expect(status.incidents).toHaveLength(1);
+    expect(status.incidents?.[0]?.name).toBe("US & EU - Issues with AI Chatbot");
+  });
+
   it("keeps statuspage services operational when only future scheduled maintenance exists", async () => {
     const fetchMock = jest.fn(async () =>
       jsonResponse({

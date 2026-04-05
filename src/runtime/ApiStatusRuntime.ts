@@ -11,16 +11,26 @@ import {
   summarizeIssues,
 } from "../services/ApiStatusService";
 import { DiscordWorkScheduler } from "./DiscordWorkScheduler";
-import { reconcileTrackedMessages } from "./reconcileTrackedMessages";
+import { reconcileKeyedTrackedMessages } from "./reconcileTrackedMessages";
 
 type StatusCategory = {
   name: string;
   services: ServiceStatus[];
 };
 
+type KeyedStatusPayload = {
+  key: string;
+  payload: BaseMessageOptions;
+};
+
+type KeyedTrackedMessage = {
+  key: string;
+  message: Message;
+};
+
 type RegisteredChannel = {
   channel: TextChannel;
-  messages: Message[];
+  messages: KeyedTrackedMessage[];
 };
 
 type PollBranch = "aws" | "general";
@@ -81,7 +91,7 @@ export class ApiStatusRuntime {
   private readonly awsRecords: PollRecord[];
   private readonly recordsById = new Map<string, PollRecord>();
   private disposed = false;
-  private latestPayloads: BaseMessageOptions[] | null = null;
+  private latestPayloads: KeyedStatusPayload[] | null = null;
   private latestSnapshotAt = 0;
   private pollInFlight = false;
   private pollTimer: NodeJS.Timeout | null = null;
@@ -134,13 +144,17 @@ export class ApiStatusRuntime {
     const registration = this.registrations.get(guildId);
     if (registration) {
       registration.channel = channel;
-      if (!registration.messages.every((message) => message.channelId === channel.id)) {
-        registration.messages = await this.discoverManagedMessages(channel);
+      if (!registration.messages.every((trackedMessage) => trackedMessage.message.channelId === channel.id)) {
+        const existingMessages = await this.fetchManagedStatusMessages(channel);
+        await this.deleteManagedStatusMessages(existingMessages, guildId);
+        registration.messages = [];
       }
     } else {
+      const existingMessages = await this.fetchManagedStatusMessages(channel);
+      await this.deleteManagedStatusMessages(existingMessages, guildId);
       this.registrations.set(guildId, {
         channel,
-        messages: await this.discoverManagedMessages(channel),
+        messages: [],
       });
     }
 
@@ -162,27 +176,60 @@ export class ApiStatusRuntime {
     }
   }
 
-  private async discoverManagedMessages(channel: TextChannel): Promise<Message[]> {
+  private async fetchManagedStatusMessages(channel: TextChannel): Promise<Message[]> {
     const currentUserId = channel.client.user?.id;
     if (!currentUserId) {
       return [];
     }
 
-    const messages = await channel.messages.fetch({ limit: 50 }).catch(() => null);
-    if (!messages) {
-      return [];
+    const managedMessages: Message[] = [];
+    let beforeMessageId: string | undefined;
+
+    while (true) {
+      const messages = await channel.messages.fetch({ before: beforeMessageId, limit: 100 }).catch(() => null);
+      if (!messages || messages.size === 0) {
+        break;
+      }
+
+      const pageMessages = messages
+        .filter((message) => {
+          const footerText = message.embeds[0]?.footer?.text ?? "";
+          return (
+            message.author.id === currentUserId &&
+            (footerText.includes(SUMMARY_MARKER) || footerText.includes(INCIDENT_MARKER))
+          );
+        })
+        .sort((left, right) => left.createdTimestamp - right.createdTimestamp)
+        .map((message) => message);
+
+      managedMessages.push(...pageMessages);
+
+      if (messages.size < 100) {
+        break;
+      }
+
+      beforeMessageId = messages.last()?.id;
+      if (!beforeMessageId) {
+        break;
+      }
     }
 
-    return messages
-      .filter((message) => {
-        const footerText = message.embeds[0]?.footer?.text ?? "";
-        return (
-          message.author.id === currentUserId &&
-          (footerText.startsWith(SUMMARY_MARKER) || footerText.startsWith(INCIDENT_MARKER))
-        );
-      })
-      .sort((left, right) => left.createdTimestamp - right.createdTimestamp)
-      .map((message) => message);
+    return managedMessages;
+  }
+
+  private async deleteManagedStatusMessages(messages: Message[], guildId: string): Promise<void> {
+    for (const message of messages) {
+      try {
+        await this.scheduler.enqueue(async () => await message.delete().catch(() => undefined), {
+          coalesce: "replace",
+          dedupeKey: `message-delete:${message.id}`,
+          label: `api-status:${guildId}:startup-delete:${message.id}`,
+          priority: "low",
+        });
+      } catch (error) {
+        console.warn(`[ApiStatusRuntime] Failed to delete stale API status message ${message.id}:`, error);
+      }
+    }
   }
 
   private scheduleNextPoll(): void {
@@ -413,7 +460,7 @@ export class ApiStatusRuntime {
     }
 
     try {
-      registration.messages = await reconcileTrackedMessages({
+      registration.messages = await reconcileKeyedTrackedMessages({
         channel: registration.channel,
         labelPrefix: `api-status:${guildId}`,
         payloads: this.latestPayloads,
@@ -523,11 +570,11 @@ function stableHash(value: string): number {
   return hash;
 }
 
-function buildStatusPayloads(categories: StatusCategory[], snapshotAt: number): BaseMessageOptions[] {
+function buildStatusPayloads(categories: StatusCategory[], snapshotAt: number): KeyedStatusPayload[] {
   return [...buildSummaryPayloads(categories, snapshotAt), ...buildIncidentPayloads(categories)];
 }
 
-function buildSummaryPayloads(categories: StatusCategory[], snapshotAt: number): BaseMessageOptions[] {
+function buildSummaryPayloads(categories: StatusCategory[], snapshotAt: number): KeyedStatusPayload[] {
   const summary = summarizeIssues(categories);
   const pages: EmbedBuilder[] = [];
   let page = createSummaryEmbed(summary, 1, snapshotAt);
@@ -570,34 +617,33 @@ function buildSummaryPayloads(categories: StatusCategory[], snapshotAt: number):
   }
 
   pages.push(page);
-  return pages.map((embed) => ({ embeds: [embed] }));
+  return pages.map((embed, index) => ({
+    key: `summary:page:${index + 1}`,
+    payload: { embeds: [embed] },
+  }));
 }
 
-function buildIncidentPayloads(categories: StatusCategory[]): BaseMessageOptions[] {
-  const incidentEmbeds: BaseMessageOptions[] = [];
+function buildIncidentPayloads(categories: StatusCategory[]): KeyedStatusPayload[] {
+  const incidentEmbeds: KeyedStatusPayload[] = [];
 
   for (const category of categories) {
     for (const service of category.services) {
-      if (!service.incidents || service.incidents.length === 0) {
+      const incident = selectCanonicalIncident(service);
+      if (!incident) {
         continue;
       }
 
-      const latestIncident = service.incidents[0];
-      const updates = (latestIncident.incident_updates ?? [])
-        .slice(0, 5)
-        .map(
-          (update) =>
-            `- <t:${Math.floor(new Date(update.created_at).getTime() / 1000)}:R> ${truncate(update.body, 850)}`
-        );
-
-      incidentEmbeds.push(
-        ...buildIncidentEmbeds({
-          incidentName: latestIncident.name,
-          incidentUrl: latestIncident.shortlink ?? service.pageUrl,
-          service,
-          updateLines: updates,
-        }).map((embed) => ({ embeds: [embed] }))
-      );
+      incidentEmbeds.push({
+        key: `incident:service:${service.id}`,
+        payload: {
+          embeds: [
+            buildIncidentEmbed({
+              incident,
+              service,
+            }),
+          ],
+        },
+      });
     }
   }
 
@@ -613,7 +659,7 @@ function createSummaryEmbed(
   return new EmbedBuilder()
     .setColor(SUMMARY_COLOR)
     .setDescription(description)
-    .setFooter({ text: `${SUMMARY_MARKER} | Page ${pageNumber}` })
+    .setFooter({ text: `${SUMMARY_MARKER} | key=summary:page:${pageNumber} | Page ${pageNumber}` })
     .setTitle(`API and Platform Status (Page ${pageNumber})`);
 }
 
@@ -634,7 +680,7 @@ function calculateSummaryBaseLength(
   snapshotAt: number
 ): number {
   const title = `API and Platform Status (Page ${pageNumber})`;
-  const footer = `${SUMMARY_MARKER} | Page ${pageNumber}`;
+  const footer = `${SUMMARY_MARKER} | key=summary:page:${pageNumber} | Page ${pageNumber}`;
   return title.length + buildSummaryDescription(summary, snapshotAt).length + footer.length;
 }
 
@@ -664,116 +710,167 @@ function splitFieldLines(lines: string[], maxLength: number): string[][] {
   return chunks;
 }
 
-function buildIncidentEmbeds({
-  incidentName,
-  incidentUrl,
+function buildIncidentEmbed({
+  incident,
   service,
-  updateLines,
 }: {
-  incidentName: string;
-  incidentUrl: string;
+  incident: IncidentInfo;
   service: ServiceStatus;
-  updateLines: string[];
-}): EmbedBuilder[] {
+}): EmbedBuilder {
   const description = truncate(service.description || service.status, 500);
   const title = truncate(`Incident - ${service.name}`, MAX_EMBED_TITLE_LENGTH);
-  const updateChunks = splitFieldLines(
-    updateLines.length > 0 ? updateLines : ["No additional incident updates were provided."],
-    MAX_EMBED_FIELD_VALUE_LENGTH
-  );
-  const statusPageValue = `[Status Page](${incidentUrl})`;
-  const statusPageFieldLength = incidentName.length + statusPageValue.length;
-
-  const embeds: EmbedBuilder[] = [];
-  let pageNumber = 1;
-  let embed = createIncidentEmbed({
+  const incidentUrl = incident.shortlink ?? service.pageUrl;
+  const embed = createIncidentEmbed({
     description,
     incidentUrl,
-    pageNumber,
     service,
     title,
   });
-  let fieldCount = 0;
-  let embedLength =
+  const incidentName = truncate(incident.name, MAX_EMBED_FIELD_NAME_LENGTH);
+  const statusPageValue = `[Status Page](${incidentUrl})`;
+  const updateFieldValue = buildIncidentUpdateFieldValue(incident);
+  const updatesFieldName = getIncidentUpdatesFieldName(incident);
+  const statusPageFieldLength = incidentName.length + statusPageValue.length;
+  const updatesFieldLength = updatesFieldName.length + updateFieldValue.length;
+  const totalLength =
     calculateIncidentBaseLength({
       description,
       lastChecked: service.lastChecked,
-      pageNumber,
+      serviceId: service.id,
       serviceTitle: title,
       status: service.status,
-    }) + statusPageFieldLength;
+    }) +
+    statusPageFieldLength +
+    updatesFieldLength;
 
   embed.addFields({
     inline: false,
-    name: truncate(incidentName, MAX_EMBED_FIELD_NAME_LENGTH),
+    name: incidentName,
     value: statusPageValue,
   });
 
-  const pushEmbed = () => {
-    embeds.push(embed);
-    pageNumber += 1;
-    embed = createIncidentEmbed({
-      description,
-      incidentUrl,
-      pageNumber,
-      service,
-      title,
-    });
-    fieldCount = 0;
-    embedLength =
-      calculateIncidentBaseLength({
-        description,
-        lastChecked: service.lastChecked,
-        pageNumber,
-        serviceTitle: title,
-        status: service.status,
-      }) + statusPageFieldLength;
-    embed.addFields({
-      inline: false,
-      name: truncate(incidentName, MAX_EMBED_FIELD_NAME_LENGTH),
-      value: statusPageValue,
-    });
-  };
+  embed.addFields({
+    inline: false,
+    name: updatesFieldName,
+    value:
+      totalLength <= MAX_EMBED_TOTAL_LENGTH
+        ? updateFieldValue
+        : truncate(updateFieldValue, MAX_EMBED_FIELD_VALUE_LENGTH),
+  });
 
-  for (const [index, chunk] of updateChunks.entries()) {
-    const fieldName = truncate(
-      updateChunks.length > 1 ? `Updates (${index + 1}/${updateChunks.length})` : "Updates",
-      MAX_EMBED_FIELD_NAME_LENGTH
-    );
-    const fieldValue = chunk.join("\n");
-    const fieldLength = fieldName.length + fieldValue.length;
+  return embed;
+}
 
-    if (fieldCount >= MAX_EMBED_FIELDS || (fieldCount > 0 && embedLength + fieldLength > MAX_EMBED_TOTAL_LENGTH)) {
-      pushEmbed();
-    }
-
-    embed.addFields({
-      inline: false,
-      name: fieldName,
-      value: fieldValue,
-    });
-    fieldCount += 1;
-    embedLength += fieldLength;
+function selectCanonicalIncident(service: ServiceStatus): IncidentInfo | null {
+  const incidents = service.incidents ?? [];
+  if (incidents.length === 0) {
+    return null;
   }
 
-  embeds.push(embed);
-  return embeds;
+  return [...incidents].sort(compareIncidentPriority)[0] ?? null;
+}
+
+function compareIncidentPriority(left: IncidentInfo, right: IncidentInfo): number {
+  const statusDelta = incidentActivityRank(right) - incidentActivityRank(left);
+  if (statusDelta !== 0) {
+    return statusDelta;
+  }
+
+  const severityDelta = statusSeverityFromIncidentImpact(right) - statusSeverityFromIncidentImpact(left);
+  if (severityDelta !== 0) {
+    return severityDelta;
+  }
+
+  return incidentLatestTimestamp(right) - incidentLatestTimestamp(left);
+}
+
+function incidentActivityRank(incident: IncidentInfo): number {
+  const status = (incident.status ?? "").toLowerCase();
+  if (/resolved|completed|postmortem/.test(status)) {
+    return 0;
+  }
+
+  if (/scheduled/.test(status)) {
+    return 1;
+  }
+
+  return 2;
+}
+
+function statusSeverityFromIncidentImpact(incident: IncidentInfo): number {
+  return statusSeverity(mapIncidentImpactToStatusLevel(incident));
+}
+
+function mapIncidentImpactToStatusLevel(incident: IncidentInfo): ServiceStatus["status"] {
+  const impact = (incident.impact ?? "").toLowerCase();
+  if (/critical|major_outage/.test(impact)) {
+    return "major_outage";
+  }
+  if (/major|partial_outage/.test(impact)) {
+    return "partial_outage";
+  }
+  if (/minor|degraded_performance/.test(impact)) {
+    return "degraded_performance";
+  }
+  if (/maintenance|under_maintenance/.test(impact)) {
+    return "under_maintenance";
+  }
+
+  const status = (incident.status ?? "").toLowerCase();
+  if (/major|critical/.test(status)) {
+    return "major_outage";
+  }
+  if (/maintenance|scheduled|in_progress/.test(status)) {
+    return "under_maintenance";
+  }
+
+  return "operational";
+}
+
+function incidentLatestTimestamp(incident: IncidentInfo): number {
+  const updateTimes = (incident.incident_updates ?? [])
+    .map((update) => Date.parse(update.created_at))
+    .filter((time) => !Number.isNaN(time));
+  const createdAt = incident.created_at ? Date.parse(incident.created_at) : NaN;
+
+  return Math.max(...updateTimes, Number.isNaN(createdAt) ? 0 : createdAt);
+}
+
+function getIncidentUpdatesFieldName(incident: IncidentInfo): string {
+  const updateCount = Math.min((incident.incident_updates ?? []).length, 3);
+  return updateCount > 0 ? `Updates${(incident.incident_updates ?? []).length > 3 ? " (latest 3)" : ""}` : "Updates";
+}
+
+function buildIncidentUpdateFieldValue(incident: IncidentInfo): string {
+  const updates = (incident.incident_updates ?? []).slice(0, 3);
+  if (updates.length === 0) {
+    return "No additional incident updates were provided.";
+  }
+
+  const lines = updates.map(
+    (update) =>
+      `- <t:${Math.floor(new Date(update.created_at).getTime() / 1000)}:R> ${truncate(update.body, 240)}`
+  );
+  const overflowCount = (incident.incident_updates ?? []).length - updates.length;
+  if (overflowCount > 0) {
+    lines.push(`+${overflowCount} older updates on the status page`);
+  }
+
+  return truncate(lines.join("\n"), MAX_EMBED_FIELD_VALUE_LENGTH);
 }
 
 function createIncidentEmbed({
   description,
   incidentUrl,
-  pageNumber,
   service,
   title,
 }: {
   description: string;
   incidentUrl: string;
-  pageNumber: number;
   service: ServiceStatus;
   title: string;
 }): EmbedBuilder {
-  const footerText = pageNumber > 1 ? `${INCIDENT_MARKER} | Page ${pageNumber}` : INCIDENT_MARKER;
+  const footerText = `${INCIDENT_MARKER} | key=incident:service:${service.id}`;
   const summaryLine = description || humanizeStatus(service.status);
   const relativeTimestamp = `<t:${Math.floor(service.lastChecked.getTime() / 1000)}:R>`;
 
@@ -789,17 +886,17 @@ function createIncidentEmbed({
 function calculateIncidentBaseLength({
   description,
   lastChecked,
-  pageNumber,
+  serviceId,
   serviceTitle,
   status,
 }: {
   description: string;
   lastChecked: Date;
-  pageNumber: number;
+  serviceId: string;
   serviceTitle: string;
   status: ServiceStatus["status"];
 }): number {
-  const footerText = pageNumber > 1 ? `${INCIDENT_MARKER} | Page ${pageNumber}` : INCIDENT_MARKER;
+  const footerText = `${INCIDENT_MARKER} | key=incident:service:${serviceId}`;
   const relativeTimestamp = `<t:${Math.floor(lastChecked.getTime() / 1000)}:R>`;
   const incidentSummary =
     `${statusEmoji(status)} ${description || humanizeStatus(status)}\n` + `Last updated: ${relativeTimestamp}`;
