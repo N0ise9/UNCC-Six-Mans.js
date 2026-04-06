@@ -98,6 +98,8 @@ export class ApiStatusRuntime {
   private publishInFlight = false;
   private publishQueued = false;
   private publishTimer: NodeJS.Timeout | null = null;
+  private startupSnapshotReady = false;
+  private startupSnapshotPromise: Promise<void> | null = null;
 
   constructor(private readonly scheduler: DiscordWorkScheduler, options: ApiStatusRuntimeOptions = {}) {
     this.catalog = options.catalog ?? getApiStatusCatalog();
@@ -160,6 +162,7 @@ export class ApiStatusRuntime {
       });
     }
 
+    await this.ensureStartupSnapshot();
     await this.publishRegistration(guildId, this.registrations.get(guildId)!);
     this.scheduleNextPoll();
   }
@@ -176,6 +179,45 @@ export class ApiStatusRuntime {
         this.publishTimer = null;
       }
       this.publishQueued = false;
+      this.startupSnapshotReady = false;
+      this.startupSnapshotPromise = null;
+    }
+  }
+
+  private async ensureStartupSnapshot(): Promise<void> {
+    if (this.startupSnapshotReady) {
+      return;
+    }
+
+    if (!this.startupSnapshotPromise) {
+      this.startupSnapshotPromise = this.refreshAllServicesImmediately()
+        .catch((error) => {
+          console.error("[ApiStatusRuntime] Failed to build startup API status snapshot:", error);
+        })
+        .finally(() => {
+          this.startupSnapshotPromise = null;
+          this.startupSnapshotReady = true;
+        });
+    }
+
+    await this.startupSnapshotPromise;
+  }
+
+  private async refreshAllServicesImmediately(): Promise<void> {
+    const records = Array.from(this.recordsById.values());
+    if (records.length === 0) {
+      this.refreshLatestPayloads();
+      return;
+    }
+
+    this.pollInFlight = true;
+    try {
+      await Promise.allSettled(records.map((record) => this.pollRecordImmediately(record)));
+      this.restaggerBranchPollsAfterStartup(this.generalRecords, this.generalSweepMs);
+      this.restaggerBranchPollsAfterStartup(this.awsRecords, this.awsSweepMs);
+      this.refreshLatestPayloads();
+    } finally {
+      this.pollInFlight = false;
     }
   }
 
@@ -303,6 +345,39 @@ export class ApiStatusRuntime {
       this.pollInFlight = false;
       this.scheduleNextPoll();
     }
+  }
+
+  private async pollRecordImmediately(record: PollRecord): Promise<void> {
+    const now = this.now();
+    const previousVisible = record.branch === "aws" ? this.getAwsDisplayStatus() : cloneServiceStatus(record.displayed);
+
+    let result: ServiceStatus;
+    try {
+      result = await this.checkService(record.service);
+    } catch (error) {
+      console.warn(`[ApiStatusRuntime] Startup service poll failed for ${record.service.id}:`, error);
+      result = createFailureStatus(record.service, now);
+    }
+
+    this.applyPollResult(record, "normal", result, now);
+
+    const nextVisible = record.branch === "aws" ? this.getAwsDisplayStatus() : record.displayed;
+    if (!areServiceStatusesEquivalent(previousVisible, nextVisible)) {
+      this.refreshLatestPayloads();
+    }
+  }
+
+  private restaggerBranchPollsAfterStartup(records: PollRecord[], sweepMs: number): void {
+    if (records.length === 0) {
+      return;
+    }
+
+    const spacingMs = Math.max(1, Math.floor(sweepMs / records.length));
+    const base = this.now();
+
+    records.forEach((record, index) => {
+      record.nextNormalAt = base + spacingMs * (index + 1);
+    });
   }
 
   private async pollRecord(candidate: PollCandidate): Promise<void> {

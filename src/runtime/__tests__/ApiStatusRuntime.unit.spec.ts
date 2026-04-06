@@ -461,10 +461,7 @@ describe("ApiStatusRuntime", () => {
 
     try {
       await runtime.registerGuild("guild-1", channel);
-      await jest.advanceTimersByTimeAsync(1);
-      await flushScheduler();
-
-      const degradedPayload = asEmbedPayload(channel.__sentMessages[0].edit.mock.calls.at(-1)?.[0]);
+      const degradedPayload = asEmbedPayload((channel.send as jest.Mock).mock.calls.at(-1)?.[0]);
       expect(degradedPayload.embeds[0].toJSON().fields[0].value).toContain(
         "\u{1F7E1} LastPass - Partially Degraded Service"
       );
@@ -790,52 +787,71 @@ describe("ApiStatusRuntime", () => {
       ],
       status: "partial_outage",
     });
-    const checkService = jest
-      .fn<Promise<ServiceStatus>, [ServiceConfig]>()
-      .mockResolvedValueOnce(firstStatus)
-      .mockResolvedValueOnce(secondStatus);
+    const secondIncident = secondStatus.incidents?.[0];
+    const thirdStatus = {
+      ...secondStatus,
+      incidents: secondIncident
+        ? [
+            {
+              ...secondIncident,
+              incident_updates: [
+                {
+                  body: "Second follow-up body",
+                  created_at: "2026-04-04T18:10:00.000Z",
+                },
+                ...(secondIncident.incident_updates ?? []),
+              ],
+            },
+          ]
+        : [],
+    };
     const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), {
       catalog: createCatalog([{ name: "Monitoring", services: [service] }], [{ categoryName: "Monitoring", service }]),
-      checkService,
+      checkService: async () => firstStatus,
       generalSweepMs: 5,
       publishDebounceMs: 0,
     });
     const channel = createChannel("channel-1");
-    const blockedIncidentSend = createDeferred<Message>();
-    let incidentSendReleased = false;
-    const originalSend = channel.send as jest.Mock;
-
-    originalSend.mockImplementation(async (payload: unknown) => {
-      const embed = asEmbedPayload(payload).embeds?.[0];
-      const title = embed?.toJSON().title;
-
-      if (title === "Incident - Elastic Cloud") {
-        return await blockedIncidentSend.promise;
-      }
-
-      const footerText = embed?.toJSON().footer?.text ?? "NormJS Status Summary | Page 1";
-      const message = createManagedMessage(`sent-${channel.id}-${channel.__sentMessages.length + 1}`, channel.id, footerText);
-      channel.__sentMessages.push(message);
-      return message;
-    });
+    const blockedSummaryEdit = createDeferred<Message>();
+    let summaryEditReleased = false;
 
     try {
       await runtime.registerGuild("guild-1", channel);
-
-      await jest.advanceTimersByTimeAsync(1);
-      await flushScheduler();
-      expect(originalSend).toHaveBeenCalledWith(
-        expect.objectContaining({
-          embeds: expect.any(Array),
-        })
+      const originalSend = channel.send as jest.Mock;
+      const summaryMessage = channel.__sentMessages.find(
+        (message) => message.embeds[0]?.footer?.text?.includes("NormJS Status Summary")
       );
+      const incidentMessage = channel.__sentMessages.find(
+        (message) => message.embeds[0]?.footer?.text === "NormJS Status Incident"
+      );
+      expect(summaryMessage).toBeDefined();
+      expect(incidentMessage).toBeDefined();
+      (summaryMessage!.edit as jest.Mock).mockImplementation(async () => {
+        return await blockedSummaryEdit.promise;
+      });
 
-      await jest.advanceTimersByTimeAsync(5);
+      const record = (
+        runtime as unknown as {
+          recordsById: Map<string, { displayed: ServiceStatus }>;
+          refreshLatestPayloads: () => void;
+          publishAllGuilds: () => Promise<void>;
+        }
+      ).recordsById.get(service.id);
+      expect(record).toBeDefined();
+
+      record!.displayed = secondStatus;
+      (runtime as unknown as { refreshLatestPayloads: () => void }).refreshLatestPayloads();
+      const firstPublish = (runtime as unknown as { publishAllGuilds: () => Promise<void> }).publishAllGuilds();
       await flushScheduler();
+      expect(summaryMessage!.edit).toHaveBeenCalledTimes(1);
 
-      const incidentMessage = createManagedMessage("elastic-incident", "channel-1", "NormJS Status Incident");
-      incidentSendReleased = true;
-      blockedIncidentSend.resolve(incidentMessage as unknown as Message);
+      record!.displayed = thirdStatus;
+      (runtime as unknown as { refreshLatestPayloads: () => void }).refreshLatestPayloads();
+      await (runtime as unknown as { publishAllGuilds: () => Promise<void> }).publishAllGuilds();
+
+      summaryEditReleased = true;
+      blockedSummaryEdit.resolve(summaryMessage as unknown as Message);
+      await firstPublish;
       await flushScheduler();
       await jest.advanceTimersByTimeAsync(0);
       await flushScheduler();
@@ -846,11 +862,14 @@ describe("ApiStatusRuntime", () => {
       });
 
       expect(incidentCreates).toHaveLength(1);
-      expect(incidentMessage.edit).toHaveBeenCalledTimes(1);
+      expect(incidentMessage!.edit).toHaveBeenCalled();
     } finally {
-      if (!incidentSendReleased) {
-        incidentSendReleased = true;
-        blockedIncidentSend.resolve(createManagedMessage("elastic-cleanup", "channel-1") as unknown as Message);
+      const summaryMessage =
+        channel.__sentMessages.find((message) => message.embeds[0]?.footer?.text?.includes("NormJS Status Summary")) ??
+        createManagedMessage("elastic-cleanup-summary", "channel-1", "NormJS Status Summary | Page 1");
+      if (!summaryEditReleased) {
+        summaryEditReleased = true;
+        blockedSummaryEdit.resolve(summaryMessage as unknown as Message);
       }
       await runtime.dispose();
     }
