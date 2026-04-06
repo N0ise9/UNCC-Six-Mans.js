@@ -10,6 +10,7 @@ interface ScheduledTask<T> {
   id: number;
   label: string;
   maxRetries: number;
+  onRateLimit?: (details: { global: boolean; retryAfterMs: number }) => void;
   priority: TaskPriority;
   rateLimitKey?: string;
   reject: (reason?: unknown) => void;
@@ -49,6 +50,7 @@ export class DiscordWorkScheduler {
       dedupeKey?: string;
       label?: string;
       maxRetries?: number;
+      onRateLimit?: (details: { global: boolean; retryAfterMs: number }) => void;
       priority?: TaskPriority;
       rateLimitKey?: string;
       shouldRun?: () => boolean;
@@ -64,6 +66,7 @@ export class DiscordWorkScheduler {
         id: this.nextTaskId++,
         label: options?.label ?? "discord-task",
         maxRetries: options?.maxRetries ?? 3,
+        onRateLimit: options?.onRateLimit,
         priority: options?.priority ?? "normal",
         rateLimitKey: options?.rateLimitKey,
         reject,
@@ -99,6 +102,7 @@ export class DiscordWorkScheduler {
         this.pausedUntilByLane.set(task.rateLimitKey, Math.max(this.getLanePause(task.rateLimitKey), resumeAt));
       }
       task.attempts += 1;
+      task.onRateLimit?.(retry);
       this.queue.unshift(task);
       console.warn(`[DiscordWorkScheduler] ${task.label} rate limited; retrying in ${retry.retryAfterMs}ms`);
       this.pump();

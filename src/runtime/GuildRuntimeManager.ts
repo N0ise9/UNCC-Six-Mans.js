@@ -57,11 +57,15 @@ type QueueRender = {
 type PostCommitEffect = () => Promise<void> | void;
 
 type RenderCoordinator = {
-  dirty: boolean;
-  editBudgetTimestamps: number[];
-  inFlight: boolean;
-  nextAllowedRenderAt: number;
-  render: (() => Promise<void>) | null;
+  lastSuccessfulFingerprint: string | null;
+  lastSuccessfulRenderAt: number | null;
+  lastSuccessfulVersion: number;
+  latestFingerprint: string | null;
+  latestVersion: number;
+  nextDispatchId: number;
+  pendingDispatchId: number | null;
+  pendingVersion: number | null;
+  render: ((version: number, dispatchId: number) => Promise<boolean>) | null;
   scheduledTimer: NodeJS.Timeout | null;
 };
 
@@ -100,12 +104,12 @@ class GuildRuntimeInitializationError extends Error {
 }
 
 export class GuildRuntimeManager {
-  private static readonly HOT_SURFACE_EDIT_BUDGET_MAX_EDITS = 4;
-  private static readonly HOT_SURFACE_EDIT_BUDGET_WINDOW_MS = 5000;
+  private static readonly HOT_SURFACE_RENDER_INTERVAL_MS = 2000;
 
   private readonly contexts = new Map<string, GuildContext>();
   private readonly contextLoads = new Map<string, Promise<GuildContext | null>>();
   private readonly queueTimers = new Map<string, NodeJS.Timeout>();
+  private readonly queueMessageCreates = new Map<string, Promise<Message | undefined>>();
   private readonly renderCoordinators = new Map<string, RenderCoordinator>();
 
   constructor(
@@ -129,6 +133,7 @@ export class GuildRuntimeManager {
       }
     }
     this.renderCoordinators.clear();
+    this.queueMessageCreates.clear();
     this.contextLoads.clear();
 
     for (const context of this.contexts.values()) {
@@ -668,11 +673,8 @@ export class GuildRuntimeManager {
       this.queueTimers.delete(guildId);
     }
 
-    const queueRenderCoordinator = this.renderCoordinators.get(this.getQueueRenderKey(guildId));
-    if (queueRenderCoordinator?.scheduledTimer) {
-      clearTimeout(queueRenderCoordinator.scheduledTimer);
-    }
-    this.renderCoordinators.delete(this.getQueueRenderKey(guildId));
+    this.cancelRenderCoordinatorsForGuild(guildId);
+    this.queueMessageCreates.delete(guildId);
 
     const existing = this.contexts.get(guildId);
     if (!existing) {
@@ -918,7 +920,7 @@ export class GuildRuntimeManager {
     if (brokenQueueVotes >= 4) {
       context.surfaceRegistry.close(message.id, "match");
       await context.repositories.activeMatch.removeAllPlayersInActiveMatch(interaction.user.id);
-      postCommitEffects.push(() => this.deleteMatchSurface(message));
+      postCommitEffects.push(() => this.deleteMatchSurface(context, message));
       return {
         reason: "broken queue vote reached threshold and cancelled the match",
         status: "processed",
@@ -1019,7 +1021,7 @@ export class GuildRuntimeManager {
     const reportResolution = await checkReport(context, team, interaction.user.id);
     if (reportResolution.kind === "confirm") {
       context.surfaceRegistry.close(message.id, "match");
-      postCommitEffects.push(() => this.deleteMatchSurface(message));
+      postCommitEffects.push(() => this.deleteMatchSurface(context, message));
       postCommitEffects.push(() => this.refreshLeaderboard(context));
       return {
         reason: `confirmed ${team === Team.Blue ? "blue" : "orange"} team match result`,
@@ -1111,25 +1113,26 @@ export class GuildRuntimeManager {
     payload: Parameters<Message["edit"]>[0],
     revision: number
   ): void {
-    this.requestCollapsedRender(this.getMatchRenderKey(message.id), async () => {
-      await this.scheduler.enqueue(async () => await message.edit(payload), {
+    const key = this.getMatchRenderKey(context.guildId, message.id);
+    const fingerprint = fingerprintDiscordPayload(payload);
+    this.requestCollapsedRender(key, fingerprint, async (version, dispatchId) => {
+      const edited = await this.scheduler.enqueue(async () => await message.edit(payload), {
         coalesce: "replace",
         dedupeKey: `message-edit:${message.id}`,
         label: "match-edit",
+        onRateLimit: ({ global, retryAfterMs }) =>
+          this.handleHotSurfaceRateLimit(key, version, dispatchId, retryAfterMs, global),
         priority: "normal",
         rateLimitKey: getMessageEditLane(message.id),
-        shouldRun: () => context.surfaceRegistry.hasRevision(message.id, revision),
+        shouldRun: () =>
+          context.surfaceRegistry.hasRevision(message.id, revision) && this.isRenderVersionCurrent(key, version),
       });
+      return edited !== undefined;
     });
   }
 
-  private async deleteMatchSurface(message: Message): Promise<void> {
-    const coordinatorKey = this.getMatchRenderKey(message.id);
-    const coordinator = this.renderCoordinators.get(coordinatorKey);
-    if (coordinator?.scheduledTimer) {
-      clearTimeout(coordinator.scheduledTimer);
-    }
-    this.renderCoordinators.delete(coordinatorKey);
+  private async deleteMatchSurface(context: GuildContext, message: Message): Promise<void> {
+    this.cancelCollapsedRender(this.getMatchRenderKey(context.guildId, message.id));
 
     await this.scheduler.enqueue(async () => await message.delete(), {
       coalesce: "replace",
@@ -1140,19 +1143,24 @@ export class GuildRuntimeManager {
     });
   }
 
-  private getMatchRenderKey(messageId: string): string {
-    return `match:${messageId}`;
+  private getMatchRenderKey(guildId: string, messageId: string): string {
+    return `match:${guildId}:${messageId}`;
   }
 
   private getQueueRenderKey(guildId: string): string {
     return `queue:${guildId}`;
   }
 
-  private requestCollapsedRender(key: string, render: () => Promise<void>): void {
+  private requestCollapsedRender(
+    key: string,
+    fingerprint: string,
+    render: (version: number, dispatchId: number) => Promise<boolean>
+  ): void {
     const coordinator = this.getOrCreateRenderCoordinator(key);
+    coordinator.latestVersion += 1;
+    coordinator.latestFingerprint = fingerprint;
     coordinator.render = render;
-    coordinator.dirty = true;
-    this.maybeScheduleLatestRender(key);
+    this.armCollapsedRender(key);
   }
 
   private getOrCreateRenderCoordinator(key: string): RenderCoordinator {
@@ -1162,10 +1170,14 @@ export class GuildRuntimeManager {
     }
 
     const created: RenderCoordinator = {
-      dirty: false,
-      editBudgetTimestamps: [],
-      inFlight: false,
-      nextAllowedRenderAt: 0,
+      lastSuccessfulFingerprint: null,
+      lastSuccessfulRenderAt: null,
+      lastSuccessfulVersion: 0,
+      latestFingerprint: null,
+      latestVersion: 0,
+      nextDispatchId: 1,
+      pendingDispatchId: null,
+      pendingVersion: null,
       render: null,
       scheduledTimer: null,
     };
@@ -1173,15 +1185,55 @@ export class GuildRuntimeManager {
     return created;
   }
 
-  private scheduleRender(key: string, delayMs: number): void {
+  private armCollapsedRender(key: string): void {
     const coordinator = this.renderCoordinators.get(key);
     if (!coordinator) {
       return;
     }
 
-    if (coordinator.scheduledTimer) {
-      clearTimeout(coordinator.scheduledTimer);
+    if (!coordinator.render) {
+      return;
     }
+
+    if (coordinator.pendingDispatchId !== null || coordinator.latestVersion <= coordinator.lastSuccessfulVersion) {
+      this.clearScheduledRender(coordinator);
+      this.cleanupRenderCoordinator(key);
+      return;
+    }
+
+    if (
+      coordinator.latestFingerprint !== null &&
+      coordinator.latestFingerprint === coordinator.lastSuccessfulFingerprint
+    ) {
+      if (coordinator.latestVersion > coordinator.lastSuccessfulVersion) {
+        console.info(`[${key}] Skipped hot-surface render; payload matches the last successful render.`);
+        coordinator.lastSuccessfulVersion = coordinator.latestVersion;
+      }
+
+      this.clearScheduledRender(coordinator);
+      this.cleanupRenderCoordinator(key);
+      return;
+    }
+
+    const nextAllowedRenderAt =
+      coordinator.lastSuccessfulRenderAt === null
+        ? 0
+        : coordinator.lastSuccessfulRenderAt + GuildRuntimeManager.HOT_SURFACE_RENDER_INTERVAL_MS;
+    if (nextAllowedRenderAt <= Date.now()) {
+      this.dispatchCollapsedRender(key);
+      return;
+    }
+
+    this.scheduleRenderAt(key, nextAllowedRenderAt);
+  }
+
+  private scheduleRenderAt(key: string, runAt: number): void {
+    const coordinator = this.renderCoordinators.get(key);
+    if (!coordinator) {
+      return;
+    }
+
+    this.clearScheduledRender(coordinator);
 
     coordinator.scheduledTimer = setTimeout(() => {
       const currentCoordinator = this.renderCoordinators.get(key);
@@ -1190,78 +1242,129 @@ export class GuildRuntimeManager {
       }
 
       currentCoordinator.scheduledTimer = null;
-      this.maybeScheduleLatestRender(key);
-    }, delayMs);
+      this.dispatchCollapsedRender(key);
+    }, Math.max(0, runAt - Date.now()));
     coordinator.scheduledTimer.unref?.();
   }
 
-  private maybeScheduleLatestRender(key: string): void {
+  private dispatchCollapsedRender(key: string): void {
     const coordinator = this.renderCoordinators.get(key);
-    if (!coordinator || !coordinator.dirty || !coordinator.render) {
+    if (!coordinator) {
+      return;
+    }
+
+    this.clearScheduledRender(coordinator);
+
+    if (!coordinator.render || coordinator.pendingDispatchId !== null) {
       this.cleanupRenderCoordinator(key);
       return;
     }
 
-    if (coordinator.inFlight) {
+    if (coordinator.latestVersion <= coordinator.lastSuccessfulVersion) {
+      this.cleanupRenderCoordinator(key);
       return;
     }
 
-    const now = Date.now();
-    const readyAt = this.getEditBudgetReadyAt(coordinator, now);
-    coordinator.nextAllowedRenderAt = readyAt;
-    if (readyAt > now) {
-      this.scheduleRender(key, readyAt - now);
+    if (
+      coordinator.latestFingerprint !== null &&
+      coordinator.latestFingerprint === coordinator.lastSuccessfulFingerprint
+    ) {
+      console.info(`[${key}] Skipped hot-surface render; payload matches the last successful render.`);
+      coordinator.lastSuccessfulVersion = coordinator.latestVersion;
+      this.cleanupRenderCoordinator(key);
       return;
     }
 
-    this.startLatestRender(key);
-  }
-
-  private startLatestRender(key: string): void {
-    const coordinator = this.renderCoordinators.get(key);
-    if (!coordinator || coordinator.inFlight || !coordinator.render || !coordinator.dirty) {
+    const nextAllowedRenderAt =
+      coordinator.lastSuccessfulRenderAt === null
+        ? 0
+        : coordinator.lastSuccessfulRenderAt + GuildRuntimeManager.HOT_SURFACE_RENDER_INTERVAL_MS;
+    if (nextAllowedRenderAt > Date.now()) {
+      this.scheduleRenderAt(key, nextAllowedRenderAt);
       return;
     }
 
-    const now = Date.now();
-    const readyAt = this.getEditBudgetReadyAt(coordinator, now);
-    coordinator.nextAllowedRenderAt = readyAt;
-    if (readyAt > now) {
-      this.scheduleRender(key, readyAt - now);
-      return;
-    }
-
-    coordinator.inFlight = true;
-    coordinator.nextAllowedRenderAt = now;
-    coordinator.editBudgetTimestamps = this.pruneEditBudgetTimestamps(
-      [...coordinator.editBudgetTimestamps, now],
-      now
-    );
-    if (coordinator.scheduledTimer) {
-      clearTimeout(coordinator.scheduledTimer);
-      coordinator.scheduledTimer = null;
-    }
+    const version = coordinator.latestVersion;
+    const fingerprint = coordinator.latestFingerprint;
+    const dispatchId = coordinator.nextDispatchId++;
     const render = coordinator.render;
-    coordinator.dirty = false;
+    coordinator.pendingDispatchId = dispatchId;
+    coordinator.pendingVersion = version;
 
-    void render()
-      .catch((error) => {
-        console.error(`[${key}] Failed to flush Discord surface render:`, error);
-      })
-      .finally(() => {
+    void render(version, dispatchId)
+      .then((didRender) => {
         const currentCoordinator = this.renderCoordinators.get(key);
         if (!currentCoordinator) {
           return;
         }
 
-        currentCoordinator.inFlight = false;
-        if (currentCoordinator.dirty) {
-          this.maybeScheduleLatestRender(key);
+        if (currentCoordinator.pendingDispatchId === dispatchId) {
+          currentCoordinator.pendingDispatchId = null;
+          currentCoordinator.pendingVersion = null;
+        }
+
+        if (!didRender) {
+          if (currentCoordinator.latestVersion > version) {
+            console.info(
+              `[${key}] Superseded hot-surface render v${version} with newer v${currentCoordinator.latestVersion}.`
+            );
+          } else {
+            console.info(`[${key}] Hot-surface render v${version} resolved without applying a visible edit.`);
+          }
+          this.armCollapsedRender(key);
           return;
         }
 
-        this.cleanupRenderCoordinator(key);
+        currentCoordinator.lastSuccessfulFingerprint = fingerprint;
+        currentCoordinator.lastSuccessfulRenderAt = Date.now();
+        currentCoordinator.lastSuccessfulVersion = version;
+        this.armCollapsedRender(key);
+      })
+      .catch((error) => {
+        const currentCoordinator = this.renderCoordinators.get(key);
+        if (currentCoordinator?.pendingDispatchId === dispatchId) {
+          currentCoordinator.pendingDispatchId = null;
+          currentCoordinator.pendingVersion = null;
+        }
+        console.error(`[${key}] Failed to flush Discord surface render:`, error);
+        this.armCollapsedRender(key);
       });
+  }
+
+  private clearScheduledRender(coordinator: RenderCoordinator): void {
+    if (!coordinator.scheduledTimer) {
+      return;
+    }
+
+    clearTimeout(coordinator.scheduledTimer);
+    coordinator.scheduledTimer = null;
+  }
+
+  private isRenderVersionCurrent(key: string, version: number): boolean {
+    const coordinator = this.renderCoordinators.get(key);
+    return coordinator?.latestVersion === version;
+  }
+
+  private handleHotSurfaceRateLimit(
+    key: string,
+    version: number,
+    dispatchId: number,
+    retryAfterMs: number,
+    global: boolean
+  ): void {
+    const coordinator = this.renderCoordinators.get(key);
+    if (!coordinator || coordinator.pendingDispatchId !== dispatchId) {
+      return;
+    }
+
+    coordinator.pendingDispatchId = null;
+    coordinator.pendingVersion = null;
+    console.warn(
+      `[${key}] Hot-surface render v${version} rate limited for ${retryAfterMs}ms${global ? " (global)" : ""}.`
+    );
+    if (coordinator.latestVersion > version) {
+      this.armCollapsedRender(key);
+    }
   }
 
   private cleanupRenderCoordinator(key: string): void {
@@ -1270,30 +1373,34 @@ export class GuildRuntimeManager {
       return;
     }
 
-    coordinator.editBudgetTimestamps = this.pruneEditBudgetTimestamps(coordinator.editBudgetTimestamps, Date.now());
-    if (coordinator.inFlight || coordinator.dirty || coordinator.scheduledTimer) {
+    if (
+      coordinator.scheduledTimer ||
+      coordinator.pendingDispatchId !== null ||
+      coordinator.latestVersion > coordinator.lastSuccessfulVersion ||
+      coordinator.lastSuccessfulRenderAt !== null
+    ) {
       return;
     }
-
-    if (coordinator.editBudgetTimestamps.length > 0) {
-      return;
-    }
-
     this.renderCoordinators.delete(key);
   }
 
-  private getEditBudgetReadyAt(coordinator: RenderCoordinator, now: number): number {
-    coordinator.editBudgetTimestamps = this.pruneEditBudgetTimestamps(coordinator.editBudgetTimestamps, now);
-    if (coordinator.editBudgetTimestamps.length < GuildRuntimeManager.HOT_SURFACE_EDIT_BUDGET_MAX_EDITS) {
-      return now;
+  private cancelCollapsedRender(key: string): void {
+    const coordinator = this.renderCoordinators.get(key);
+    if (coordinator) {
+      this.clearScheduledRender(coordinator);
     }
-
-    return coordinator.editBudgetTimestamps[0]! + GuildRuntimeManager.HOT_SURFACE_EDIT_BUDGET_WINDOW_MS;
+    this.renderCoordinators.delete(key);
   }
 
-  private pruneEditBudgetTimestamps(timestamps: number[], now: number): number[] {
-    const cutoff = now - GuildRuntimeManager.HOT_SURFACE_EDIT_BUDGET_WINDOW_MS;
-    return timestamps.filter((timestamp) => timestamp > cutoff);
+  private cancelRenderCoordinatorsForGuild(guildId: string): void {
+    const queueKey = this.getQueueRenderKey(guildId);
+    this.cancelCollapsedRender(queueKey);
+
+    for (const key of this.renderCoordinators.keys()) {
+      if (key.startsWith(`match:${guildId}:`)) {
+        this.cancelCollapsedRender(key);
+      }
+    }
   }
 
   private async refreshLeaderboard(context: GuildContext): Promise<void> {
@@ -1319,49 +1426,104 @@ export class GuildRuntimeManager {
   ): Promise<void> {
     const render = await buildQueueRender(context, cachedPlayers);
     const existingQueueMessage = context.queueMessage;
-    const revision = existingQueueMessage
-      ? context.surfaceRegistry.upsert(existingQueueMessage.id, "queue", render.surface)
-      : null;
+    if (!existingQueueMessage) {
+      await this.ensureQueueMessage(context, render);
+      return;
+    }
 
-    this.requestCollapsedRender(this.getQueueRenderKey(context.guildId), async () => {
-      if (!context.queueMessage) {
-        const queueMessage = await this.scheduler.enqueue(
-          async () => await context.channels.queueChannel.send(render.view),
-          {
-            label: "queue-message-create",
-            priority: "normal",
-            rateLimitKey: getChannelSendLane(context.channels.queueChannel.id),
-          }
-        );
-
-        if (!queueMessage) {
-          throw new Error(`Failed to create queue message for guild ${context.guildId}.`);
-        }
-
-        context.queueMessage = queueMessage;
-        context.config = context.configStore.updateGuildRuntimeFields(context.guildId, {
-          queueMessageId: queueMessage.id,
-        });
-        context.surfaceRegistry.upsert(queueMessage.id, "queue", render.surface);
-        return;
+    const revision = context.surfaceRegistry.upsert(existingQueueMessage.id, "queue", render.surface);
+    const expectedMessageId = existingQueueMessage.id;
+    const key = this.getQueueRenderKey(context.guildId);
+    const fingerprint = fingerprintDiscordPayload(render.view);
+    this.requestCollapsedRender(key, fingerprint, async (version, dispatchId) => {
+      const currentQueueMessage = context.queueMessage;
+      if (!currentQueueMessage) {
+        await this.ensureQueueMessage(context, render);
+        return false;
       }
 
-      const currentQueueMessage = context.queueMessage;
       const currentMessageId = currentQueueMessage.id;
       const currentRevision =
-        existingQueueMessage && existingQueueMessage.id === currentMessageId && revision !== null
+        expectedMessageId === currentMessageId
           ? revision
           : context.surfaceRegistry.upsert(currentMessageId, "queue", render.surface);
 
-      await this.scheduler.enqueue(async () => await currentQueueMessage.edit(render.view), {
+      const edited = await this.scheduler.enqueue(async () => await currentQueueMessage.edit(render.view), {
         coalesce: "replace",
         dedupeKey: `message-edit:${currentMessageId}`,
         label: "queue-message-edit",
+        onRateLimit: ({ global, retryAfterMs }) =>
+          this.handleHotSurfaceRateLimit(key, version, dispatchId, retryAfterMs, global),
         priority: "normal",
         rateLimitKey: getMessageEditLane(currentMessageId),
-        shouldRun: () => context.surfaceRegistry.hasRevision(currentMessageId, currentRevision),
+        shouldRun: () =>
+          context.surfaceRegistry.hasRevision(currentMessageId, currentRevision) &&
+          this.isRenderVersionCurrent(key, version),
       });
+      return edited !== undefined;
     });
+  }
+
+  private async ensureQueueMessage(context: GuildContext, render: QueueRender): Promise<void> {
+    if (context.queueMessage) {
+      return;
+    }
+
+    const existingCreate = this.queueMessageCreates.get(context.guildId);
+    if (existingCreate) {
+      await existingCreate;
+      const currentQueueMessage = context.queueMessage as Message | null;
+      if (currentQueueMessage) {
+        const currentRevision = context.surfaceRegistry.upsert(currentQueueMessage.id, "queue", render.surface);
+        const key = this.getQueueRenderKey(context.guildId);
+        const fingerprint = fingerprintDiscordPayload(render.view);
+        this.requestCollapsedRender(key, fingerprint, async (version, dispatchId) => {
+          const latestQueueMessage = context.queueMessage as Message | null;
+          if (!latestQueueMessage) {
+            return false;
+          }
+
+          const edited = await this.scheduler.enqueue(async () => await latestQueueMessage.edit(render.view), {
+            coalesce: "replace",
+            dedupeKey: `message-edit:${latestQueueMessage.id}`,
+            label: "queue-message-edit",
+            onRateLimit: ({ global, retryAfterMs }) =>
+              this.handleHotSurfaceRateLimit(key, version, dispatchId, retryAfterMs, global),
+            priority: "normal",
+            rateLimitKey: getMessageEditLane(latestQueueMessage.id),
+            shouldRun: () =>
+              context.surfaceRegistry.hasRevision(latestQueueMessage.id, currentRevision) &&
+              this.isRenderVersionCurrent(key, version),
+          });
+          return edited !== undefined;
+        });
+      }
+      return;
+    }
+
+    const createPromise = this.scheduler.enqueue(async () => await context.channels.queueChannel.send(render.view), {
+      label: "queue-message-create",
+      priority: "normal",
+      rateLimitKey: getChannelSendLane(context.channels.queueChannel.id),
+    });
+    this.queueMessageCreates.set(context.guildId, createPromise);
+
+    try {
+      const queueMessage = await createPromise;
+      if (!queueMessage) {
+        throw new Error(`Failed to create queue message for guild ${context.guildId}.`);
+      }
+
+      context.queueMessage = queueMessage;
+      context.config = context.configStore.updateGuildRuntimeFields(context.guildId, {
+        queueMessageId: queueMessage.id,
+      });
+      context.surfaceRegistry.upsert(queueMessage.id, "queue", render.surface);
+    } finally {
+      if (this.queueMessageCreates.get(context.guildId) === createPromise) {
+        this.queueMessageCreates.delete(context.guildId);
+      }
+    }
   }
 
   private startQueueTimer(context: GuildContext): void {
@@ -1431,6 +1593,39 @@ function getMessageEditLane(messageId: string): string {
 
 function getMessageReplyLane(message: Message): string {
   return `channel:${message.channelId}:reply`;
+}
+
+function fingerprintDiscordPayload(payload: unknown): string {
+  return JSON.stringify(normalizeDiscordPayload(payload));
+}
+
+function normalizeDiscordPayload(payload: unknown): unknown {
+  if (payload === null || payload === undefined) {
+    return payload;
+  }
+
+  if (typeof payload !== "object") {
+    return payload;
+  }
+
+  if (typeof payload === "object" && "toJSON" in payload && typeof payload.toJSON === "function") {
+    return normalizeDiscordPayload(payload.toJSON());
+  }
+
+  if (Array.isArray(payload)) {
+    return payload.map((entry) => normalizeDiscordPayload(entry));
+  }
+
+  const normalized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload).sort(([left], [right]) => left.localeCompare(right))) {
+    if (value === undefined || typeof value === "function") {
+      continue;
+    }
+
+    normalized[key] = normalizeDiscordPayload(value);
+  }
+
+  return normalized;
 }
 
 function formatInteractionAuditTimestamp(now = DateTime.now()): string {
