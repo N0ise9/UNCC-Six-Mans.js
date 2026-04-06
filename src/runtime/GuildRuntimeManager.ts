@@ -313,7 +313,7 @@ export class GuildRuntimeManager {
         logInteractionAudit({
           action: "/norm",
           guildId: interaction.guildId,
-          reason: "forwarded to Norm handler",
+          reason: "OpenAI",
           status: "processed",
           username: interaction.user.username,
         });
@@ -990,8 +990,7 @@ export class GuildRuntimeManager {
 
     postCommitEffects.push(() => this.refreshQueueSurface(context));
     return {
-      reason:
-        customId === ButtonCustomID.ChooseTeam ? "recorded captains vote" : "recorded random teams vote",
+      reason: customId === ButtonCustomID.ChooseTeam ? "recorded captains vote" : "recorded random teams vote",
       status: "processed",
     };
   }
@@ -1235,15 +1234,18 @@ export class GuildRuntimeManager {
 
     this.clearScheduledRender(coordinator);
 
-    coordinator.scheduledTimer = setTimeout(() => {
-      const currentCoordinator = this.renderCoordinators.get(key);
-      if (!currentCoordinator) {
-        return;
-      }
+    coordinator.scheduledTimer = setTimeout(
+      () => {
+        const currentCoordinator = this.renderCoordinators.get(key);
+        if (!currentCoordinator) {
+          return;
+        }
 
-      currentCoordinator.scheduledTimer = null;
-      this.dispatchCollapsedRender(key);
-    }, Math.max(0, runAt - Date.now()));
+        currentCoordinator.scheduledTimer = null;
+        this.dispatchCollapsedRender(key);
+      },
+      Math.max(0, runAt - Date.now())
+    );
     coordinator.scheduledTimer.unref?.();
   }
 

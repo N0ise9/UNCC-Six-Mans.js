@@ -63,18 +63,16 @@ describe("GuildRuntimeManager", () => {
     const configStore = {
       getGuildConfigResults: jest.fn(() => configs),
     } as unknown as GuildConfigStore;
-    const manager = new GuildRuntimeManager(
-      {} as Client,
-      {} as OpenAI,
-      configStore,
-      new DiscordWorkScheduler(1, 0)
-    );
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
     const loadedContext = createContext("guild-2");
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => undefined);
 
     try {
       jest
-        .spyOn(manager as unknown as { createContext: (config: GuildInstanceConfig) => Promise<GuildContext> }, "createContext")
+        .spyOn(
+          manager as unknown as { createContext: (config: GuildInstanceConfig) => Promise<GuildContext> },
+          "createContext"
+        )
         .mockRejectedValueOnce(new Error("database unavailable"))
         .mockResolvedValueOnce(loadedContext);
       jest
@@ -84,12 +82,10 @@ describe("GuildRuntimeManager", () => {
       await manager.initializeConfiguredGuilds();
 
       expect(errorSpy).toHaveBeenCalledTimes(1);
-      expect(
-        (manager as unknown as { contexts: Map<string, GuildContext> }).contexts.get("guild-1")
-      ).toBeUndefined();
-      expect(
-        (manager as unknown as { contexts: Map<string, GuildContext> }).contexts.get("guild-2")
-      ).toBe(loadedContext);
+      expect((manager as unknown as { contexts: Map<string, GuildContext> }).contexts.get("guild-1")).toBeUndefined();
+      expect((manager as unknown as { contexts: Map<string, GuildContext> }).contexts.get("guild-2")).toBe(
+        loadedContext
+      );
     } finally {
       errorSpy.mockRestore();
       await manager.dispose();
@@ -108,19 +104,16 @@ describe("GuildRuntimeManager", () => {
         createConfigResult("guild-2"),
       ]),
     } as unknown as GuildConfigStore;
-    const manager = new GuildRuntimeManager(
-      {} as Client,
-      {} as OpenAI,
-      configStore,
-      new DiscordWorkScheduler(1, 0)
-    );
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => undefined);
     const loadedContext = createContext("guild-2");
 
     try {
       jest
         .spyOn(
-          manager as unknown as { loadContext: (config: GuildInstanceConfig) => Promise<{ context: GuildContext | null }> },
+          manager as unknown as {
+            loadContext: (config: GuildInstanceConfig) => Promise<{ context: GuildContext | null }>;
+          },
           "loadContext"
         )
         .mockResolvedValue({
@@ -130,9 +123,7 @@ describe("GuildRuntimeManager", () => {
       await manager.initializeConfiguredGuilds();
 
       expect(errorSpy).toHaveBeenCalledTimes(1);
-      expect(
-        (manager as unknown as { contexts: Map<string, GuildContext> }).contexts.get("guild-2")
-      ).toBeUndefined();
+      expect((manager as unknown as { contexts: Map<string, GuildContext> }).contexts.get("guild-2")).toBeUndefined();
       expect(
         (
           manager as unknown as {
@@ -150,12 +141,7 @@ describe("GuildRuntimeManager", () => {
     const configStore = {
       updateGuildRuntimeFields: jest.fn(),
     } as unknown as GuildConfigStore;
-    const manager = new GuildRuntimeManager(
-      {} as Client,
-      {} as OpenAI,
-      configStore,
-      new DiscordWorkScheduler(1, 0)
-    );
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
     const warningSpy = jest.spyOn(console, "warn").mockImplementation(() => undefined);
     const queueChannel = {
       messages: {
@@ -191,12 +177,7 @@ describe("GuildRuntimeManager", () => {
     const configStore = {
       updateGuildRuntimeFields: jest.fn(),
     } as unknown as GuildConfigStore;
-    const manager = new GuildRuntimeManager(
-      {} as Client,
-      {} as OpenAI,
-      configStore,
-      new DiscordWorkScheduler(1, 0)
-    );
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
     const warningSpy = jest.spyOn(console, "warn").mockImplementation(() => undefined);
     const keptMessage = { id: "leaderboard-message-1" } as Message;
     const leaderboardChannel = {
@@ -242,12 +223,7 @@ describe("GuildRuntimeManager", () => {
         guildId: "guild-1",
       })),
     } as unknown as GuildConfigStore;
-    const manager = new GuildRuntimeManager(
-      {} as Client,
-      {} as OpenAI,
-      configStore,
-      new DiscordWorkScheduler(1, 0)
-    );
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => undefined);
 
     try {
@@ -362,10 +338,7 @@ describe("GuildRuntimeManager", () => {
     const refreshQueueSurfaceSpy = jest
       .spyOn(
         manager as unknown as {
-          refreshQueueSurface: (
-            guildContext: GuildContext,
-            players?: typeof queuedPlayers
-          ) => Promise<void>;
+          refreshQueueSurface: (guildContext: GuildContext, players?: typeof queuedPlayers) => Promise<void>;
         },
         "refreshQueueSurface"
       )
@@ -463,9 +436,7 @@ describe("GuildRuntimeManager", () => {
         username: "Destroyer",
       },
     } as unknown as Parameters<GuildRuntimeManager["handleSlashCommand"]>[0];
-    const handlerSpy = jest
-      .spyOn(EasterEggsController, "handleEasterEggSlashInteraction")
-      .mockResolvedValue(undefined);
+    const handlerSpy = jest.spyOn(EasterEggsController, "handleEasterEggSlashInteraction").mockResolvedValue(undefined);
     const infoSpy = jest.spyOn(console, "info").mockImplementation(() => undefined);
 
     try {
@@ -475,9 +446,7 @@ describe("GuildRuntimeManager", () => {
 
       expect(interaction.deferReply).toHaveBeenCalledTimes(1);
       expect(handlerSpy).toHaveBeenCalledWith(context, interaction);
-      expect(infoSpy).toHaveBeenCalledWith(
-        expect.stringContaining("Destroyer | /norm | PROCESSED | forwarded to Norm handler")
-      );
+      expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("Destroyer | /norm | PROCESSED | OpenAI"));
     } finally {
       infoSpy.mockRestore();
       handlerSpy.mockRestore();
@@ -515,7 +484,7 @@ describe("GuildRuntimeManager", () => {
     expect(interaction.editReply).toHaveBeenCalledWith(
       "What do you think you're doing? Trying to run an admin command when you're not a Bot Admin. Typical."
     );
-    expect((prismaStudioManager.launchForGuild as jest.Mock)).not.toHaveBeenCalled();
+    expect(prismaStudioManager.launchForGuild as jest.Mock).not.toHaveBeenCalled();
   });
 
   it("launches Prisma Studio for the configured guild database without leaking the URL in Discord", async () => {
@@ -555,9 +524,9 @@ describe("GuildRuntimeManager", () => {
 
     await manager.handlePrismaCommand(interaction);
 
-    expect((prismaStudioAccessGate.authorize as jest.Mock)).toHaveBeenCalledWith("secret");
-    expect((prismaStudioAccessGate.recordSuccessfulLaunch as jest.Mock)).toHaveBeenCalledTimes(1);
-    expect((prismaStudioManager.launchForGuild as jest.Mock)).toHaveBeenCalledWith(createConfig("guild-1"));
+    expect(prismaStudioAccessGate.authorize as jest.Mock).toHaveBeenCalledWith("secret");
+    expect(prismaStudioAccessGate.recordSuccessfulLaunch as jest.Mock).toHaveBeenCalledTimes(1);
+    expect(prismaStudioManager.launchForGuild as jest.Mock).toHaveBeenCalledWith(createConfig("guild-1"));
     expect(interaction.editReply).toHaveBeenCalledWith("Prisma Studio was launched on the host machine.");
     expect(interaction.editReply).not.toHaveBeenCalledWith(expect.stringContaining("postgresql://"));
   });
@@ -604,7 +573,7 @@ describe("GuildRuntimeManager", () => {
     await manager.handlePrismaCommand(interaction);
 
     expect(interaction.editReply).toHaveBeenCalledWith("Prisma Studio request was rejected.");
-    expect((prismaStudioManager.launchForGuild as jest.Mock)).not.toHaveBeenCalled();
-    expect((prismaStudioAccessGate.recordSuccessfulLaunch as jest.Mock)).not.toHaveBeenCalled();
+    expect(prismaStudioManager.launchForGuild as jest.Mock).not.toHaveBeenCalled();
+    expect(prismaStudioAccessGate.recordSuccessfulLaunch as jest.Mock).not.toHaveBeenCalled();
   });
 });
