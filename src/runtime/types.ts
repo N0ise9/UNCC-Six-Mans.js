@@ -57,7 +57,7 @@ export interface GuildInstanceConfig {
 
 export interface GuildConfigUpsertInput {
   apiStatusChannelId?: string;
-  chatChannelId: string;
+  chatChannelId?: string;
   databaseUrl: string;
   guildId: string;
   leaderboardChannelId: string;

@@ -430,6 +430,42 @@ describe("GuildRuntimeManager", () => {
     }
   });
 
+  it("allows first-time /setup set without a chat channel", async () => {
+    const configStore = {
+      getGuildConfigResult: jest.fn(() => null),
+      setGuildConfig: jest.fn(() => createConfig("guild-1")),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
+    const interaction = createSetupInteraction({
+      channels: {
+        leaderboard_channel: createTextChannel("guild-1-leaderboard-new"),
+        queue_channel: createTextChannel("guild-1-queue-new"),
+      },
+      strings: {
+        database_url: "postgres:///guild-1-new",
+      },
+    });
+    const reloadSpy = jest.spyOn(manager, "reloadContext").mockResolvedValue(null);
+
+    try {
+      await manager.handleSetupCommand(interaction);
+
+      expect(configStore.setGuildConfig).toHaveBeenCalledWith({
+        apiStatusChannelId: undefined,
+        chatChannelId: undefined,
+        databaseUrl: "postgres:///guild-1-new",
+        guildId: "guild-1",
+        leaderboardChannelId: "guild-1-leaderboard-new",
+        openAiConversationId: undefined,
+        queueChannelId: "guild-1-queue-new",
+      });
+      expect(interaction.editReply).toHaveBeenCalledWith("Guild configuration saved and runtime refreshed.");
+    } finally {
+      reloadSpy.mockRestore();
+      await manager.dispose();
+    }
+  });
+
   it("requires the missing core fields on first-time /setup set", async () => {
     const configStore = {
       getGuildConfigResult: jest.fn(() => null),
@@ -449,7 +485,7 @@ describe("GuildRuntimeManager", () => {
       expect(configStore.setGuildConfig).not.toHaveBeenCalled();
       expect(reloadSpy).not.toHaveBeenCalled();
       expect(interaction.editReply).toHaveBeenCalledWith(
-        "This guild is not configured yet. Provide these required options: queue_channel, chat_channel, database_url."
+        "This guild is not configured yet. Provide these required options: queue_channel, database_url."
       );
     } finally {
       reloadSpy.mockRestore();
@@ -640,7 +676,7 @@ describe("GuildRuntimeManager", () => {
       expect(configStore.setGuildConfig).not.toHaveBeenCalled();
       expect(reloadSpy).not.toHaveBeenCalled();
       expect(interaction.editReply).toHaveBeenCalledWith(
-        "This guild already has stored setup data, but I couldn't read it. Check CONFIG_ENCRYPTION_KEY and rerun /setup set with queue_channel, leaderboard_channel, chat_channel, and database_url."
+        "This guild already has stored setup data, but I couldn't read it. Check CONFIG_ENCRYPTION_KEY and rerun /setup set with queue_channel, leaderboard_channel, and database_url."
       );
     } finally {
       reloadSpy.mockRestore();

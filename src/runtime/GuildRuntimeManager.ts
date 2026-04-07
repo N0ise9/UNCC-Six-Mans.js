@@ -427,7 +427,7 @@ export class GuildRuntimeManager {
           await responder.edit(
             "This guild already has stored setup data, but I couldn't read it. " +
               "Check CONFIG_ENCRYPTION_KEY and rerun /setup set with queue_channel, " +
-              "leaderboard_channel, chat_channel, and database_url."
+              "leaderboard_channel, and database_url."
           );
           return;
         }
@@ -478,7 +478,7 @@ export class GuildRuntimeManager {
 
         const input: GuildConfigUpsertInput = {
           apiStatusChannelId: mergedInput.apiStatusChannelId,
-          chatChannelId: mergedInput.chatChannelId!,
+          chatChannelId: mergedInput.chatChannelId,
           databaseUrl: mergedInput.databaseUrl!,
           guildId: mergedInput.guildId,
           leaderboardChannelId: mergedInput.leaderboardChannelId!,
@@ -1681,9 +1681,6 @@ function getMissingRequiredSetupFields(input: SetupConfigMergeInput): string[] {
   }
   if (!input.leaderboardChannelId) {
     missingFields.push("leaderboard_channel");
-  }
-  if (!input.chatChannelId) {
-    missingFields.push("chat_channel");
   }
   if (!input.databaseUrl) {
     missingFields.push("database_url");

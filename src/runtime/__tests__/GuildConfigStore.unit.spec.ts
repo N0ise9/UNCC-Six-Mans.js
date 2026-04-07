@@ -58,6 +58,29 @@ describe("GuildConfigStore", () => {
     }
   });
 
+  it("stores and reads guild configs without a chat channel", () => {
+    const { filePath, store } = createStore();
+
+    try {
+      store.setGuildConfig({
+        databaseUrl: "postgres://user:pass@localhost:5432/guild_one",
+        guildId: "guild-1",
+        leaderboardChannelId: "leaderboard-1",
+        queueChannelId: "queue-1",
+      });
+
+      const config = store.getGuildConfig("guild-1");
+
+      expect(config).not.toBeNull();
+      expect(config?.chatChannelId).toBeUndefined();
+      expect(config?.databaseUrl).toBe("postgres://user:pass@localhost:5432/guild_one");
+      expect(config?.queueChannelId).toBe("queue-1");
+      expect(config?.enabled).toBe(true);
+    } finally {
+      cleanup(filePath);
+    }
+  });
+
   it("updates runtime fields and preserves guild isolation across multiple configs", () => {
     const { filePath, store } = createStore();
 
