@@ -114,7 +114,7 @@ class GuildRuntimeInitializationError extends Error {
 }
 
 export class GuildRuntimeManager {
-  private static readonly HOT_SURFACE_RENDER_INTERVAL_MS = 2000;
+  private static readonly HOT_SURFACE_RENDER_INTERVAL_MS = 1250;
 
   private readonly contexts = new Map<string, GuildContext>();
   private readonly contextLoads = new Map<string, Promise<GuildContext | null>>();
@@ -131,6 +131,33 @@ export class GuildRuntimeManager {
     private readonly prismaStudioManager: PrismaStudioManager = new PrismaStudioManager(),
     private readonly prismaStudioAccessGate: PrismaStudioAccessGate = new PrismaStudioAccessGate()
   ) {}
+
+  private formatGuildLogLabel(guildId: string, guildName?: string): string {
+    return formatGuildLogLabel(
+      guildId,
+      guildName ??
+        this.contexts.get(guildId)?.guildName ??
+        (this.client as Partial<Client>).guilds?.cache.get(guildId)?.name
+    );
+  }
+
+  private formatRenderLogLabel(key: string): string {
+    const [kind, guildId, messageId] = key.split(":");
+    if (!guildId) {
+      return key;
+    }
+
+    const guildLabel = this.formatGuildLogLabel(guildId);
+    if (kind === "queue") {
+      return `queue:${guildLabel}`;
+    }
+
+    if (kind === "match" && messageId) {
+      return `match:${guildLabel}:${messageId}`;
+    }
+
+    return key;
+  }
 
   async dispose(): Promise<void> {
     for (const timer of this.queueTimers.values()) {
@@ -170,7 +197,7 @@ export class GuildRuntimeManager {
 
     if (configResult.error) {
       console.error(
-        `[${guildId}] Failed to decrypt stored guild configuration. ` +
+        `[${this.formatGuildLogLabel(guildId)}] Failed to decrypt stored guild configuration. ` +
           "Check CONFIG_ENCRYPTION_KEY and config file integrity.",
         configResult.error
       );
@@ -229,6 +256,7 @@ export class GuildRuntimeManager {
           logInteractionAudit({
             action: "/norm",
             guildId: interaction.guildId,
+            guildName: interaction.guild?.name,
             reason: "stored guild configuration could not be decrypted",
             status: "ignored",
             username: interaction.user.username,
@@ -248,6 +276,7 @@ export class GuildRuntimeManager {
           logInteractionAudit({
             action: "/norm",
             guildId: interaction.guildId,
+            guildName: interaction.guild?.name,
             reason: "guild runtime is configured but failed to load",
             status: "ignored",
             username: interaction.user.username,
@@ -266,6 +295,7 @@ export class GuildRuntimeManager {
         logInteractionAudit({
           action: "/norm",
           guildId: interaction.guildId,
+          guildName: interaction.guild?.name,
           reason: "guild has not been configured yet",
           status: "ignored",
           username: interaction.user.username,
@@ -290,6 +320,7 @@ export class GuildRuntimeManager {
           logInteractionAudit({
             action: "/norm",
             guildId: interaction.guildId,
+            guildName: context.guildName,
             reason: "OpenAI chat channel is not configured",
             status: "ignored",
             username: interaction.user.username,
@@ -307,6 +338,7 @@ export class GuildRuntimeManager {
           logInteractionAudit({
             action: "/norm",
             guildId: interaction.guildId,
+            guildName: context.guildName,
             reason: `wrong channel; use ${context.config.chatChannelId}`,
             status: "ignored",
             username: interaction.user.username,
@@ -323,6 +355,7 @@ export class GuildRuntimeManager {
         logInteractionAudit({
           action: "/norm",
           guildId: interaction.guildId,
+          guildName: context.guildName,
           reason: "OpenAI",
           status: "processed",
           username: interaction.user.username,
@@ -373,7 +406,7 @@ export class GuildRuntimeManager {
       this.prismaStudioAccessGate.recordSuccessfulLaunch();
       await responder.edit("Prisma Studio was launched on the host machine.");
     } catch (error) {
-      console.error(`[${interaction.guildId}] Failed to launch Prisma Studio:`, error);
+      console.error(`[${this.formatGuildLogLabel(interaction.guildId, interaction.guild?.name)}] Failed to launch Prisma Studio:`, error);
       await responder.edit("Prisma Studio request could not be completed. Check the bot console for details.");
     }
   }
@@ -504,7 +537,7 @@ export class GuildRuntimeManager {
     for (const configResult of configs) {
       if (configResult.error) {
         console.error(
-          `[${configResult.guildId}] Failed to decrypt stored guild configuration during startup.`,
+          `[${this.formatGuildLogLabel(configResult.guildId)}] Failed to decrypt stored guild configuration during startup.`,
           configResult.error
         );
         continue;
@@ -528,7 +561,7 @@ export class GuildRuntimeManager {
     }
 
     if (configResult.error) {
-      console.error(`[${guildId}] Failed to decrypt stored guild configuration during reload.`, configResult.error);
+      console.error(`[${this.formatGuildLogLabel(guildId)}] Failed to decrypt stored guild configuration during reload.`, configResult.error);
       return {
         code: "config",
         message: "stored configuration could not be decrypted",
@@ -548,7 +581,7 @@ export class GuildRuntimeManager {
     const ensuredEvent = await context.repositories.event.ensureCurrentEvent();
     if (ensuredEvent.created) {
       console.info(
-        `[${context.guildId}] No active event was found in the guild database. ` +
+        `[${this.formatGuildLogLabel(context.guildId, context.guildName)}] No active event was found in the guild database. ` +
           `Created default event "${ensuredEvent.event.name}".`
       );
     }
@@ -594,6 +627,7 @@ export class GuildRuntimeManager {
       config,
       configStore: this.configStore,
       guildId: config.guildId,
+      guildName: channels.queueChannel.guild.name,
       leaderboardMessages: await this.restoreLeaderboardMessages(config, channels.leaderboardChannel),
       normProcessing: false,
       normQueue: [],
@@ -636,7 +670,9 @@ export class GuildRuntimeManager {
     try {
       return await queueChannel.messages.fetch(config.queueMessageId);
     } catch {
-      console.warn(`[${config.guildId}] Stored queue message ${config.queueMessageId} no longer exists; recreating.`);
+      console.warn(
+        `[${this.formatGuildLogLabel(config.guildId, queueChannel.guild.name)}] Stored queue message ${config.queueMessageId} no longer exists; recreating.`
+      );
       this.configStore.updateGuildRuntimeFields(config.guildId, { queueMessageId: null });
       return null;
     }
@@ -659,7 +695,9 @@ export class GuildRuntimeManager {
         restoredMessages.push(await leaderboardChannel.messages.fetch(messageId));
       } catch {
         missingMessages = true;
-        console.warn(`[${config.guildId}] Stored leaderboard message ${messageId} no longer exists; recreating.`);
+        console.warn(
+          `[${this.formatGuildLogLabel(config.guildId, leaderboardChannel.guild.name)}] Stored leaderboard message ${messageId} no longer exists; recreating.`
+        );
       }
     }
 
@@ -694,7 +732,7 @@ export class GuildRuntimeManager {
       };
     } catch (error) {
       const failure = classifyGuildRuntimeFailure(error);
-      console.error(`[${config.guildId}] Failed to initialize guild runtime: ${failure.message}`, error);
+      console.error(`[${this.formatGuildLogLabel(config.guildId)}] Failed to initialize guild runtime: ${failure.message}`, error);
       this.apiStatusRuntime?.unregisterGuild(config.guildId);
       if (context) {
         await context.prisma.$disconnect().catch(() => undefined);
@@ -772,6 +810,7 @@ export class GuildRuntimeManager {
       logInteractionAudit({
         action,
         guildId: context.guildId,
+        guildName: context.guildName,
         reason: "interaction did not include a full Discord message",
         status: "ignored",
         username: interaction.user.username,
@@ -867,6 +906,7 @@ export class GuildRuntimeManager {
       logInteractionAudit({
         action,
         guildId: context.guildId,
+        guildName: context.guildName,
         reason: auditResult.reason,
         status: auditResult.status,
         username: interaction.user.username,
@@ -883,7 +923,7 @@ export class GuildRuntimeManager {
     try {
       if (!context.surfaceRegistry.isInteractionAllowed(message.id, interaction.customId, interaction.values)) {
         console.info(
-          `[${context.guildId}] Ignoring stale select interaction ${interaction.customId} on message ${message.id}.`
+          `[${this.formatGuildLogLabel(context.guildId, context.guildName)}] Ignoring stale select interaction ${interaction.customId} on message ${message.id}.`
         );
       } else {
         switch (interaction.customId) {
@@ -1134,7 +1174,7 @@ export class GuildRuntimeManager {
         }
       })
       .catch((error) => {
-        console.error(`[${context.guildId}] Failed to publish active match message:`, error);
+        console.error(`[${this.formatGuildLogLabel(context.guildId, context.guildName)}] Failed to publish active match message:`, error);
       });
 
     this.refreshQueueSurface(context);
@@ -1245,7 +1285,7 @@ export class GuildRuntimeManager {
       coordinator.latestFingerprint === coordinator.lastSuccessfulFingerprint
     ) {
       if (coordinator.latestVersion > coordinator.lastSuccessfulVersion) {
-        console.info(`[${key}] Skipped hot-surface render; payload matches the last successful render.`);
+        console.info(`[${this.formatRenderLogLabel(key)}] Skipped hot-surface render; payload matches the last successful render.`);
         coordinator.lastSuccessfulVersion = coordinator.latestVersion;
       }
 
@@ -1311,7 +1351,7 @@ export class GuildRuntimeManager {
       coordinator.latestFingerprint !== null &&
       coordinator.latestFingerprint === coordinator.lastSuccessfulFingerprint
     ) {
-      console.info(`[${key}] Skipped hot-surface render; payload matches the last successful render.`);
+      console.info(`[${this.formatRenderLogLabel(key)}] Skipped hot-surface render; payload matches the last successful render.`);
       coordinator.lastSuccessfulVersion = coordinator.latestVersion;
       this.cleanupRenderCoordinator(key);
       return;
@@ -1348,10 +1388,10 @@ export class GuildRuntimeManager {
         if (!didRender) {
           if (currentCoordinator.latestVersion > version) {
             console.info(
-              `[${key}] Superseded hot-surface render v${version} with newer v${currentCoordinator.latestVersion}.`
+              `[${this.formatRenderLogLabel(key)}] Superseded hot-surface render v${version} with newer v${currentCoordinator.latestVersion}.`
             );
           } else {
-            console.info(`[${key}] Hot-surface render v${version} resolved without applying a visible edit.`);
+            console.info(`[${this.formatRenderLogLabel(key)}] Hot-surface render v${version} resolved without applying a visible edit.`);
           }
           this.armCollapsedRender(key);
           return;
@@ -1368,7 +1408,7 @@ export class GuildRuntimeManager {
           currentCoordinator.pendingDispatchId = null;
           currentCoordinator.pendingVersion = null;
         }
-        console.error(`[${key}] Failed to flush Discord surface render:`, error);
+        console.error(`[${this.formatRenderLogLabel(key)}] Failed to flush Discord surface render:`, error);
         this.armCollapsedRender(key);
       });
   }
@@ -1402,7 +1442,7 @@ export class GuildRuntimeManager {
     coordinator.pendingDispatchId = null;
     coordinator.pendingVersion = null;
     console.warn(
-      `[${key}] Hot-surface render v${version} rate limited for ${retryAfterMs}ms${global ? " (global)" : ""}.`
+      `[${this.formatRenderLogLabel(key)}] Hot-surface render v${version} rate limited for ${retryAfterMs}ms${global ? " (global)" : ""}.`
     );
     if (coordinator.latestVersion > version) {
       this.armCollapsedRender(key);
@@ -1591,7 +1631,7 @@ export class GuildRuntimeManager {
         }
       }
     } catch (error) {
-      console.error(`[${context.guildId}] Queue timer refresh failed:`, error);
+      console.error(`[${this.formatGuildLogLabel(context.guildId, context.guildName)}] Queue timer refresh failed:`, error);
     } finally {
       release();
     }
@@ -1714,16 +1754,26 @@ export function describeButtonInteractionAction(customId: string): string {
 export function logInteractionAudit(entry: {
   action: string;
   guildId: string | null;
+  guildName?: string;
   reason: string;
   status: InteractionAuditStatus;
   username: string;
 }): void {
-  const guildPrefix = entry.guildId ? `[${entry.guildId}] ` : "";
+  const guildPrefix = entry.guildId ? `[${formatGuildLogLabel(entry.guildId, entry.guildName)}] ` : "";
   const statusLabel = entry.status === "ignored" ? "IGNORED" : "PROCESSED";
   console.info(
     `${guildPrefix}(${formatInteractionAuditTimestamp()}) | ${entry.username} | ` +
       `${entry.action} | ${statusLabel} | ${entry.reason}`
   );
+}
+
+function formatGuildLogLabel(guildId: string, guildName?: string): string {
+  const normalizedGuildName = guildName?.trim();
+  if (!normalizedGuildName) {
+    return guildId;
+  }
+
+  return `${normalizedGuildName} (${guildId})`;
 }
 
 function isBotAdmin(interaction: ChatInputCommandInteraction): boolean {

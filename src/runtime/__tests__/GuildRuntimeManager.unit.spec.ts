@@ -4,7 +4,7 @@ import OpenAI from "openai";
 import * as EasterEggsController from "../../controllers/EasterEggs";
 import { GuildConfigReadResult, GuildConfigStore } from "../GuildConfigStore";
 import { PrismaStudioAccessGate } from "../PrismaStudioAccessGate";
-import { GuildRuntimeManager } from "../GuildRuntimeManager";
+import { GuildRuntimeManager, logInteractionAudit } from "../GuildRuntimeManager";
 import { DiscordWorkScheduler } from "../DiscordWorkScheduler";
 import { PrismaStudioManager } from "../PrismaStudioManager";
 import { GuildContext, GuildInstanceConfig } from "../types";
@@ -29,6 +29,7 @@ function createContext(guildId: string): GuildContext {
     config: createConfig(guildId),
     configStore: {} as GuildConfigStore,
     guildId,
+    guildName: `Guild ${guildId}`,
     leaderboardMessages: [],
     normProcessing: false,
     normQueue: [],
@@ -59,6 +60,9 @@ function createConfigResult(guildId: string): GuildConfigReadResult {
 
 function createTextChannel(id: string): TextChannel {
   return {
+    guild: {
+      name: "Guild guild-1",
+    },
     id,
     type: ChannelType.GuildText,
   } as unknown as TextChannel;
@@ -90,6 +94,45 @@ function createSetupInteraction(options?: {
 }
 
 describe("GuildRuntimeManager", () => {
+  it("formats interaction audit logs with the guild name when one is available", () => {
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => undefined);
+
+    try {
+      logInteractionAudit({
+        action: "Join Queue",
+        guildId: "guild-1",
+        guildName: "Norm Central",
+        reason: "joined the queue",
+        status: "processed",
+        username: "Destroyer",
+      });
+
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("[Norm Central (guild-1)]")
+      );
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("falls back to the guild id in interaction audit logs when the guild name is unavailable", () => {
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => undefined);
+
+    try {
+      logInteractionAudit({
+        action: "Join Queue",
+        guildId: "guild-1",
+        reason: "joined the queue",
+        status: "processed",
+        username: "Destroyer",
+      });
+
+      expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("[guild-1]"));
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
   it("continues initializing later guilds when an earlier guild context fails to load", async () => {
     const configs = [createConfigResult("guild-1"), createConfigResult("guild-2")];
     const configStore = {
@@ -176,6 +219,9 @@ describe("GuildRuntimeManager", () => {
     const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
     const warningSpy = jest.spyOn(console, "warn").mockImplementation(() => undefined);
     const queueChannel = {
+      guild: {
+        name: "Guild guild-1",
+      },
       messages: {
         fetch: jest.fn(async () => {
           throw new Error("missing message");
@@ -213,6 +259,9 @@ describe("GuildRuntimeManager", () => {
     const warningSpy = jest.spyOn(console, "warn").mockImplementation(() => undefined);
     const keptMessage = { id: "leaderboard-message-1" } as Message;
     const leaderboardChannel = {
+      guild: {
+        name: "Guild guild-1",
+      },
       messages: {
         fetch: jest.fn(async (messageId: string) => {
           if (messageId === "leaderboard-message-1") {
@@ -327,7 +376,7 @@ describe("GuildRuntimeManager", () => {
       expect(refreshQueueSurfaceSpy).toHaveBeenCalledWith(context);
       expect(startQueueTimerSpy).toHaveBeenCalledWith(context);
       expect(infoSpy).toHaveBeenCalledWith(
-        '[guild-1] No active event was found in the guild database. Created default event "Default Event 123".'
+        '[Guild guild-1 (guild-1)] No active event was found in the guild database. Created default event "Default Event 123".'
       );
     } finally {
       refreshLeaderboardSpy.mockRestore();

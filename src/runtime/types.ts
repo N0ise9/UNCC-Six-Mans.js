@@ -93,6 +93,7 @@ export interface GuildContext {
   config: GuildInstanceConfig;
   configStore: GuildConfigStore;
   guildId: string;
+  guildName?: string;
   leaderboardMessages: Message[];
   normProcessing: boolean;
   normQueue: Array<() => Promise<void>>;

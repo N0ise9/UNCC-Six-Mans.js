@@ -134,6 +134,7 @@ function registerDiscordHandlers(client: Client, discordToken: string): void {
           logInteractionAudit({
             action: describeButtonInteractionAction(interaction.customId),
             guildId: interaction.guildId,
+            guildName: interaction.guild.name,
             reason: "guild runtime manager is not ready",
             status: "ignored",
             username: interaction.user.username,
@@ -147,6 +148,7 @@ function registerDiscordHandlers(client: Client, discordToken: string): void {
           logInteractionAudit({
             action: describeButtonInteractionAction(interaction.customId),
             guildId: interaction.guildId,
+            guildName: interaction.guild.name,
             reason: "guild runtime is unavailable or not configured",
             status: "ignored",
             username: interaction.user.username,
@@ -186,7 +188,7 @@ function registerDiscordHandlers(client: Client, discordToken: string): void {
       }
 
       await registerGuildSlashCommands(client.user.id, discordToken, guild.id);
-      console.info(`[SlashCommands] Registered commands for newly joined guild ${guild.id}.`);
+      console.info(`[SlashCommands] Registered commands for newly joined guild ${guild.name} (${guild.id}).`);
     });
   });
 }

@@ -110,6 +110,7 @@ export function createGuildRuntimeTestContext(
     config,
     configStore,
     guildId: config.guildId,
+    guildName: overrides.guildName ?? `Guild ${config.guildId}`,
     leaderboardMessages: [],
     normProcessing: false,
     normQueue: [],

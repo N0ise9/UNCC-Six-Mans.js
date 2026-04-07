@@ -536,7 +536,7 @@ describe("GuildRuntimeManager six mans interactions", () => {
     expect(context.voteState.twosVotes.size).toBe(1);
   });
 
-  it("collapses queue edits until two seconds after the last visible queue update", async () => {
+  it("collapses queue edits until 1250ms after the last visible queue update", async () => {
     jest.useFakeTimers({ now: new Date("2026-04-04T12:00:00.000Z").getTime() });
     const manager = createManager();
     const queueMessage = createDiscordMessage({ id: "queue-message-1" });
@@ -556,7 +556,7 @@ describe("GuildRuntimeManager six mans interactions", () => {
     expect(queuedPlayersBeforeNextWindow).toHaveLength(0);
     expect(queueMessage.edit).toHaveBeenCalledTimes(1);
 
-    await flushSurfaceWindow(context, 1999);
+    await flushSurfaceWindow(context, 1249);
     expect(queueMessage.edit).toHaveBeenCalledTimes(1);
 
     await flushSurfaceWindow(context, 1);
@@ -853,11 +853,11 @@ describe("GuildRuntimeManager six mans interactions", () => {
 
     releaseFirstEdit?.();
     await Promise.resolve();
-    await flushSurfaceWindow(context, 2000);
+    await flushSurfaceWindow(context, 1250);
     expect(queueMessage.edit).toHaveBeenCalledTimes(2);
   });
 
-  it("renders the latest queue state once per two-second window instead of editing once per join click", async () => {
+  it("renders the latest queue state once per 1250ms window instead of editing once per join click", async () => {
     jest.useFakeTimers({ now: new Date("2026-04-04T12:00:00.000Z").getTime() });
     const manager = createManager();
     const queueMessage = createDiscordMessage({ id: "queue-message-1" });
@@ -878,7 +878,7 @@ describe("GuildRuntimeManager six mans interactions", () => {
     expect(queuedPlayersBeforeRenderRelease.map((player) => player.id).sort()).toEqual(["player-1", "player-2", "player-3"]);
     expect(queueMessage.edit).toHaveBeenCalledTimes(1);
 
-    await flushSurfaceWindow(context, 1999);
+    await flushSurfaceWindow(context, 1249);
     expect(queueMessage.edit).toHaveBeenCalledTimes(1);
 
     await flushSurfaceWindow(context, 1);
@@ -897,7 +897,7 @@ describe("GuildRuntimeManager six mans interactions", () => {
     await flushSurfaceWindow(context);
     expect(queueMessage.edit).toHaveBeenCalledTimes(1);
 
-    await jest.advanceTimersByTimeAsync(2000);
+    await jest.advanceTimersByTimeAsync(1250);
     await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
     await flushSurfaceWindow(context);
 
@@ -940,14 +940,14 @@ describe("GuildRuntimeManager six mans interactions", () => {
       expect(queueMessage.edit).toHaveBeenCalledTimes(2);
       expect(asEmbedSummary((queueMessage.edit as jest.Mock).mock.calls.at(-1)?.[0])).toContain("Queue is Empty");
 
-      await flushSurfaceWindow(context, 2000);
+      await flushSurfaceWindow(context, 1250);
       expect(queueMessage.edit).toHaveBeenCalledTimes(2);
     } finally {
       warnSpy.mockRestore();
     }
   });
 
-  it("collapses active match edits until two seconds after the last visible match update", async () => {
+  it("collapses active match edits until 1250ms after the last visible match update", async () => {
     jest.useFakeTimers({ now: new Date("2026-04-04T12:00:00.000Z").getTime() });
     const manager = createManager();
     const matchMessage = createDiscordMessage({
@@ -975,7 +975,7 @@ describe("GuildRuntimeManager six mans interactions", () => {
     await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.BrokenQueue, matchMessage, "orange-1"));
     expect(matchMessage.edit).toHaveBeenCalledTimes(1);
 
-    await flushSurfaceWindow(context, 1999);
+    await flushSurfaceWindow(context, 1249);
     expect(matchMessage.edit).toHaveBeenCalledTimes(1);
 
     await flushSurfaceWindow(context, 1);
