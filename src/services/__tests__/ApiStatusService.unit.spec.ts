@@ -26,10 +26,16 @@ function textResponse(body: string, status = 200): Response {
 
 describe("ApiStatusService statuspage fetching", () => {
   const originalFetch = global.fetch;
+  const fixedNow = new Date("2026-04-05T12:00:00.000Z").getTime();
+
+  beforeEach(() => {
+    jest.useFakeTimers({ now: fixedNow });
+  });
 
   afterEach(() => {
     global.fetch = originalFetch;
     jest.restoreAllMocks();
+    jest.useRealTimers();
   });
 
   function getFirstRequestedUrl(fetchMock: jest.Mock): string | undefined {
