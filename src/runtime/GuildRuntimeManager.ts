@@ -88,6 +88,16 @@ type InteractionAuditResult = {
   status: InteractionAuditStatus;
 };
 
+type SetupConfigMergeInput = {
+  apiStatusChannelId?: string;
+  chatChannelId?: string;
+  databaseUrl?: string;
+  guildId: string;
+  leaderboardChannelId?: string;
+  openAiConversationId?: string;
+  queueChannelId?: string;
+};
+
 type QueueInteractionAuditResult = InteractionAuditResult & {
   players: ReadonlyArray<PlayerInQueue> | null;
 };
@@ -412,22 +422,33 @@ export class GuildRuntimeManager {
         return;
       }
       case "set": {
-        const queueChannel = interaction.options.getChannel("queue_channel", true);
-        const leaderboardChannel = interaction.options.getChannel("leaderboard_channel", true);
-        const chatChannel = interaction.options.getChannel("chat_channel", true);
+        const existingConfigResult = this.configStore.getGuildConfigResult(interaction.guildId);
+        if (existingConfigResult?.error) {
+          await responder.edit(
+            "This guild already has stored setup data, but I couldn't read it. " +
+              "Check CONFIG_ENCRYPTION_KEY and rerun /setup set with queue_channel, " +
+              "leaderboard_channel, chat_channel, and database_url."
+          );
+          return;
+        }
+
+        const existingConfig = existingConfigResult?.config ?? null;
+        const queueChannel = interaction.options.getChannel("queue_channel");
+        const leaderboardChannel = interaction.options.getChannel("leaderboard_channel");
+        const chatChannel = interaction.options.getChannel("chat_channel");
         const apiStatusChannel = interaction.options.getChannel("api_status_channel");
-        const databaseUrl = interaction.options.getString("database_url", true);
+        const databaseUrl = interaction.options.getString("database_url") ?? undefined;
         const conversationId = interaction.options.getString("conversation_id") ?? undefined;
 
-        if (queueChannel.type !== ChannelType.GuildText) {
+        if (queueChannel && queueChannel.type !== ChannelType.GuildText) {
           await responder.edit("Queue channel must be a text channel.");
           return;
         }
-        if (leaderboardChannel.type !== ChannelType.GuildText) {
+        if (leaderboardChannel && leaderboardChannel.type !== ChannelType.GuildText) {
           await responder.edit("Leaderboard channel must be a text channel.");
           return;
         }
-        if (chatChannel.type !== ChannelType.GuildText) {
+        if (chatChannel && chatChannel.type !== ChannelType.GuildText) {
           await responder.edit("Chat channel must be a text channel.");
           return;
         }
@@ -436,14 +457,33 @@ export class GuildRuntimeManager {
           return;
         }
 
-        const input: GuildConfigUpsertInput = {
-          apiStatusChannelId: apiStatusChannel?.id,
-          chatChannelId: chatChannel.id,
-          databaseUrl,
+        const mergedInput = {
+          apiStatusChannelId: apiStatusChannel?.id ?? existingConfig?.apiStatusChannelId,
+          chatChannelId: chatChannel?.id ?? existingConfig?.chatChannelId,
+          databaseUrl: databaseUrl ?? existingConfig?.databaseUrl,
           guildId: interaction.guildId,
-          leaderboardChannelId: leaderboardChannel.id,
-          openAiConversationId: conversationId,
-          queueChannelId: queueChannel.id,
+          leaderboardChannelId: leaderboardChannel?.id ?? existingConfig?.leaderboardChannelId,
+          openAiConversationId: conversationId ?? existingConfig?.openAiConversationId,
+          queueChannelId: queueChannel?.id ?? existingConfig?.queueChannelId,
+        };
+
+        const missingFields = getMissingRequiredSetupFields(mergedInput);
+        if (missingFields.length > 0) {
+          const prefix = existingConfig
+            ? "Stored guild configuration is missing required values."
+            : "This guild is not configured yet.";
+          await responder.edit(`${prefix} Provide these required options: ${missingFields.join(", ")}.`);
+          return;
+        }
+
+        const input: GuildConfigUpsertInput = {
+          apiStatusChannelId: mergedInput.apiStatusChannelId,
+          chatChannelId: mergedInput.chatChannelId!,
+          databaseUrl: mergedInput.databaseUrl!,
+          guildId: mergedInput.guildId,
+          leaderboardChannelId: mergedInput.leaderboardChannelId!,
+          openAiConversationId: mergedInput.openAiConversationId,
+          queueChannelId: mergedInput.queueChannelId!,
         };
 
         this.configStore.setGuildConfig(input);
@@ -1632,6 +1672,23 @@ function normalizeDiscordPayload(payload: unknown): unknown {
 
 function formatInteractionAuditTimestamp(now = DateTime.now()): string {
   return now.toFormat("MM-dd-yyyy hh:mm:ss");
+}
+
+function getMissingRequiredSetupFields(input: SetupConfigMergeInput): string[] {
+  const missingFields: string[] = [];
+  if (!input.queueChannelId) {
+    missingFields.push("queue_channel");
+  }
+  if (!input.leaderboardChannelId) {
+    missingFields.push("leaderboard_channel");
+  }
+  if (!input.chatChannelId) {
+    missingFields.push("chat_channel");
+  }
+  if (!input.databaseUrl) {
+    missingFields.push("database_url");
+  }
+  return missingFields;
 }
 
 export function describeButtonInteractionAction(customId: string): string {

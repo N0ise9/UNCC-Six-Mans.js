@@ -75,24 +75,24 @@ function buildSlashCommands(): Array<RESTPostAPIApplicationCommandsJSONBody> {
             .setName("queue_channel")
             .setDescription("Queue channel")
             .addChannelTypes(ChannelType.GuildText)
-            .setRequired(true)
+            .setRequired(false)
         )
         .addChannelOption((option) =>
           option
             .setName("leaderboard_channel")
             .setDescription("Leaderboard channel")
             .addChannelTypes(ChannelType.GuildText)
-            .setRequired(true)
+            .setRequired(false)
         )
         .addChannelOption((option) =>
           option
             .setName("chat_channel")
             .setDescription("Chat channel where /norm and /sora may be used")
             .addChannelTypes(ChannelType.GuildText)
-            .setRequired(true)
+            .setRequired(false)
         )
         .addStringOption((option) =>
-          option.setName("database_url").setDescription("Per-guild database URL").setRequired(true)
+          option.setName("database_url").setDescription("Per-guild database URL").setRequired(false)
         )
         .addChannelOption((option) =>
           option

@@ -1,4 +1,4 @@
-import { Client, Message, MessageFlags, TextChannel } from "discord.js";
+import { ChannelType, Client, Message, MessageFlags, TextChannel } from "discord.js";
 import { DateTime } from "luxon";
 import OpenAI from "openai";
 import * as EasterEggsController from "../../controllers/EasterEggs";
@@ -55,6 +55,38 @@ function createConfigResult(guildId: string): GuildConfigReadResult {
     enabled: true,
     guildId,
   };
+}
+
+function createTextChannel(id: string): TextChannel {
+  return {
+    id,
+    type: ChannelType.GuildText,
+  } as unknown as TextChannel;
+}
+
+function createSetupInteraction(options?: {
+  channels?: Partial<Record<"api_status_channel" | "chat_channel" | "leaderboard_channel" | "queue_channel", TextChannel>>;
+  guildId?: string;
+  hasManageGuild?: boolean;
+  strings?: Partial<Record<"conversation_id" | "database_url", string>>;
+  subcommand?: "disable" | "set" | "show";
+}) {
+  const channels = options?.channels ?? {};
+  const strings = options?.strings ?? {};
+
+  return {
+    editReply: jest.fn(async () => undefined),
+    guildId: options?.guildId ?? "guild-1",
+    id: `setup-${options?.subcommand ?? "set"}`,
+    memberPermissions: {
+      has: jest.fn(() => options?.hasManageGuild ?? true),
+    },
+    options: {
+      getChannel: jest.fn((name: string) => channels[name as keyof typeof channels] ?? null),
+      getString: jest.fn((name: string) => strings[name as keyof typeof strings] ?? null),
+      getSubcommand: jest.fn(() => options?.subcommand ?? "set"),
+    },
+  } as unknown as Parameters<GuildRuntimeManager["handleSetupCommand"]>[0];
 }
 
 describe("GuildRuntimeManager", () => {
@@ -355,6 +387,263 @@ describe("GuildRuntimeManager", () => {
       expect(release).toHaveBeenCalledTimes(1);
     } finally {
       refreshQueueSurfaceSpy.mockRestore();
+      await manager.dispose();
+    }
+  });
+
+  it("allows first-time /setup set when all required fields are provided", async () => {
+    const configStore = {
+      getGuildConfigResult: jest.fn(() => null),
+      setGuildConfig: jest.fn(() => createConfig("guild-1")),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
+    const interaction = createSetupInteraction({
+      channels: {
+        chat_channel: createTextChannel("guild-1-chat-new"),
+        leaderboard_channel: createTextChannel("guild-1-leaderboard-new"),
+        queue_channel: createTextChannel("guild-1-queue-new"),
+      },
+      strings: {
+        database_url: "postgres:///guild-1-new",
+      },
+    });
+    const reloadSpy = jest.spyOn(manager, "reloadContext").mockResolvedValue(null);
+
+    try {
+      await manager.handleSetupCommand(interaction);
+
+      expect(configStore.getGuildConfigResult).toHaveBeenCalledWith("guild-1");
+      expect(configStore.setGuildConfig).toHaveBeenCalledWith({
+        apiStatusChannelId: undefined,
+        chatChannelId: "guild-1-chat-new",
+        databaseUrl: "postgres:///guild-1-new",
+        guildId: "guild-1",
+        leaderboardChannelId: "guild-1-leaderboard-new",
+        openAiConversationId: undefined,
+        queueChannelId: "guild-1-queue-new",
+      });
+      expect(reloadSpy).toHaveBeenCalledWith("guild-1");
+      expect(interaction.editReply).toHaveBeenCalledWith("Guild configuration saved and runtime refreshed.");
+    } finally {
+      reloadSpy.mockRestore();
+      await manager.dispose();
+    }
+  });
+
+  it("requires the missing core fields on first-time /setup set", async () => {
+    const configStore = {
+      getGuildConfigResult: jest.fn(() => null),
+      setGuildConfig: jest.fn(),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
+    const interaction = createSetupInteraction({
+      channels: {
+        leaderboard_channel: createTextChannel("guild-1-leaderboard-new"),
+      },
+    });
+    const reloadSpy = jest.spyOn(manager, "reloadContext").mockResolvedValue(null);
+
+    try {
+      await manager.handleSetupCommand(interaction);
+
+      expect(configStore.setGuildConfig).not.toHaveBeenCalled();
+      expect(reloadSpy).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        "This guild is not configured yet. Provide these required options: queue_channel, chat_channel, database_url."
+      );
+    } finally {
+      reloadSpy.mockRestore();
+      await manager.dispose();
+    }
+  });
+
+  it("updates only the leaderboard channel when /setup set omits the other stored fields", async () => {
+    const existingConfig = {
+      ...createConfig("guild-1"),
+      apiStatusChannelId: "guild-1-status-old",
+      openAiConversationId: "conversation-1",
+    };
+    const configStore = {
+      getGuildConfigResult: jest.fn(() => ({
+        config: existingConfig,
+        enabled: true,
+        guildId: "guild-1",
+      })),
+      setGuildConfig: jest.fn(() => existingConfig),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
+    const interaction = createSetupInteraction({
+      channels: {
+        leaderboard_channel: createTextChannel("guild-1-leaderboard-new"),
+      },
+    });
+    const reloadSpy = jest.spyOn(manager, "reloadContext").mockResolvedValue(null);
+
+    try {
+      await manager.handleSetupCommand(interaction);
+
+      expect(configStore.setGuildConfig).toHaveBeenCalledWith({
+        apiStatusChannelId: "guild-1-status-old",
+        chatChannelId: "guild-1-chat",
+        databaseUrl: "postgres:///guild-1",
+        guildId: "guild-1",
+        leaderboardChannelId: "guild-1-leaderboard-new",
+        openAiConversationId: "conversation-1",
+        queueChannelId: "guild-1-queue",
+      });
+      expect(interaction.editReply).toHaveBeenCalledWith("Guild configuration saved and runtime refreshed.");
+    } finally {
+      reloadSpy.mockRestore();
+      await manager.dispose();
+    }
+  });
+
+  it("updates only the database URL when /setup set omits the other stored fields", async () => {
+    const existingConfig = {
+      ...createConfig("guild-1"),
+      apiStatusChannelId: "guild-1-status-old",
+      openAiConversationId: "conversation-1",
+    };
+    const configStore = {
+      getGuildConfigResult: jest.fn(() => ({
+        config: existingConfig,
+        enabled: true,
+        guildId: "guild-1",
+      })),
+      setGuildConfig: jest.fn(() => existingConfig),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
+    const interaction = createSetupInteraction({
+      strings: {
+        database_url: "postgres:///guild-1-replacement",
+      },
+    });
+    const reloadSpy = jest.spyOn(manager, "reloadContext").mockResolvedValue(null);
+
+    try {
+      await manager.handleSetupCommand(interaction);
+
+      expect(configStore.setGuildConfig).toHaveBeenCalledWith({
+        apiStatusChannelId: "guild-1-status-old",
+        chatChannelId: "guild-1-chat",
+        databaseUrl: "postgres:///guild-1-replacement",
+        guildId: "guild-1",
+        leaderboardChannelId: "guild-1-leaderboard",
+        openAiConversationId: "conversation-1",
+        queueChannelId: "guild-1-queue",
+      });
+    } finally {
+      reloadSpy.mockRestore();
+      await manager.dispose();
+    }
+  });
+
+  it("updates only the API status channel when /setup set omits the other stored fields", async () => {
+    const existingConfig = {
+      ...createConfig("guild-1"),
+      apiStatusChannelId: "guild-1-status-old",
+    };
+    const configStore = {
+      getGuildConfigResult: jest.fn(() => ({
+        config: existingConfig,
+        enabled: true,
+        guildId: "guild-1",
+      })),
+      setGuildConfig: jest.fn(() => existingConfig),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
+    const interaction = createSetupInteraction({
+      channels: {
+        api_status_channel: createTextChannel("guild-1-status-new"),
+      },
+    });
+    const reloadSpy = jest.spyOn(manager, "reloadContext").mockResolvedValue(null);
+
+    try {
+      await manager.handleSetupCommand(interaction);
+
+      expect(configStore.setGuildConfig).toHaveBeenCalledWith({
+        apiStatusChannelId: "guild-1-status-new",
+        chatChannelId: "guild-1-chat",
+        databaseUrl: "postgres:///guild-1",
+        guildId: "guild-1",
+        leaderboardChannelId: "guild-1-leaderboard",
+        openAiConversationId: undefined,
+        queueChannelId: "guild-1-queue",
+      });
+    } finally {
+      reloadSpy.mockRestore();
+      await manager.dispose();
+    }
+  });
+
+  it("preserves the stored conversation id when /setup set omits conversation_id", async () => {
+    const existingConfig = {
+      ...createConfig("guild-1"),
+      openAiConversationId: "conversation-keep",
+    };
+    const configStore = {
+      getGuildConfigResult: jest.fn(() => ({
+        config: existingConfig,
+        enabled: true,
+        guildId: "guild-1",
+      })),
+      setGuildConfig: jest.fn(() => existingConfig),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
+    const interaction = createSetupInteraction({
+      channels: {
+        queue_channel: createTextChannel("guild-1-queue-new"),
+      },
+    });
+    const reloadSpy = jest.spyOn(manager, "reloadContext").mockResolvedValue(null);
+
+    try {
+      await manager.handleSetupCommand(interaction);
+
+      expect(configStore.setGuildConfig).toHaveBeenCalledWith({
+        apiStatusChannelId: undefined,
+        chatChannelId: "guild-1-chat",
+        databaseUrl: "postgres:///guild-1",
+        guildId: "guild-1",
+        leaderboardChannelId: "guild-1-leaderboard",
+        openAiConversationId: "conversation-keep",
+        queueChannelId: "guild-1-queue-new",
+      });
+    } finally {
+      reloadSpy.mockRestore();
+      await manager.dispose();
+    }
+  });
+
+  it("returns an actionable error when stored setup data cannot be decrypted for a partial update", async () => {
+    const configStore = {
+      getGuildConfigResult: jest.fn(() => ({
+        config: null,
+        enabled: true,
+        error: new Error("decrypt failed"),
+        guildId: "guild-1",
+      })),
+      setGuildConfig: jest.fn(),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
+    const interaction = createSetupInteraction({
+      channels: {
+        leaderboard_channel: createTextChannel("guild-1-leaderboard-new"),
+      },
+    });
+    const reloadSpy = jest.spyOn(manager, "reloadContext").mockResolvedValue(null);
+
+    try {
+      await manager.handleSetupCommand(interaction);
+
+      expect(configStore.setGuildConfig).not.toHaveBeenCalled();
+      expect(reloadSpy).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        "This guild already has stored setup data, but I couldn't read it. Check CONFIG_ENCRYPTION_KEY and rerun /setup set with queue_channel, leaderboard_channel, chat_channel, and database_url."
+      );
+    } finally {
+      reloadSpy.mockRestore();
       await manager.dispose();
     }
   });
