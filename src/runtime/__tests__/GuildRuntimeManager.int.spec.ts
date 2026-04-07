@@ -105,12 +105,14 @@ async function createManagerContext(prisma: PrismaClient, guildId = "guild-1"): 
   context: GuildContext;
   manager: GuildRuntimeManager;
   queueMessage: Message;
+  scheduler: DiscordWorkScheduler;
 }> {
+  const scheduler = new DiscordWorkScheduler(1, 0);
   const manager = new GuildRuntimeManager(
     {} as Client,
     {} as OpenAI,
     {} as GuildConfigStore,
-    new DiscordWorkScheduler(1, 0)
+    scheduler
   );
   const repositories = new GuildRepositories(prisma);
   const queueMessage = createDiscordMessage({ id: `${guildId}-queue-message` });
@@ -119,13 +121,14 @@ async function createManagerContext(prisma: PrismaClient, guildId = "guild-1"): 
     guildId,
     prisma,
     queueMessage,
-    scheduler: new DiscordWorkScheduler(1, 0),
+    scheduler,
   });
 
   return {
     context,
     manager,
     queueMessage,
+    scheduler,
   };
 }
 
@@ -145,6 +148,7 @@ async function joinPlayers(
 
 describe("GuildRuntimeManager six mans integration", () => {
   let prisma: PrismaClient;
+  let managedContexts: Array<Awaited<ReturnType<typeof createManagerContext>>>;
 
   beforeAll(async () => {
     prisma = createIntegrationTestPrismaClient();
@@ -152,8 +156,19 @@ describe("GuildRuntimeManager six mans integration", () => {
   });
 
   beforeEach(async () => {
+    managedContexts = [];
     await resetIntegrationDatabase(prisma);
     await ensureDefaultIntegrationEvent(prisma);
+  });
+
+  afterEach(async () => {
+    for (const managed of [...managedContexts].reverse()) {
+      await managed.scheduler.drain();
+      await managed.manager.dispose();
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    managedContexts = [];
   });
 
   afterAll(async () => {
@@ -161,8 +176,14 @@ describe("GuildRuntimeManager six mans integration", () => {
     await prisma.$disconnect();
   });
 
+  async function createTrackedManagerContext(guildId: string) {
+    const managed = await createManagerContext(prisma, guildId);
+    managedContexts.push(managed);
+    return managed;
+  }
+
   it("fills a 6s queue and starts a random match", async () => {
-    const { context, manager, queueMessage } = await createManagerContext(prisma, "guild-random");
+    const { context, manager, queueMessage } = await createTrackedManagerContext("guild-random");
     const playerIds = ["player-1", "player-2", "player-3", "player-4", "player-5", "player-6"];
 
     await joinPlayers(manager, context, queueMessage, playerIds);
@@ -182,7 +203,7 @@ describe("GuildRuntimeManager six mans integration", () => {
   });
 
   it("fills a 6s queue and completes the captains draft flow", async () => {
-    const { context, manager, queueMessage } = await createManagerContext(prisma, "guild-captains");
+    const { context, manager, queueMessage } = await createTrackedManagerContext("guild-captains");
     const playerIds = ["player-1", "player-2", "player-3", "player-4", "player-5", "player-6"];
 
     await joinPlayers(manager, context, queueMessage, playerIds);
@@ -235,7 +256,7 @@ describe("GuildRuntimeManager six mans integration", () => {
   });
 
   it("enables 2s from four votes and starts a 2v2 random match from three random votes", async () => {
-    const { context, manager, queueMessage } = await createManagerContext(prisma, "guild-twos");
+    const { context, manager, queueMessage } = await createTrackedManagerContext("guild-twos");
     const playerIds = ["player-1", "player-2", "player-3", "player-4"];
 
     await joinPlayers(manager, context, queueMessage, playerIds);
@@ -260,7 +281,7 @@ describe("GuildRuntimeManager six mans integration", () => {
   });
 
   it("prevents active-match players from joining another queue", async () => {
-    const { context, manager, queueMessage } = await createManagerContext(prisma, "guild-rejoin");
+    const { context, manager, queueMessage } = await createTrackedManagerContext("guild-rejoin");
     await seedActiveMatch(
       prisma,
       [
@@ -281,7 +302,7 @@ describe("GuildRuntimeManager six mans integration", () => {
   });
 
   it("prevents popped-queue outsiders from influencing votes or draft picks", async () => {
-    const { context, manager, queueMessage } = await createManagerContext(prisma, "guild-outsider");
+    const { context, manager, queueMessage } = await createTrackedManagerContext("guild-outsider");
     const playerIds = ["player-1", "player-2", "player-3", "player-4", "player-5", "player-6"];
 
     await joinPlayers(manager, context, queueMessage, playerIds);
@@ -327,7 +348,7 @@ describe("GuildRuntimeManager six mans integration", () => {
   });
 
   it("records the first report as pending without ending the match", async () => {
-    const { context, manager } = await createManagerContext(prisma, "guild-report-pending");
+    const { context, manager } = await createTrackedManagerContext("guild-report-pending");
     const matchMessage = createDiscordMessage({
       embeds: [{ title: "Current Match" }],
       id: "match-message-1",
@@ -354,7 +375,7 @@ describe("GuildRuntimeManager six mans integration", () => {
   });
 
   it("does not confirm a match when two players on the same team agree", async () => {
-    const { context, manager } = await createManagerContext(prisma, "guild-report-same-team");
+    const { context, manager } = await createTrackedManagerContext("guild-report-same-team");
     const matchMessage = createDiscordMessage({
       embeds: [{ title: "Current Match" }],
       id: "match-message-1",
@@ -380,7 +401,7 @@ describe("GuildRuntimeManager six mans integration", () => {
   });
 
   it("confirms a match when opposite teams report the same winner", async () => {
-    const { context, manager } = await createManagerContext(prisma, "guild-report-confirm");
+    const { context, manager } = await createTrackedManagerContext("guild-report-confirm");
     const matchMessage = createDiscordMessage({
       embeds: [{ title: "Current Match" }],
       id: "match-message-1",
@@ -409,7 +430,7 @@ describe("GuildRuntimeManager six mans integration", () => {
   });
 
   it("applies the event mmr multiplier only to the winning team", async () => {
-    const { context, manager } = await createManagerContext(prisma, "guild-report-multiplier");
+    const { context, manager } = await createTrackedManagerContext("guild-report-multiplier");
     const matchMessage = createDiscordMessage({
       embeds: [{ title: "Current Match" }],
       id: "match-message-1",
@@ -442,7 +463,7 @@ describe("GuildRuntimeManager six mans integration", () => {
   });
 
   it("toggles broken queue votes and cancels the match on four votes without updating the leaderboard", async () => {
-    const { context, manager } = await createManagerContext(prisma, "guild-broken-queue");
+    const { context, manager } = await createTrackedManagerContext("guild-broken-queue");
     const matchMessage = createDiscordMessage({
       embeds: [{ title: "Current Match" }],
       id: "match-message-1",
