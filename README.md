@@ -1,6 +1,8 @@
 # NormJS
 
-NormJS is a single-process Discord bot for running Six Mans across multiple guilds at once.
+NormJS is a single-process Discord bot for organizing in-house Six Mans matches across multiple guilds at once.
+
+Its primary job is to keep the whole in-house flow moving: players join a queue, Norm helps turn that queue into matches, match results are recorded, and each guild keeps an internal leaderboard with wins, losses, and MMR.
 
 Each guild is isolated from the others:
 - its own PostgreSQL database URL
@@ -16,11 +18,13 @@ Norm boots once and reads per-guild setup from `.guild-instance-config.json`.
 
 Bot-wide configuration lives in `.env`. Per-guild configuration does not.
 
+In practice, Norm is meant to run a private competitive ecosystem inside each server. Players queue for in-house matches, Norm manages the queue and match flow, and completed matches feed a persistent leaderboard. Wins and losses provide standing and match history, while MMR gives each guild a skill-based ranking signal for its own internal competition.
+
 Important runtime behavior:
 - slash commands are registered per guild on startup
 - any old global application commands are pruned on startup
 - newly joined guilds get the current command set automatically
-- `/norm` and optional `/sora` are slash-command-only and only work in the configured `chat_channel`
+- `/norm` and optional `/sora` are slash-command-only and only work when a `chat_channel` is configured
 - one bad guild database URL should not block the rest of the process
 - stale queued button/select interactions are ignored when the authoritative state has already changed
 - queue timers refresh every minute so displayed wait times stay current
@@ -130,8 +134,8 @@ Current `/setup set` shape:
 /setup set
 queue_channel:<text channel>
 leaderboard_channel:<text channel>
-chat_channel:<text channel>
 database_url:<postgres connection string>
+[chat_channel:<text channel>]
 [api_status_channel:<text channel>]
 [conversation_id:<existing OpenAI conversation id>]
 ```
@@ -139,10 +143,10 @@ database_url:<postgres connection string>
 Required fields:
 - `queue_channel`
 - `leaderboard_channel`
-- `chat_channel`
 - `database_url`
 
 Optional fields:
+- `chat_channel`
 - `api_status_channel`
 - `conversation_id`
 
@@ -182,7 +186,7 @@ Current command behavior:
 - commands are registered per guild, not globally
 - `/norm` uses a stored conversation per guild
 - `/norm` supports optional image attachments
-- `/norm` and `/sora` only work in the configured `chat_channel`
+- `/norm` and `/sora` are optional features and only work when a `chat_channel` is configured
 - `/sora` writes generated media under `data/generated-media`
 - `/prisma` is not `chat_channel`-gated
 
@@ -295,8 +299,9 @@ If a guild fails to initialize:
 - verify `CONFIG_ENCRYPTION_KEY` has not changed since the guild config was saved
 
 If `/norm` or `/sora` refuse to run:
-- make sure you are in the configured `chat_channel`
-- rerun `/setup set` if the guild was configured before `chat_channel` became required
+- make sure the guild has a `chat_channel` configured if you want to use OpenAI features
+- make sure you are running the command in the configured `chat_channel`
+- rerun `/setup set` if the stored `chat_channel` is missing or points to the wrong channel
 
 If `/prisma` fails:
 - make sure the guild has already been configured with `/setup set`
