@@ -3,6 +3,7 @@ import OpenAI from "openai";
 import { registerAllSlashCommands, registerGuildSlashCommands } from "./controllers/CommandRegistry";
 import { assertSoraRuntimeSupport } from "./controllers/EasterEggs";
 import { ApiStatusRuntime } from "./runtime/ApiStatusRuntime";
+import { startConsoleFileLogger } from "./runtime/ConsoleFileLogger";
 import { DiscordWorkScheduler } from "./runtime/DiscordWorkScheduler";
 import { GuildConfigStore } from "./runtime/GuildConfigStore";
 import {
@@ -18,6 +19,7 @@ import { getEnvVariable } from "./utils";
 
 const packagedRuntimeSupport = ensurePackagedRuntimeSupportFiles();
 loadRuntimeEnv();
+const consoleFileLogger = startConsoleFileLogger();
 
 const scheduler = new DiscordWorkScheduler(2, 75);
 const apiStatusRuntime = new ApiStatusRuntime(scheduler);
@@ -69,6 +71,12 @@ async function shutdown(code: number, reason: string, error?: unknown): Promise<
       await normClient?.destroy();
     } catch (destroyError) {
       console.error("[Shutdown] Failed to destroy Discord client:", destroyError);
+    }
+
+    try {
+      await consoleFileLogger.dispose();
+    } catch {
+      // Keep shutdown best-effort even if the live log stream is already gone.
     }
 
     process.exit(code);
@@ -226,6 +234,13 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error) => {
-  console.error("NormJS failed to start:", error);
-  process.exit(1);
+  void (async () => {
+    console.error("NormJS failed to start:", error);
+    try {
+      await consoleFileLogger.dispose();
+    } catch {
+      // Startup failure should still terminate even if the live log stream cannot close cleanly.
+    }
+    process.exit(1);
+  })();
 });

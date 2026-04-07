@@ -1,12 +1,17 @@
 import path from "path";
 import {
+  getConsoleLogArchiveRoot,
+  getConsoleLogFilename,
+  getConsoleLogPath,
   getGuildConfigPath,
+  getPackagedExecutableDirectory,
   getPrismaStudioAssetsRoot,
   getPrismaStudioCliPath,
   getPrismaStudioConfigPath,
   getPrismaStudioNodePath,
   getPrismaStudioWorkspaceRoot,
   getRuntimeEnvPath,
+  isConsoleLogFilename,
   resolveRuntimeRoot,
 } from "../runtimePaths";
 import { APP_VERSION } from "../appMetadata";
@@ -65,6 +70,25 @@ describe("runtimePaths", () => {
 
     expect(getRuntimeEnvPath()).toBe(path.resolve(portableRoot, ".env"));
     expect(getGuildConfigPath()).toBe(path.resolve(portableRoot, ".guild-instance-config.json"));
+  });
+
+  it("builds console log paths beside the packaged executable", () => {
+    process.env["NORM_HOME"] = sourceRoot;
+    const now = new Date(2026, 3, 7, 12, 34, 56);
+
+    expect(getPackagedExecutableDirectory({ execPath: packagedExecPath })).toBe(path.resolve(portableRoot));
+    expect(getConsoleLogFilename(now)).toBe("console_log-2026-04-07_12-34-56.txt");
+    expect(getConsoleLogArchiveRoot({ execPath: packagedExecPath })).toBe(path.resolve(portableRoot, "logs"));
+    expect(getConsoleLogPath({ execPath: packagedExecPath, now })).toBe(
+      path.resolve(portableRoot, "console_log-2026-04-07_12-34-56.txt")
+    );
+  });
+
+  it("matches only bot-owned console log filenames", () => {
+    expect(isConsoleLogFilename("console_log-2026-04-07_12-34-56.txt")).toBe(true);
+    expect(isConsoleLogFilename("console_log-2026-04-07_12-34-56-1.txt")).toBe(true);
+    expect(isConsoleLogFilename("console_log-manual.txt")).toBe(false);
+    expect(isConsoleLogFilename("notes.txt")).toBe(false);
   });
 
   it("builds packaged Prisma Studio paths under the internal extracted asset root", () => {

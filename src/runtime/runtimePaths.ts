@@ -10,6 +10,8 @@ const PRISMA_STUDIO_PACKAGED_CONFIG_FILENAME = "prisma.studio.config.js";
 const PRISMA_STUDIO_SOURCE_CONFIG_FILENAME = "prisma.studio.config.ts";
 const PRISMA_STUDIO_TOOLS_DIRECTORY = "tools";
 const PRISMA_STUDIO_WORKSPACE_DIRECTORY = "workspace";
+const CONSOLE_LOG_ARCHIVE_DIRECTORY = "logs";
+const CONSOLE_LOG_FILENAME_PATTERN = /^console_log-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:-\d+)?\.txt$/;
 
 export function resolveRuntimeRoot(options?: {
   cwd?: string;
@@ -49,6 +51,36 @@ export function getGuildConfigPath(): string {
 
 export function getGeneratedMediaRoot(): string {
   return resolveRuntimePath("data", "generated-media");
+}
+
+export function getPackagedExecutableDirectory(options?: { execPath?: string }): string {
+  return path.resolve(path.dirname(options?.execPath ?? process.execPath));
+}
+
+export function getConsoleLogFilename(now = new Date()): string {
+  const year = now.getFullYear();
+  const month = `${now.getMonth() + 1}`.padStart(2, "0");
+  const day = `${now.getDate()}`.padStart(2, "0");
+  const hour = `${now.getHours()}`.padStart(2, "0");
+  const minute = `${now.getMinutes()}`.padStart(2, "0");
+  const second = `${now.getSeconds()}`.padStart(2, "0");
+
+  return `console_log-${year}-${month}-${day}_${hour}-${minute}-${second}.txt`;
+}
+
+export function isConsoleLogFilename(fileName: string): boolean {
+  return CONSOLE_LOG_FILENAME_PATTERN.test(fileName);
+}
+
+export function getConsoleLogArchiveRoot(options?: { execPath?: string }): string {
+  return path.resolve(getPackagedExecutableDirectory(options), CONSOLE_LOG_ARCHIVE_DIRECTORY);
+}
+
+export function getConsoleLogPath(options?: { execPath?: string; now?: Date }): string {
+  return path.resolve(
+    getPackagedExecutableDirectory(options),
+    getConsoleLogFilename(options?.now)
+  );
 }
 
 export function getPackagedAssetRoot(options?: { packaged?: boolean }): string {
