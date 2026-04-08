@@ -142,21 +142,12 @@ export class GuildRuntimeManager {
   }
 
   private formatRenderLogLabel(key: string): string {
-    const [kind, guildId, messageId] = key.split(":");
+    const [, guildId] = key.split(":");
     if (!guildId) {
       return key;
     }
 
-    const guildLabel = this.formatGuildLogLabel(guildId);
-    if (kind === "queue") {
-      return `queue:${guildLabel}`;
-    }
-
-    if (kind === "match" && messageId) {
-      return `match:${guildLabel}:${messageId}`;
-    }
-
-    return key;
+    return this.formatGuildLogLabel(guildId);
   }
 
   async dispose(): Promise<void> {
