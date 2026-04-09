@@ -53,6 +53,7 @@ describe("GuildConfigStore", () => {
       expect(config?.databaseUrl).toBe("postgres://user:pass@localhost:5432/guild_one");
       expect(config?.queueChannelId).toBe("queue-1");
       expect(config?.enabled).toBe(true);
+      expect(config?.soraEnabled).toBe(false);
     } finally {
       cleanup(filePath);
     }
@@ -76,6 +77,29 @@ describe("GuildConfigStore", () => {
       expect(config?.databaseUrl).toBe("postgres://user:pass@localhost:5432/guild_one");
       expect(config?.queueChannelId).toBe("queue-1");
       expect(config?.enabled).toBe(true);
+      expect(config?.soraEnabled).toBe(false);
+    } finally {
+      cleanup(filePath);
+    }
+  });
+
+  it("stores and reads a guild config with Sora enabled", () => {
+    const { filePath, store } = createStore();
+
+    try {
+      store.setGuildConfig({
+        chatChannelId: "chat-1",
+        databaseUrl: "postgres://user:pass@localhost:5432/guild_one",
+        guildId: "guild-1",
+        leaderboardChannelId: "leaderboard-1",
+        queueChannelId: "queue-1",
+        soraEnabled: true,
+      });
+
+      const config = store.getGuildConfig("guild-1");
+
+      expect(config).not.toBeNull();
+      expect(config?.soraEnabled).toBe(true);
     } finally {
       cleanup(filePath);
     }
@@ -206,6 +230,7 @@ describe("GuildConfigStore", () => {
 
       expect(config?.databaseUrl).toBe("postgres://guild-one");
       expect(config?.chatChannelId).toBeUndefined();
+      expect(config?.soraEnabled).toBe(false);
       expect(raw).not.toContain("voiceChannelId");
       expect(raw).toContain('"queueChannelId": "queue-1"');
     } finally {

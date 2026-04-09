@@ -96,6 +96,7 @@ type SetupConfigMergeInput = {
   leaderboardChannelId?: string;
   openAiConversationId?: string;
   queueChannelId?: string;
+  soraEnabled?: boolean;
 };
 
 type QueueInteractionAuditResult = InteractionAuditResult & {
@@ -306,6 +307,14 @@ export class GuildRuntimeManager {
     }
 
     if (interaction.commandName === "norm" || interaction.commandName === "sora") {
+      if (interaction.commandName === "sora" && !context.config.soraEnabled) {
+        await interaction.reply({
+          content: "Sora is disabled for this server. A server admin can enable it with /setup set.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
       if (!context.config.chatChannelId) {
         if (interaction.commandName === "norm") {
           logInteractionAudit({
@@ -421,12 +430,21 @@ export class GuildRuntimeManager {
 
     switch (interaction.options.getSubcommand()) {
       case "show": {
-        const config = this.configStore.getGuildConfig(interaction.guildId);
-        if (!config) {
+        const configResult = this.configStore.getGuildConfigResult(interaction.guildId);
+        if (!configResult) {
           await responder.edit("This guild has not been configured yet.");
           return;
         }
 
+        if (configResult.error || !configResult.config) {
+          await responder.edit(
+            "This guild is configured, but I couldn't read its stored configuration. " +
+              "Check CONFIG_ENCRYPTION_KEY and rerun /setup set."
+          );
+          return;
+        }
+
+        const config = configResult.config;
         await responder.edit(
           [
             `Guild: ${config.guildId}`,
@@ -434,8 +452,9 @@ export class GuildRuntimeManager {
             `Queue channel: ${config.queueChannelId}`,
             `Leaderboard channel: ${config.leaderboardChannelId}`,
             `Leaderboard messages: ${config.leaderboardMessageIds?.join(", ") ?? "not created yet"}`,
-            `Chat channel: ${config.chatChannelId ?? "not configured; rerun /setup set"}`,
+            `Chat channel: ${config.chatChannelId ?? "not configured; /norm and /sora unavailable"}`,
             `API status channel: ${config.apiStatusChannelId ?? "none"}`,
+            `Sora: ${config.soraEnabled ? "enabled" : "disabled"}`,
             `Database URL: ${maskSecret(config.databaseUrl)}`,
             `Queue message: ${config.queueMessageId ?? "not created yet"}`,
             `Conversation: ${config.openAiConversationId ?? "not created yet"}`,
@@ -467,6 +486,7 @@ export class GuildRuntimeManager {
         const apiStatusChannel = interaction.options.getChannel("api_status_channel");
         const databaseUrl = interaction.options.getString("database_url") ?? undefined;
         const conversationId = interaction.options.getString("conversation_id") ?? undefined;
+        const soraEnabled = interaction.options.getBoolean("sora_enabled") ?? undefined;
 
         if (queueChannel && queueChannel.type !== ChannelType.GuildText) {
           await responder.edit("Queue channel must be a text channel.");
@@ -493,6 +513,7 @@ export class GuildRuntimeManager {
           leaderboardChannelId: leaderboardChannel?.id ?? existingConfig?.leaderboardChannelId,
           openAiConversationId: conversationId ?? existingConfig?.openAiConversationId,
           queueChannelId: queueChannel?.id ?? existingConfig?.queueChannelId,
+          soraEnabled: soraEnabled ?? existingConfig?.soraEnabled ?? false,
         };
 
         const missingFields = getMissingRequiredSetupFields(mergedInput);
@@ -512,6 +533,7 @@ export class GuildRuntimeManager {
           leaderboardChannelId: mergedInput.leaderboardChannelId!,
           openAiConversationId: mergedInput.openAiConversationId,
           queueChannelId: mergedInput.queueChannelId!,
+          soraEnabled: mergedInput.soraEnabled,
         };
 
         this.configStore.setGuildConfig(input);

@@ -69,6 +69,7 @@ export class GuildConfigStore {
     const updated: GuildInstanceStoredConfig = {
       ...file.guilds[index],
       enabled: false,
+      soraEnabled: file.guilds[index]?.soraEnabled ?? false,
       updatedAt: new Date().toISOString(),
     };
     file.guilds[index] = updated;
@@ -94,6 +95,7 @@ export class GuildConfigStore {
       openAiConversationId: input.openAiConversationId ?? previous?.openAiConversationId,
       queueChannelId: input.queueChannelId,
       queueMessageId: previous?.queueMessageId,
+      soraEnabled: input.soraEnabled ?? previous?.soraEnabled ?? false,
       updatedAt: now,
     };
 
@@ -252,11 +254,12 @@ function toError(error: unknown): Error {
 }
 
 function hasLegacyGuildConfigEntries(entries: LegacyGuildConfigEntry[]): boolean {
-  return entries.some((entry) => "voiceChannelId" in entry);
+  return entries.some((entry) => "voiceChannelId" in entry || entry.soraEnabled === undefined);
 }
 
 function normalizeLegacyGuildEntry(entry: LegacyGuildConfigEntry): GuildInstanceStoredConfig {
   const normalized = { ...entry };
   delete normalized.voiceChannelId;
+  normalized.soraEnabled ??= false;
   return normalized;
 }

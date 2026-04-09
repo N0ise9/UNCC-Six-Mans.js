@@ -33,18 +33,14 @@ type SoraVideoSeconds = NonNullable<VideoCreateParams["seconds"]>;
 const VALID_SORA_DURATIONS = new Set<SoraVideoSeconds>(["4", "8", "12"]);
 const SORA_POLL_INTERVAL_MS = 2_000;
 const SORA_MAX_POLL_ATTEMPTS = 150;
+export const DEFAULT_SORA_MODEL = "sora-2-2025-12-08";
 
 function isSoraEnabled(): boolean {
   return (process.env["ENABLE_SORA"] ?? "false").toLowerCase() === "true";
 }
 
 function getSoraModel(): string {
-  const model = process.env["SORA_MODEL"]?.trim();
-  if (!model) {
-    throw new Error("ENABLE_SORA is true but SORA_MODEL is not configured.");
-  }
-
-  return model;
+  return DEFAULT_SORA_MODEL;
 }
 
 function getSoraVideoClient(openai: OpenAI): SoraVideoClient | null {
@@ -66,7 +62,6 @@ export function assertSoraRuntimeSupport(openai: OpenAI): void {
     return;
   }
 
-  getSoraModel();
   if (!getSoraVideoClient(openai)) {
     throw new Error("ENABLE_SORA is true, but this installed OpenAI SDK does not expose the Videos API.");
   }

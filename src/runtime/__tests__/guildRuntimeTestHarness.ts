@@ -26,6 +26,7 @@ export function createGuildConfig(guildId = "guild-1"): GuildInstanceConfig {
     guildId,
     leaderboardChannelId: `${guildId}-leaderboard`,
     queueChannelId: `${guildId}-queue`,
+    soraEnabled: false,
     updatedAt: "2026-01-01T00:00:00.000Z",
   };
 }

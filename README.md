@@ -69,7 +69,6 @@ ENVIRONMENT=dev
 PRISMA_STUDIO_PASSWORD=replace-this-with-a-host-only-password
 conversation_token_limit=120000
 ENABLE_SORA=false
-SORA_MODEL=
 ```
 
 What these do:
@@ -80,8 +79,7 @@ What these do:
 - `ENVIRONMENT`: optional runtime mode; `dev` enables development-only behavior in a few helper paths
 - `PRISMA_STUDIO_PASSWORD`: required by `/prisma` in addition to the `Bot Admin` role
 - `conversation_token_limit`: optional per-guild OpenAI conversation rotation threshold
-- `ENABLE_SORA`: enables `/sora`
-- `SORA_MODEL`: required only when `ENABLE_SORA=true`
+- `ENABLE_SORA`: host-level master switch for `/sora` registration; when enabled, Norm uses the fixed model `sora-2-2025-12-08`
 
 Important notes:
 - `.env` is bot-wide only
@@ -138,6 +136,7 @@ database_url:<postgres connection string>
 [chat_channel:<text channel>]
 [api_status_channel:<text channel>]
 [conversation_id:<existing OpenAI conversation id>]
+[sora_enabled:true|false]
 ```
 
 Required fields:
@@ -149,6 +148,7 @@ Optional fields:
 - `chat_channel`
 - `api_status_channel`
 - `conversation_id`
+- `sora_enabled`
 
 Example:
 
@@ -160,6 +160,7 @@ chat_channel: #norm-chat
 api_status_channel: #api-status
 database_url: postgresql://Norm:NormTheNiner@localhost:5432/SixMansGuildA
 conversation_id: conv_1234567890abcdef
+sora_enabled: true
 ```
 
 Other setup commands:
@@ -187,6 +188,10 @@ Current command behavior:
 - `/norm` uses a stored conversation per guild
 - `/norm` supports optional image attachments
 - `/norm` and `/sora` are optional features and only work when a `chat_channel` is configured
+- `ENABLE_SORA=false` means `/sora` is not registered anywhere
+- `ENABLE_SORA=true` means `/sora` is registered, but each guild must still enable it with `/setup set sora_enabled:true`
+- Sora is disabled by default for each guild
+- Sora always uses the fixed model `sora-2-2025-12-08`
 - `/sora` writes generated media under `data/generated-media`
 - `/prisma` is not `chat_channel`-gated
 
@@ -302,6 +307,8 @@ If `/norm` or `/sora` refuse to run:
 - make sure the guild has a `chat_channel` configured if you want to use OpenAI features
 - make sure you are running the command in the configured `chat_channel`
 - rerun `/setup set` if the stored `chat_channel` is missing or points to the wrong channel
+- if `/sora` says it is disabled for the server, rerun `/setup set sora_enabled:true`
+- if `/sora` is missing entirely, make sure `ENABLE_SORA=true` on the host and restart the bot
 
 If `/prisma` fails:
 - make sure the guild has already been configured with `/setup set`
@@ -316,4 +323,4 @@ If the packaged EXE starts and exits immediately:
 
 If Sora fails at startup:
 - set `ENABLE_SORA=false`, or
-- provide a valid `SORA_MODEL` and ensure your OpenAI project has access to the Videos API
+- ensure your OpenAI project has access to the Videos API used by the fixed `sora-2-2025-12-08` model

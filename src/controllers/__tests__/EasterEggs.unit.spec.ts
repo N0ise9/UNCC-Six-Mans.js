@@ -1,8 +1,7 @@
-import { assertSoraRuntimeSupport } from "../EasterEggs";
+import { assertSoraRuntimeSupport, DEFAULT_SORA_MODEL } from "../EasterEggs";
 
 describe("assertSoraRuntimeSupport", () => {
   const originalEnableSora = process.env["ENABLE_SORA"];
-  const originalSoraModel = process.env["SORA_MODEL"];
 
   afterEach(() => {
     if (originalEnableSora === undefined) {
@@ -10,38 +9,26 @@ describe("assertSoraRuntimeSupport", () => {
     } else {
       process.env["ENABLE_SORA"] = originalEnableSora;
     }
-
-    if (originalSoraModel === undefined) {
-      delete process.env["SORA_MODEL"];
-    } else {
-      process.env["SORA_MODEL"] = originalSoraModel;
-    }
   });
 
   it("does nothing when sora is disabled", () => {
     delete process.env["ENABLE_SORA"];
-    delete process.env["SORA_MODEL"];
 
     expect(() => assertSoraRuntimeSupport({} as never)).not.toThrow();
   });
 
-  it("fails fast when sora is enabled without a model", () => {
-    process.env["ENABLE_SORA"] = "true";
-    delete process.env["SORA_MODEL"];
-
-    expect(() => assertSoraRuntimeSupport({} as never)).toThrow("SORA_MODEL");
+  it("uses the fixed Sora model", () => {
+    expect(DEFAULT_SORA_MODEL).toBe("sora-2-2025-12-08");
   });
 
   it("fails fast when sora is enabled without a video-capable client", () => {
     process.env["ENABLE_SORA"] = "true";
-    process.env["SORA_MODEL"] = "sora-test";
 
     expect(() => assertSoraRuntimeSupport({} as never)).toThrow("Videos API");
   });
 
   it("accepts an sdk client with the typed videos api when sora is enabled", () => {
     process.env["ENABLE_SORA"] = "true";
-    process.env["SORA_MODEL"] = "sora-test";
 
     expect(() =>
       assertSoraRuntimeSupport({

@@ -106,6 +106,12 @@ function buildSlashCommands(): Array<RESTPostAPIApplicationCommandsJSONBody> {
             .setName("conversation_id")
             .setDescription("Optional existing OpenAI conversation ID to reuse")
             .setRequired(false)
+        )
+        .addBooleanOption((option) =>
+          option
+            .setName("sora_enabled")
+            .setDescription("Optional: enable /sora for this guild when ENABLE_SORA=true on the host")
+            .setRequired(false)
         );
     })
     .toJSON();

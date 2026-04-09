@@ -18,6 +18,7 @@ function createConfig(guildId: string): GuildInstanceConfig {
     guildId,
     leaderboardChannelId: `${guildId}-leaderboard`,
     queueChannelId: `${guildId}-queue`,
+    soraEnabled: false,
     updatedAt: "2026-01-01T00:00:00.000Z",
   };
 }
@@ -69,12 +70,14 @@ function createTextChannel(id: string): TextChannel {
 }
 
 function createSetupInteraction(options?: {
+  booleans?: Partial<Record<"sora_enabled", boolean>>;
   channels?: Partial<Record<"api_status_channel" | "chat_channel" | "leaderboard_channel" | "queue_channel", TextChannel>>;
   guildId?: string;
   hasManageGuild?: boolean;
   strings?: Partial<Record<"conversation_id" | "database_url", string>>;
   subcommand?: "disable" | "set" | "show";
 }) {
+  const booleans = options?.booleans ?? {};
   const channels = options?.channels ?? {};
   const strings = options?.strings ?? {};
 
@@ -86,6 +89,7 @@ function createSetupInteraction(options?: {
       has: jest.fn(() => options?.hasManageGuild ?? true),
     },
     options: {
+      getBoolean: jest.fn((name: string) => booleans[name as keyof typeof booleans] ?? null),
       getChannel: jest.fn((name: string) => channels[name as keyof typeof channels] ?? null),
       getString: jest.fn((name: string) => strings[name as keyof typeof strings] ?? null),
       getSubcommand: jest.fn(() => options?.subcommand ?? "set"),
@@ -470,6 +474,7 @@ describe("GuildRuntimeManager", () => {
         leaderboardChannelId: "guild-1-leaderboard-new",
         openAiConversationId: undefined,
         queueChannelId: "guild-1-queue-new",
+        soraEnabled: false,
       });
       expect(reloadSpy).toHaveBeenCalledWith("guild-1");
       expect(interaction.editReply).toHaveBeenCalledWith("Guild configuration saved and runtime refreshed.");
@@ -507,6 +512,7 @@ describe("GuildRuntimeManager", () => {
         leaderboardChannelId: "guild-1-leaderboard-new",
         openAiConversationId: undefined,
         queueChannelId: "guild-1-queue-new",
+        soraEnabled: false,
       });
       expect(interaction.editReply).toHaveBeenCalledWith("Guild configuration saved and runtime refreshed.");
     } finally {
@@ -575,6 +581,7 @@ describe("GuildRuntimeManager", () => {
         leaderboardChannelId: "guild-1-leaderboard-new",
         openAiConversationId: "conversation-1",
         queueChannelId: "guild-1-queue",
+        soraEnabled: false,
       });
       expect(interaction.editReply).toHaveBeenCalledWith("Guild configuration saved and runtime refreshed.");
     } finally {
@@ -616,6 +623,7 @@ describe("GuildRuntimeManager", () => {
         leaderboardChannelId: "guild-1-leaderboard",
         openAiConversationId: "conversation-1",
         queueChannelId: "guild-1-queue",
+        soraEnabled: false,
       });
     } finally {
       reloadSpy.mockRestore();
@@ -655,6 +663,50 @@ describe("GuildRuntimeManager", () => {
         leaderboardChannelId: "guild-1-leaderboard",
         openAiConversationId: undefined,
         queueChannelId: "guild-1-queue",
+        soraEnabled: false,
+      });
+    } finally {
+      reloadSpy.mockRestore();
+      await manager.dispose();
+    }
+  });
+
+  it("updates only the Sora toggle when /setup set omits the other stored fields", async () => {
+    const existingConfig = {
+      ...createConfig("guild-1"),
+      soraEnabled: false,
+    };
+    const configStore = {
+      getGuildConfigResult: jest.fn(() => ({
+        config: existingConfig,
+        enabled: true,
+        guildId: "guild-1",
+      })),
+      setGuildConfig: jest.fn(() => ({
+        ...existingConfig,
+        soraEnabled: true,
+      })),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
+    const interaction = createSetupInteraction({
+      booleans: {
+        sora_enabled: true,
+      },
+    });
+    const reloadSpy = jest.spyOn(manager, "reloadContext").mockResolvedValue(null);
+
+    try {
+      await manager.handleSetupCommand(interaction);
+
+      expect(configStore.setGuildConfig).toHaveBeenCalledWith({
+        apiStatusChannelId: undefined,
+        chatChannelId: "guild-1-chat",
+        databaseUrl: "postgres:///guild-1",
+        guildId: "guild-1",
+        leaderboardChannelId: "guild-1-leaderboard",
+        openAiConversationId: undefined,
+        queueChannelId: "guild-1-queue",
+        soraEnabled: true,
       });
     } finally {
       reloadSpy.mockRestore();
@@ -694,6 +746,47 @@ describe("GuildRuntimeManager", () => {
         leaderboardChannelId: "guild-1-leaderboard",
         openAiConversationId: "conversation-keep",
         queueChannelId: "guild-1-queue-new",
+        soraEnabled: false,
+      });
+    } finally {
+      reloadSpy.mockRestore();
+      await manager.dispose();
+    }
+  });
+
+  it("preserves the stored Sora toggle when /setup set omits sora_enabled", async () => {
+    const existingConfig = {
+      ...createConfig("guild-1"),
+      soraEnabled: true,
+    };
+    const configStore = {
+      getGuildConfigResult: jest.fn(() => ({
+        config: existingConfig,
+        enabled: true,
+        guildId: "guild-1",
+      })),
+      setGuildConfig: jest.fn(() => existingConfig),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
+    const interaction = createSetupInteraction({
+      channels: {
+        queue_channel: createTextChannel("guild-1-queue-new"),
+      },
+    });
+    const reloadSpy = jest.spyOn(manager, "reloadContext").mockResolvedValue(null);
+
+    try {
+      await manager.handleSetupCommand(interaction);
+
+      expect(configStore.setGuildConfig).toHaveBeenCalledWith({
+        apiStatusChannelId: undefined,
+        chatChannelId: "guild-1-chat",
+        databaseUrl: "postgres:///guild-1",
+        guildId: "guild-1",
+        leaderboardChannelId: "guild-1-leaderboard",
+        openAiConversationId: undefined,
+        queueChannelId: "guild-1-queue-new",
+        soraEnabled: true,
       });
     } finally {
       reloadSpy.mockRestore();
@@ -733,6 +826,37 @@ describe("GuildRuntimeManager", () => {
     }
   });
 
+  it("shows the current guild Sora status in /setup show", async () => {
+    const configStore = {
+      getGuildConfigResult: jest.fn(() => ({
+        config: {
+          ...createConfig("guild-1"),
+          apiStatusChannelId: "guild-1-status",
+          openAiConversationId: "conversation-1",
+          queueMessageId: "queue-message-1",
+          soraEnabled: true,
+        },
+        enabled: true,
+        guildId: "guild-1",
+      })),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
+    const interaction = createSetupInteraction({
+      subcommand: "show",
+    });
+
+    try {
+      await manager.handleSetupCommand(interaction);
+
+      expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Sora: enabled"));
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.stringContaining("Chat channel: guild-1-chat")
+      );
+    } finally {
+      await manager.dispose();
+    }
+  });
+
   it("rejects /norm outside the configured chat channel", async () => {
     const manager = new GuildRuntimeManager(
       {} as Client,
@@ -767,6 +891,31 @@ describe("GuildRuntimeManager", () => {
     }
   });
 
+  it("rejects /sora when the guild has not enabled Sora yet", async () => {
+    const manager = new GuildRuntimeManager(
+      {} as Client,
+      {} as OpenAI,
+      {} as GuildConfigStore,
+      new DiscordWorkScheduler(1, 0)
+    );
+    const context = createContext("guild-1");
+    const interaction = {
+      channelId: "guild-1-chat",
+      commandName: "sora",
+      guildId: "guild-1",
+      reply: jest.fn(async () => undefined),
+    } as unknown as Parameters<GuildRuntimeManager["handleSlashCommand"]>[0];
+
+    jest.spyOn(manager, "ensureContext").mockResolvedValue(context);
+
+    await manager.handleSlashCommand(interaction);
+
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Sora is disabled for this server. A server admin can enable it with /setup set.",
+      flags: MessageFlags.Ephemeral,
+    });
+  });
+
   it("rejects /sora when the guild has not configured an OpenAI chat channel yet", async () => {
     const manager = new GuildRuntimeManager(
       {} as Client,
@@ -776,6 +925,7 @@ describe("GuildRuntimeManager", () => {
     );
     const context = createContext("guild-1");
     context.config.chatChannelId = undefined;
+    context.config.soraEnabled = true;
     const interaction = {
       channelId: "guild-1-chat",
       commandName: "sora",
