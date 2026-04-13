@@ -6,36 +6,84 @@ import {
   calculateProbabilityDecimal,
   chooseCaptains,
   countCaptainsRandomVotes,
-  countTwosVotes,
+  countMatchSizeVotes,
   createRandomTeams,
+  formatMatchSizeLabel,
+  getCaptainDraftSteps,
+  getCaptainsRandomVoteThreshold,
+  getHighestEnabledMatchSize,
+  getLowerTierVoteMatchSize,
   getQueueTargetSize,
+  normalizeEnabledMatchSizes,
   resolveMatchReport,
 } from "../sixMansRules";
 import { ButtonCustomID } from "../../utils/MessageHelper/CustomButtons";
 
 describe("sixMansRules", () => {
-  it("returns the correct queue target size for 6s and 2s", () => {
-    expect(getQueueTargetSize(false)).toBe(6);
-    expect(getQueueTargetSize(true)).toBe(4);
+  it("normalizes enabled match sizes and keeps the default baseline", () => {
+    expect(normalizeEnabledMatchSizes(undefined)).toEqual([2, 3]);
+    expect(normalizeEnabledMatchSizes([3, 2, 2, 15, 0, 4])).toEqual([2, 3, 4]);
   });
 
-  it("counts captains, random, and twos votes correctly", () => {
+  it("returns the correct queue target size for the highest enabled tier or selected lower tier", () => {
+    expect(getQueueTargetSize(null, [2, 3])).toBe(6);
+    expect(getQueueTargetSize(2, [2, 3, 4])).toBe(4);
+    expect(getQueueTargetSize(null, [1, 2, 4])).toBe(8);
+  });
+
+  it("detects the highest enabled size and exact-size lower-tier votes", () => {
+    expect(getHighestEnabledMatchSize([2, 3, 4])).toBe(4);
+    expect(getLowerTierVoteMatchSize(4, [1, 2, 3], null)).toBe(2);
+    expect(getLowerTierVoteMatchSize(2, [1, 2, 3], null)).toBe(1);
+    expect(getLowerTierVoteMatchSize(8, [2, 3, 4], null)).toBeNull();
+    expect(getLowerTierVoteMatchSize(5, [2, 3, 4], null)).toBeNull();
+    expect(getLowerTierVoteMatchSize(4, [1, 2, 3], 2)).toBeNull();
+  });
+
+  it("counts captains, random, and match-size votes correctly", () => {
     const captainsRandomVotes = new Map<string, string>([
       ["player-1", ButtonCustomID.ChooseTeam],
       ["player-2", ButtonCustomID.CreateRandomTeam],
       ["player-3", ButtonCustomID.ChooseTeam],
     ]);
-    const twosVotes = new Map<string, string>([
-      ["player-1", ButtonCustomID.Twos],
-      ["player-2", ButtonCustomID.Twos],
-      ["player-3", ButtonCustomID.JoinQueue],
+    const sizeVotes = new Map<string, number>([
+      ["player-1", 2],
+      ["player-2", 2],
+      ["player-3", 3],
     ]);
 
     expect(countCaptainsRandomVotes(captainsRandomVotes)).toEqual({
       captains: 2,
       random: 1,
     });
-    expect(countTwosVotes(twosVotes)).toBe(2);
+    expect(countMatchSizeVotes(sizeVotes, 2)).toBe(2);
+    expect(countMatchSizeVotes(sizeVotes, 3)).toBe(1);
+  });
+
+  it("formats match-size labels and vote thresholds", () => {
+    expect(formatMatchSizeLabel(4)).toBe("4v4");
+    expect(getCaptainsRandomVoteThreshold(4)).toBe(3);
+    expect(getCaptainsRandomVoteThreshold(6)).toBe(4);
+    expect(getCaptainsRandomVoteThreshold(8)).toBe(5);
+  });
+
+  it("builds generalized snake-draft steps", () => {
+    expect(getCaptainDraftSteps(2)).toEqual([{ picks: 1, team: Team.Blue }]);
+    expect(getCaptainDraftSteps(3)).toEqual([
+      { picks: 1, team: Team.Blue },
+      { picks: 2, team: Team.Orange },
+    ]);
+    expect(getCaptainDraftSteps(4)).toEqual([
+      { picks: 1, team: Team.Blue },
+      { picks: 2, team: Team.Orange },
+      { picks: 2, team: Team.Blue },
+    ]);
+    expect(getCaptainDraftSteps(5)).toEqual([
+      { picks: 1, team: Team.Blue },
+      { picks: 2, team: Team.Orange },
+      { picks: 2, team: Team.Blue },
+      { picks: 2, team: Team.Orange },
+    ]);
   });
 
   it("chooses the top two players as captains with orange picking first", () => {

@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import fs from "fs";
 import { getEnvVariable } from "../utils";
+import { DEFAULT_ENABLED_MATCH_SIZES, normalizeEnabledMatchSizes } from "./sixMansRules";
 import { EncryptedValue, GuildConfigUpsertInput, GuildInstanceConfig, GuildInstanceStoredConfig } from "./types";
 import { getGuildConfigPath } from "./runtimePaths";
 
@@ -69,6 +70,7 @@ export class GuildConfigStore {
     const updated: GuildInstanceStoredConfig = {
       ...file.guilds[index],
       enabled: false,
+      enabledMatchSizes: normalizeEnabledMatchSizes(file.guilds[index]?.enabledMatchSizes),
       soraEnabled: file.guilds[index]?.soraEnabled ?? false,
       updatedAt: new Date().toISOString(),
     };
@@ -89,6 +91,7 @@ export class GuildConfigStore {
       createdAt: previous?.createdAt ?? now,
       databaseUrl: this.encryptValue(input.databaseUrl),
       enabled: true,
+      enabledMatchSizes: normalizeEnabledMatchSizes(input.enabledMatchSizes ?? previous?.enabledMatchSizes),
       guildId: input.guildId,
       leaderboardChannelId: input.leaderboardChannelId,
       leaderboardMessageIds: previous?.leaderboardMessageIds,
@@ -254,12 +257,18 @@ function toError(error: unknown): Error {
 }
 
 function hasLegacyGuildConfigEntries(entries: LegacyGuildConfigEntry[]): boolean {
-  return entries.some((entry) => "voiceChannelId" in entry || entry.soraEnabled === undefined);
+  return entries.some(
+    (entry) =>
+      "voiceChannelId" in entry || entry.soraEnabled === undefined || entry.enabledMatchSizes === undefined
+  );
 }
 
 function normalizeLegacyGuildEntry(entry: LegacyGuildConfigEntry): GuildInstanceStoredConfig {
   const normalized = { ...entry };
   delete normalized.voiceChannelId;
+  normalized.enabledMatchSizes = normalizeEnabledMatchSizes(
+    normalized.enabledMatchSizes ?? [...DEFAULT_ENABLED_MATCH_SIZES]
+  );
   normalized.soraEnabled ??= false;
   return normalized;
 }

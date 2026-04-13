@@ -2,14 +2,13 @@ import { Client, Message, TextChannel } from "discord.js";
 import OpenAI from "openai";
 import { PrismaClient } from "../prisma";
 import AsyncMutex from "../utils/AsyncMutex";
-import { ButtonCustomID } from "../utils/MessageHelper/CustomButtons";
 import { MenuCustomID } from "../utils/MessageHelper/MessageBuilder";
 import { GuildRepositories } from "./GuildRepositories";
 import { DiscordWorkScheduler } from "./DiscordWorkScheduler";
 import { InteractiveSurfaceRegistry } from "./InteractiveSurfaceRegistry";
 import { GuildConfigStore } from "./GuildConfigStore";
 
-export type SurfaceAction = ButtonCustomID | MenuCustomID;
+export type SurfaceAction = string | MenuCustomID;
 
 export type InteractiveSurfaceState =
   | "queue_open"
@@ -30,6 +29,7 @@ export interface GuildInstanceStoredConfig {
   chatChannelId?: string;
   createdAt: string;
   databaseUrl: EncryptedValue;
+  enabledMatchSizes: number[];
   enabled: boolean;
   guildId: string;
   leaderboardChannelId: string;
@@ -46,6 +46,7 @@ export interface GuildInstanceConfig {
   chatChannelId?: string;
   createdAt: string;
   databaseUrl: string;
+  enabledMatchSizes: number[];
   enabled: boolean;
   guildId: string;
   leaderboardChannelId: string;
@@ -61,6 +62,7 @@ export interface GuildConfigUpsertInput {
   apiStatusChannelId?: string;
   chatChannelId?: string;
   databaseUrl: string;
+  enabledMatchSizes?: number[];
   guildId: string;
   leaderboardChannelId: string;
   openAiConversationId?: string;
@@ -79,8 +81,9 @@ export interface InteractiveSurfaceRecord {
 
 export interface GuildVoteState {
   captainsRandomVotes: Map<string, string>;
-  twosEnabled: boolean;
-  twosVotes: Map<string, string>;
+  captainDraftStepIndex: number;
+  selectedMatchSize: number | null;
+  sizeVotes: Map<string, number>;
 }
 
 export interface GuildChannels {

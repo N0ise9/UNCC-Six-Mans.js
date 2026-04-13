@@ -87,5 +87,11 @@ describe("registerAllSlashCommands", () => {
 
     expect(commands).toEqual(expect.arrayContaining([expect.objectContaining({ name: "sora" })]));
     expect(setOptions).toEqual(expect.arrayContaining([expect.objectContaining({ name: "sora_enabled" })]));
+    expect(setOptions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "enable_1v1" }),
+        expect.objectContaining({ name: "enable_12v12" }),
+      ])
+    );
   });
 });

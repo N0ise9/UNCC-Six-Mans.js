@@ -17,6 +17,15 @@ export interface CaptainsRandomVoteSummary {
   random: number;
 }
 
+export interface CaptainDraftStep {
+  picks: number;
+  team: Team;
+}
+
+export const MIN_MATCH_SIZE = 1;
+export const MAX_MATCH_SIZE = 12;
+export const DEFAULT_ENABLED_MATCH_SIZES = [2, 3] as const;
+
 export type MatchReportResolution =
   | {
       kind: "confirm";
@@ -34,8 +43,97 @@ export type MatchReportResolution =
       reportedTeam: Team;
     };
 
-export function getQueueTargetSize(twosEnabled: boolean): number {
-  return twosEnabled ? 4 : 6;
+export function normalizeEnabledMatchSizes(sizes: ReadonlyArray<number> | undefined | null): number[] {
+  const candidateSizes = sizes ?? DEFAULT_ENABLED_MATCH_SIZES;
+
+  return [...new Set(candidateSizes)]
+    .filter((size) => Number.isInteger(size) && size >= MIN_MATCH_SIZE && size <= MAX_MATCH_SIZE)
+    .sort((left, right) => left - right);
+}
+
+export function formatMatchSizeLabel(matchSize: number): string {
+  return `${matchSize}v${matchSize}`;
+}
+
+export function getHighestEnabledMatchSize(enabledMatchSizes: ReadonlyArray<number>): number {
+  const normalized = normalizeEnabledMatchSizes(enabledMatchSizes);
+  return normalized[normalized.length - 1] ?? DEFAULT_ENABLED_MATCH_SIZES[DEFAULT_ENABLED_MATCH_SIZES.length - 1];
+}
+
+export function getQueueTargetSize(
+  selectedMatchSize: number | null,
+  enabledMatchSizes: ReadonlyArray<number>
+): number {
+  return (selectedMatchSize ?? getHighestEnabledMatchSize(enabledMatchSizes)) * 2;
+}
+
+export function getLowerTierVoteMatchSize(
+  queueSize: number,
+  enabledMatchSizes: ReadonlyArray<number>,
+  selectedMatchSize: number | null
+): number | null {
+  if (selectedMatchSize !== null || queueSize % 2 !== 0) {
+    return null;
+  }
+
+  const normalized = normalizeEnabledMatchSizes(enabledMatchSizes);
+  const candidateMatchSize = queueSize / 2;
+  if (!normalized.includes(candidateMatchSize)) {
+    return null;
+  }
+
+  return candidateMatchSize < getHighestEnabledMatchSize(normalized) ? candidateMatchSize : null;
+}
+
+export function countMatchSizeVotes(votes: ReadonlyMap<string, number>, matchSize: number): number {
+  let count = 0;
+
+  for (const value of votes.values()) {
+    if (value === matchSize) {
+      count += 1;
+    }
+  }
+
+  return count;
+}
+
+export function getCaptainsRandomVoteThreshold(queueSize: number): number {
+  return Math.floor(queueSize / 2) + 1;
+}
+
+export function getCaptainDraftSteps(matchSize: number): CaptainDraftStep[] {
+  if (matchSize <= 1) {
+    return [];
+  }
+
+  const steps: CaptainDraftStep[] = [];
+  const playersNeeded = new Map<Team, number>([
+    [Team.Blue, matchSize - 1],
+    [Team.Orange, matchSize - 1],
+  ]);
+  let remainingUnassigned = matchSize * 2 - 2;
+  let nextTeam = Team.Blue;
+  let firstPick = true;
+
+  while (remainingUnassigned > 1) {
+    const picks = firstPick
+      ? 1
+      : Math.min(2, playersNeeded.get(nextTeam) ?? 0, remainingUnassigned - 1);
+    if (picks <= 0) {
+      break;
+    }
+
+    steps.push({
+      picks,
+      team: nextTeam,
+    });
+    playersNeeded.set(nextTeam, (playersNeeded.get(nextTeam) ?? 0) - picks);
+    remainingUnassigned -= picks;
+    nextTeam = nextTeam === Team.Blue ? Team.Orange : Team.Blue;
+    firstPick = false;
+  }
+
+  return steps;
 }
 
 export function countCaptainsRandomVotes(votes: ReadonlyMap<string, string>): CaptainsRandomVoteSummary {
@@ -51,18 +149,6 @@ export function countCaptainsRandomVotes(votes: ReadonlyMap<string, string>): Ca
     captains,
     random,
   };
-}
-
-export function countTwosVotes(votes: ReadonlyMap<string, string>): number {
-  let twos = 0;
-
-  for (const value of votes.values()) {
-    if (value === ButtonCustomID.Twos) {
-      twos += 1;
-    }
-  }
-
-  return twos;
 }
 
 export function chooseCaptains(ballChasers: ReadonlyArray<Readonly<PlayerInQueue>>): {

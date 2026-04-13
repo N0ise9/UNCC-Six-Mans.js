@@ -8,7 +8,7 @@ import { GuildRepositories } from "../GuildRepositories";
 import { DiscordWorkScheduler } from "../DiscordWorkScheduler";
 import { GuildConfigStore } from "../GuildConfigStore";
 import { GuildContext, InteractiveSurfaceState } from "../types";
-import { ButtonCustomID } from "../../utils/MessageHelper/CustomButtons";
+import { ButtonCustomID, createVoteMatchSizeCustomId } from "../../utils/MessageHelper/CustomButtons";
 import { MenuCustomID } from "../../utils/MessageHelper/MessageBuilder";
 import {
   createIntegrationTestPrismaClient,
@@ -138,7 +138,7 @@ async function joinPlayers(
   queueMessage: Message,
   playerIds: string[]
 ): Promise<void> {
-  allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue, ButtonCustomID.Twos]);
+  allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
   for (const playerId of playerIds) {
     await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, playerId));
@@ -198,7 +198,7 @@ describe("GuildRuntimeManager six mans integration", () => {
 
     expect(await prisma.queue.count()).toBe(0);
     expect(await prisma.activeMatch.count()).toBe(6);
-    expect(context.voteState.twosEnabled).toBe(false);
+    expect(context.voteState.selectedMatchSize).toBeNull();
     expect(context.voteState.captainsRandomVotes.size).toBe(0);
   });
 
@@ -255,18 +255,20 @@ describe("GuildRuntimeManager six mans integration", () => {
     expect(await prisma.activeMatch.count()).toBe(6);
   });
 
-  it("enables 2s from four votes and starts a 2v2 random match from three random votes", async () => {
+  it("selects 2v2 from four votes and starts a 2v2 random match from three random votes", async () => {
     const { context, manager, queueMessage } = await createTrackedManagerContext("guild-twos");
     const playerIds = ["player-1", "player-2", "player-3", "player-4"];
+    const voteTwoVTwo = createVoteMatchSizeCustomId(2);
 
     await joinPlayers(manager, context, queueMessage, playerIds);
+    allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue, voteTwoVTwo]);
 
     for (const voter of playerIds) {
-      await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.Twos, queueMessage, voter));
+      await manager.handleButtonInteraction(context, createButtonInteraction(voteTwoVTwo, queueMessage, voter));
       await context.scheduler.drain();
     }
 
-    expect(context.voteState.twosEnabled).toBe(true);
+    expect(context.voteState.selectedMatchSize).toBe(2);
 
     for (const voter of playerIds.slice(0, 3)) {
       await manager.handleButtonInteraction(
@@ -278,6 +280,43 @@ describe("GuildRuntimeManager six mans integration", () => {
 
     expect(await prisma.queue.count()).toBe(0);
     expect(await prisma.activeMatch.count()).toBe(4);
+  });
+
+  it("starts a 1v1 immediately after a unanimous 1v1 vote", async () => {
+    const { context, manager, queueMessage } = await createTrackedManagerContext("guild-ones");
+    const playerIds = ["player-1", "player-2"];
+    const voteOneVOne = createVoteMatchSizeCustomId(1);
+    context.config.enabledMatchSizes = [1, 2, 3];
+
+    await joinPlayers(manager, context, queueMessage, playerIds);
+
+    for (const voter of playerIds) {
+      await manager.handleButtonInteraction(context, createButtonInteraction(voteOneVOne, queueMessage, voter));
+      await context.scheduler.drain();
+    }
+
+    expect(await prisma.queue.count()).toBe(0);
+    expect(await prisma.activeMatch.count()).toBe(2);
+  });
+
+  it("directly pops the highest enabled 4v4 tier without a lower-tier vote", async () => {
+    const { context, manager, queueMessage } = await createTrackedManagerContext("guild-fours");
+    const playerIds = Array.from({ length: 8 }, (_, index) => `player-${index + 1}`);
+    context.config.enabledMatchSizes = [2, 4];
+
+    await joinPlayers(manager, context, queueMessage, playerIds);
+
+    for (const voter of playerIds.slice(0, 5)) {
+      await manager.handleButtonInteraction(
+        context,
+        createButtonInteraction(ButtonCustomID.CreateRandomTeam, queueMessage, voter)
+      );
+      await context.scheduler.drain();
+    }
+
+    expect(context.voteState.selectedMatchSize).toBeNull();
+    expect(await prisma.queue.count()).toBe(0);
+    expect(await prisma.activeMatch.count()).toBe(8);
   });
 
   it("prevents active-match players from joining another queue", async () => {

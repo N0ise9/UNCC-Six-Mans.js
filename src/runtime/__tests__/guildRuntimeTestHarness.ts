@@ -23,6 +23,7 @@ export function createGuildConfig(guildId = "guild-1"): GuildInstanceConfig {
     createdAt: "2026-01-01T00:00:00.000Z",
     databaseUrl: `postgres:///${guildId}`,
     enabled: true,
+    enabledMatchSizes: [2, 3],
     guildId,
     leaderboardChannelId: `${guildId}-leaderboard`,
     queueChannelId: `${guildId}-queue`,
@@ -50,7 +51,7 @@ export function createDiscordMessage(options: FakeMessageOptions = {}): Message 
 }
 
 export function createButtonInteraction(
-  customId: ButtonCustomID,
+  customId: ButtonCustomID | string,
   message: Message,
   userId: string,
   username = userId
@@ -125,9 +126,10 @@ export function createGuildRuntimeTestContext(
     scheduler: overrides.scheduler ?? new DiscordWorkScheduler(1, 0),
     surfaceRegistry: overrides.surfaceRegistry ?? new InteractiveSurfaceRegistry(),
     voteState: overrides.voteState ?? {
+      captainDraftStepIndex: 0,
       captainsRandomVotes: new Map<string, string>(),
-      twosEnabled: false,
-      twosVotes: new Map<string, string>(),
+      selectedMatchSize: null,
+      sizeVotes: new Map<string, number>(),
     },
     ...overrides,
   };

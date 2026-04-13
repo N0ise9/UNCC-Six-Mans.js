@@ -5,7 +5,7 @@ import { ActiveMatchCreated } from "../../domain/match";
 import { Team } from "../../types/common";
 import { ActiveMatchTeams, PlayerInActiveMatch } from "../../repositories/ActiveMatchRepository/types";
 import { PlayerInQueue } from "../../repositories/QueueRepository/types";
-import { ButtonCustomID } from "../../utils/MessageHelper/CustomButtons";
+import { ButtonCustomID, createVoteMatchSizeCustomId } from "../../utils/MessageHelper/CustomButtons";
 import { MenuCustomID } from "../../utils/MessageHelper/MessageBuilder";
 import { GuildRuntimeManager } from "../GuildRuntimeManager";
 import { DiscordWorkScheduler } from "../DiscordWorkScheduler";
@@ -297,7 +297,7 @@ describe("GuildRuntimeManager six mans interactions", () => {
       },
     });
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
-    allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue, ButtonCustomID.Twos]);
+    allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
     await manager.handleButtonInteraction(
       context,
@@ -332,7 +332,7 @@ describe("GuildRuntimeManager six mans interactions", () => {
     });
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
     context.voteState.captainsRandomVotes.set("player-2", ButtonCustomID.ChooseTeam);
-    allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue, ButtonCustomID.Twos]);
+    allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
     await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
     await context.scheduler.drain();
@@ -442,16 +442,16 @@ describe("GuildRuntimeManager six mans interactions", () => {
     });
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
     context.voteState.captainsRandomVotes.set("player-1", ButtonCustomID.ChooseTeam);
-    context.voteState.twosEnabled = true;
-    context.voteState.twosVotes.set("player-2", ButtonCustomID.Twos);
+    context.voteState.selectedMatchSize = 2;
+    context.voteState.sizeVotes.set("player-2", 2);
     allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
     await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.LeaveQueue, queueMessage, "player-1"));
     await context.scheduler.drain();
 
     expect(context.voteState.captainsRandomVotes.size).toBe(0);
-    expect(context.voteState.twosVotes.size).toBe(0);
-    expect(context.voteState.twosEnabled).toBe(false);
+    expect(context.voteState.sizeVotes.size).toBe(0);
+    expect(context.voteState.selectedMatchSize).toBeNull();
   });
 
   it("expires queued players on the timer only when the queue is not popped", async () => {
@@ -498,7 +498,7 @@ describe("GuildRuntimeManager six mans interactions", () => {
     expect(queueMessage.edit).toHaveBeenCalledTimes(1);
   });
 
-  it("only allows queued players to cast 2s votes", async () => {
+  it("only allows queued players to cast lower-tier votes", async () => {
     const manager = createManager();
     const queueMessage = createDiscordMessage({ id: "queue-message-1" });
     const queuedPlayers = ["player-1", "player-2", "player-3", "player-4"].map((id) => queuePlayer(id));
@@ -508,16 +508,17 @@ describe("GuildRuntimeManager six mans interactions", () => {
       },
     });
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
-    allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue, ButtonCustomID.Twos]);
+    const voteTwoVTwo = createVoteMatchSizeCustomId(2);
+    allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue, voteTwoVTwo]);
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.Twos, queueMessage, "spectator"));
+    await manager.handleButtonInteraction(context, createButtonInteraction(voteTwoVTwo, queueMessage, "spectator"));
     await context.scheduler.drain();
 
-    expect(context.voteState.twosVotes.size).toBe(0);
+    expect(context.voteState.sizeVotes.size).toBe(0);
     expect(queueMessage.edit).not.toHaveBeenCalled();
   });
 
-  it("does not double-count repeated 2s votes from the same player", async () => {
+  it("does not double-count repeated lower-tier votes from the same player", async () => {
     const manager = createManager();
     const queueMessage = createDiscordMessage({ id: "queue-message-1" });
     const queuedPlayers = ["player-1", "player-2", "player-3", "player-4"].map((id) => queuePlayer(id));
@@ -527,13 +528,14 @@ describe("GuildRuntimeManager six mans interactions", () => {
       },
     });
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
-    allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue, ButtonCustomID.Twos]);
+    const voteTwoVTwo = createVoteMatchSizeCustomId(2);
+    allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue, voteTwoVTwo]);
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.Twos, queueMessage, "player-1"));
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.Twos, queueMessage, "player-1"));
+    await manager.handleButtonInteraction(context, createButtonInteraction(voteTwoVTwo, queueMessage, "player-1"));
+    await manager.handleButtonInteraction(context, createButtonInteraction(voteTwoVTwo, queueMessage, "player-1"));
     await context.scheduler.drain();
 
-    expect(context.voteState.twosVotes.size).toBe(1);
+    expect(context.voteState.sizeVotes.size).toBe(1);
   });
 
   it("collapses queue edits until 1250ms after the last visible queue update", async () => {
@@ -563,7 +565,7 @@ describe("GuildRuntimeManager six mans interactions", () => {
     expect(queueMessage.edit).toHaveBeenCalledTimes(2);
   });
 
-  it("enables 2s after four unique queued votes and clears the vote maps", async () => {
+  it("selects 2v2 after four unique queued votes and clears the vote maps", async () => {
     const manager = createManager();
     const queueMessage = createDiscordMessage({ id: "queue-message-1" });
     const queuedPlayers = ["player-1", "player-2", "player-3", "player-4"].map((id) => queuePlayer(id));
@@ -573,16 +575,86 @@ describe("GuildRuntimeManager six mans interactions", () => {
       },
     });
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
-    allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue, ButtonCustomID.Twos]);
+    const voteTwoVTwo = createVoteMatchSizeCustomId(2);
+    allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue, voteTwoVTwo]);
 
     for (const player of queuedPlayers) {
-      await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.Twos, queueMessage, player.id));
+      await manager.handleButtonInteraction(context, createButtonInteraction(voteTwoVTwo, queueMessage, player.id));
     }
     await context.scheduler.drain();
 
-    expect(context.voteState.twosEnabled).toBe(true);
-    expect(context.voteState.twosVotes.size).toBe(0);
+    expect(context.voteState.selectedMatchSize).toBe(2);
+    expect(context.voteState.sizeVotes.size).toBe(0);
     expect(context.voteState.captainsRandomVotes.size).toBe(0);
+  });
+
+  it("starts a 1v1 immediately once both queued players vote for 1v1", async () => {
+    const manager = createManager();
+    const queueMessage = createDiscordMessage({ id: "queue-message-1" });
+    const repositories = createInMemoryRepositories(["player-1", "player-2"].map((id) => queuePlayer(id)));
+    const context = createGuildRuntimeTestContext(repositories, { queueMessage });
+    context.config.enabledMatchSizes = [1, 2, 3];
+    const voteOneVOne = createVoteMatchSizeCustomId(1);
+    allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue, voteOneVOne]);
+
+    await manager.handleButtonInteraction(context, createButtonInteraction(voteOneVOne, queueMessage, "player-1"));
+    await manager.handleButtonInteraction(context, createButtonInteraction(voteOneVOne, queueMessage, "player-2"));
+    await context.scheduler.drain();
+
+    const finalQueue = await context.repositories.queue.getAllBallChasersInQueue();
+    const activeMatch = await context.repositories.activeMatch.getAllPlayersInActiveMatch("player-1");
+
+    expect(finalQueue).toHaveLength(0);
+    expect(activeMatch.blueTeam).toHaveLength(1);
+    expect(activeMatch.orangeTeam).toHaveLength(1);
+    expect(context.voteState.selectedMatchSize).toBeNull();
+    expect(queueMessage.reply).toHaveBeenCalledTimes(1);
+  });
+
+  it("records larger lower-tier votes at their exact queue size when a higher tier is enabled", async () => {
+    const manager = createManager();
+    const queueMessage = createDiscordMessage({ id: "queue-message-1" });
+    const repositories = createMockRepositories({
+      queue: {
+        getAllBallChasersInQueue: jest.fn(async () =>
+          Array.from({ length: 8 }, (_, index) => queuePlayer(`player-${index + 1}`))
+        ),
+      },
+    });
+    const context = createGuildRuntimeTestContext(repositories, { queueMessage });
+    context.config.enabledMatchSizes = [2, 4, 5];
+    const voteFourVFour = createVoteMatchSizeCustomId(4);
+    allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue, voteFourVFour]);
+
+    await manager.handleButtonInteraction(context, createButtonInteraction(voteFourVFour, queueMessage, "player-1"));
+    await context.scheduler.drain();
+
+    expect(context.voteState.sizeVotes.get("player-1")).toBe(4);
+    expect(queueMessage.edit).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a lower-tier vote when the queue size is no longer an exact match", async () => {
+    const manager = createManager();
+    const queueMessage = createDiscordMessage({ id: "queue-message-1" });
+    const repositories = createMockRepositories({
+      queue: {
+        getAllBallChasersInQueue: jest.fn(async () =>
+          Array.from({ length: 5 }, (_, index) => queuePlayer(`player-${index + 1}`))
+        ),
+      },
+    });
+    const context = createGuildRuntimeTestContext(repositories, { queueMessage });
+    const voteTwoVTwo = createVoteMatchSizeCustomId(2);
+    allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue, voteTwoVTwo]);
+
+    await manager.handleButtonInteraction(context, createButtonInteraction(voteTwoVTwo, queueMessage, "player-1"));
+    await context.scheduler.drain();
+
+    expect(context.voteState.sizeVotes.size).toBe(0);
+    expect(queueMessage.edit).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Vote 2v2 | IGNORED | 2v2 voting is unavailable at the current queue size")
+    );
   });
 
   it("overwrites a queued player's captains/random vote when they change their mind", async () => {
@@ -616,12 +688,12 @@ describe("GuildRuntimeManager six mans interactions", () => {
     expect(context.voteState.captainsRandomVotes.get("player-1")).toBe(ButtonCustomID.CreateRandomTeam);
   });
 
-  it("uses a threshold of three random votes after 2s is enabled", async () => {
+  it("uses a threshold of three random votes after 2v2 is selected", async () => {
     const manager = createManager();
     const queueMessage = createDiscordMessage({ id: "queue-message-1" });
     const repositories = createInMemoryRepositories(["player-1", "player-2", "player-3", "player-4"].map((id) => queuePlayer(id)));
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
-    context.voteState.twosEnabled = true;
+    context.voteState.selectedMatchSize = 2;
     allowQueueSurface(context, queueMessage, [
       ButtonCustomID.LeaveQueue,
       ButtonCustomID.ChooseTeam,
@@ -655,6 +727,46 @@ describe("GuildRuntimeManager six mans interactions", () => {
     } finally {
       publishSpy.mockRestore();
     }
+  });
+
+  it("requires the orange captain to draft two players during the 4v4 snake step", async () => {
+    const manager = createManager();
+    const queueMessage = createDiscordMessage({ id: "queue-message-1" });
+    const players = [
+      queuePlayer("captain-blue", { isCap: true, team: Team.Blue }),
+      queuePlayer("captain-orange", { isCap: true, team: Team.Orange }),
+      queuePlayer("blue-picked", { team: Team.Blue }),
+      queuePlayer("available-1"),
+      queuePlayer("available-2"),
+      queuePlayer("available-3"),
+      queuePlayer("available-4"),
+      queuePlayer("available-5"),
+    ];
+    const repositories = createInMemoryRepositories(players);
+    const context = createGuildRuntimeTestContext(repositories, { queueMessage });
+    context.config.enabledMatchSizes = [4];
+    context.voteState.captainDraftStepIndex = 1;
+    context.surfaceRegistry.upsert(queueMessage.id, "queue", {
+      allowedActions: new Set<string>([MenuCustomID.OrangeSelect]),
+      allowedValues: new Set<string>(["available-1", "available-2", "available-3", "available-4", "available-5"]),
+      state: "captain_orange_pick",
+    });
+
+    await manager.handleSelectMenuInteraction(
+      context,
+      createSelectMenuInteraction(
+        MenuCustomID.OrangeSelect,
+        ["available-1", "available-2"],
+        queueMessage,
+        "captain-orange"
+      )
+    );
+    await context.scheduler.drain();
+
+    const finalQueue = await context.repositories.queue.getAllBallChasersInQueue();
+    expect(finalQueue.find((player) => player.id === "available-1")?.team).toBe(Team.Orange);
+    expect(finalQueue.find((player) => player.id === "available-2")?.team).toBe(Team.Orange);
+    expect(context.voteState.captainDraftStepIndex).toBe(2);
   });
 
   it("only allows the blue captain to make the blue draft pick", async () => {

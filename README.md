@@ -20,6 +20,8 @@ Bot-wide configuration lives in `.env`. Per-guild configuration does not.
 
 In practice, Norm is meant to run a private competitive ecosystem inside each server. Players queue for in-house matches, Norm manages the queue and match flow, and completed matches feed a persistent leaderboard. Wins and losses provide standing and match history, while MMR gives each guild a skill-based ranking signal for its own internal competition.
 
+Guilds can also decide which match tiers Norm is allowed to create, from `1v1` through `12v12`. By default, Norm keeps the familiar `2v2` and `3v3` flow enabled. The highest enabled tier auto-pops when the queue fills, while lower enabled tiers only become available as unanimous exact-size votes. A passed `1v1` vote starts immediately with random blue/orange sides.
+
 Important runtime behavior:
 - slash commands are registered per guild on startup
 - any old global application commands are pruned on startup
@@ -136,6 +138,7 @@ database_url:<postgres connection string>
 [chat_channel:<text channel>]
 [api_status_channel:<text channel>]
 [conversation_id:<existing OpenAI conversation id>]
+[enable_1v1:true|false] ... [enable_12v12:true|false]
 [sora_enabled:true|false]
 ```
 
@@ -148,7 +151,14 @@ Optional fields:
 - `chat_channel`
 - `api_status_channel`
 - `conversation_id`
+- `enable_1v1` through `enable_12v12`
 - `sora_enabled`
+
+Match tier defaults and behavior:
+- new and legacy guilds default to `2v2, 3v3`
+- the highest enabled tier auto-pops with no size vote
+- lower enabled tiers only appear as unanimous votes when the queue reaches that exact size
+- `1v1` skips captains/random and starts immediately with random sides once both queued players vote for it
 
 Example:
 
@@ -160,6 +170,8 @@ chat_channel: #norm-chat
 api_status_channel: #api-status
 database_url: postgresql://Norm:NormTheNiner@localhost:5432/SixMansGuildA
 conversation_id: conv_1234567890abcdef
+enable_4v4: true
+enable_5v5: true
 sora_enabled: true
 ```
 

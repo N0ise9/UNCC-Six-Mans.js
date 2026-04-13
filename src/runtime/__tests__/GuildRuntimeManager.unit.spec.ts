@@ -14,6 +14,7 @@ function createConfig(guildId: string): GuildInstanceConfig {
     chatChannelId: `${guildId}-chat`,
     createdAt: "2026-01-01T00:00:00.000Z",
     databaseUrl: `postgres:///${guildId}`,
+    enabledMatchSizes: [2, 3],
     enabled: true,
     guildId,
     leaderboardChannelId: `${guildId}-leaderboard`,
@@ -45,8 +46,9 @@ function createContext(guildId: string): GuildContext {
     surfaceRegistry: {} as GuildContext["surfaceRegistry"],
     voteState: {
       captainsRandomVotes: new Map(),
-      twosEnabled: false,
-      twosVotes: new Map(),
+      captainDraftStepIndex: 0,
+      selectedMatchSize: null,
+      sizeVotes: new Map(),
     },
   };
 }
@@ -70,7 +72,7 @@ function createTextChannel(id: string): TextChannel {
 }
 
 function createSetupInteraction(options?: {
-  booleans?: Partial<Record<"sora_enabled", boolean>>;
+  booleans?: Partial<Record<string, boolean>>;
   channels?: Partial<Record<"api_status_channel" | "chat_channel" | "leaderboard_channel" | "queue_channel", TextChannel>>;
   guildId?: string;
   hasManageGuild?: boolean;
@@ -470,6 +472,7 @@ describe("GuildRuntimeManager", () => {
         apiStatusChannelId: undefined,
         chatChannelId: "guild-1-chat-new",
         databaseUrl: "postgres:///guild-1-new",
+        enabledMatchSizes: [2, 3],
         guildId: "guild-1",
         leaderboardChannelId: "guild-1-leaderboard-new",
         openAiConversationId: undefined,
@@ -508,6 +511,7 @@ describe("GuildRuntimeManager", () => {
         apiStatusChannelId: undefined,
         chatChannelId: undefined,
         databaseUrl: "postgres:///guild-1-new",
+        enabledMatchSizes: [2, 3],
         guildId: "guild-1",
         leaderboardChannelId: "guild-1-leaderboard-new",
         openAiConversationId: undefined,
@@ -577,6 +581,7 @@ describe("GuildRuntimeManager", () => {
         apiStatusChannelId: "guild-1-status-old",
         chatChannelId: "guild-1-chat",
         databaseUrl: "postgres:///guild-1",
+        enabledMatchSizes: [2, 3],
         guildId: "guild-1",
         leaderboardChannelId: "guild-1-leaderboard-new",
         openAiConversationId: "conversation-1",
@@ -619,6 +624,7 @@ describe("GuildRuntimeManager", () => {
         apiStatusChannelId: "guild-1-status-old",
         chatChannelId: "guild-1-chat",
         databaseUrl: "postgres:///guild-1-replacement",
+        enabledMatchSizes: [2, 3],
         guildId: "guild-1",
         leaderboardChannelId: "guild-1-leaderboard",
         openAiConversationId: "conversation-1",
@@ -659,12 +665,132 @@ describe("GuildRuntimeManager", () => {
         apiStatusChannelId: "guild-1-status-new",
         chatChannelId: "guild-1-chat",
         databaseUrl: "postgres:///guild-1",
+        enabledMatchSizes: [2, 3],
         guildId: "guild-1",
         leaderboardChannelId: "guild-1-leaderboard",
         openAiConversationId: undefined,
         queueChannelId: "guild-1-queue",
         soraEnabled: false,
       });
+    } finally {
+      reloadSpy.mockRestore();
+      await manager.dispose();
+    }
+  });
+
+  it("enables and disables individual match tiers without overwriting omitted ones", async () => {
+    const existingConfig = {
+      ...createConfig("guild-1"),
+      enabledMatchSizes: [2, 3],
+    };
+    const configStore = {
+      getGuildConfigResult: jest.fn(() => ({
+        config: existingConfig,
+        enabled: true,
+        guildId: "guild-1",
+      })),
+      setGuildConfig: jest.fn(() => ({
+        ...existingConfig,
+        enabledMatchSizes: [3, 4],
+      })),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
+    const interaction = createSetupInteraction({
+      booleans: {
+        enable_2v2: false,
+        enable_4v4: true,
+      },
+    });
+    const reloadSpy = jest.spyOn(manager, "reloadContext").mockResolvedValue(null);
+
+    try {
+      await manager.handleSetupCommand(interaction);
+
+      expect(configStore.setGuildConfig).toHaveBeenCalledWith({
+        apiStatusChannelId: undefined,
+        chatChannelId: "guild-1-chat",
+        databaseUrl: "postgres:///guild-1",
+        enabledMatchSizes: [3, 4],
+        guildId: "guild-1",
+        leaderboardChannelId: "guild-1-leaderboard",
+        openAiConversationId: undefined,
+        queueChannelId: "guild-1-queue",
+        soraEnabled: false,
+      });
+    } finally {
+      reloadSpy.mockRestore();
+      await manager.dispose();
+    }
+  });
+
+  it("preserves stored match tiers when /setup set omits the tier toggles", async () => {
+    const existingConfig = {
+      ...createConfig("guild-1"),
+      enabledMatchSizes: [1, 4, 6],
+    };
+    const configStore = {
+      getGuildConfigResult: jest.fn(() => ({
+        config: existingConfig,
+        enabled: true,
+        guildId: "guild-1",
+      })),
+      setGuildConfig: jest.fn(() => existingConfig),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
+    const interaction = createSetupInteraction({
+      channels: {
+        queue_channel: createTextChannel("guild-1-queue-new"),
+      },
+    });
+    const reloadSpy = jest.spyOn(manager, "reloadContext").mockResolvedValue(null);
+
+    try {
+      await manager.handleSetupCommand(interaction);
+
+      expect(configStore.setGuildConfig).toHaveBeenCalledWith({
+        apiStatusChannelId: undefined,
+        chatChannelId: "guild-1-chat",
+        databaseUrl: "postgres:///guild-1",
+        enabledMatchSizes: [1, 4, 6],
+        guildId: "guild-1",
+        leaderboardChannelId: "guild-1-leaderboard",
+        openAiConversationId: undefined,
+        queueChannelId: "guild-1-queue-new",
+        soraEnabled: false,
+      });
+    } finally {
+      reloadSpy.mockRestore();
+      await manager.dispose();
+    }
+  });
+
+  it("rejects disabling every match tier in /setup set", async () => {
+    const existingConfig = {
+      ...createConfig("guild-1"),
+      enabledMatchSizes: [2],
+    };
+    const configStore = {
+      getGuildConfigResult: jest.fn(() => ({
+        config: existingConfig,
+        enabled: true,
+        guildId: "guild-1",
+      })),
+      setGuildConfig: jest.fn(),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager({} as Client, {} as OpenAI, configStore, new DiscordWorkScheduler(1, 0));
+    const interaction = createSetupInteraction({
+      booleans: {
+        enable_2v2: false,
+      },
+    });
+    const reloadSpy = jest.spyOn(manager, "reloadContext").mockResolvedValue(null);
+
+    try {
+      await manager.handleSetupCommand(interaction);
+
+      expect(configStore.setGuildConfig).not.toHaveBeenCalled();
+      expect(reloadSpy).not.toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalledWith("At least one match type must stay enabled.");
     } finally {
       reloadSpy.mockRestore();
       await manager.dispose();
@@ -702,6 +828,7 @@ describe("GuildRuntimeManager", () => {
         apiStatusChannelId: undefined,
         chatChannelId: "guild-1-chat",
         databaseUrl: "postgres:///guild-1",
+        enabledMatchSizes: [2, 3],
         guildId: "guild-1",
         leaderboardChannelId: "guild-1-leaderboard",
         openAiConversationId: undefined,
@@ -742,6 +869,7 @@ describe("GuildRuntimeManager", () => {
         apiStatusChannelId: undefined,
         chatChannelId: "guild-1-chat",
         databaseUrl: "postgres:///guild-1",
+        enabledMatchSizes: [2, 3],
         guildId: "guild-1",
         leaderboardChannelId: "guild-1-leaderboard",
         openAiConversationId: "conversation-keep",
@@ -782,6 +910,7 @@ describe("GuildRuntimeManager", () => {
         apiStatusChannelId: undefined,
         chatChannelId: "guild-1-chat",
         databaseUrl: "postgres:///guild-1",
+        enabledMatchSizes: [2, 3],
         guildId: "guild-1",
         leaderboardChannelId: "guild-1-leaderboard",
         openAiConversationId: undefined,
@@ -849,6 +978,7 @@ describe("GuildRuntimeManager", () => {
       await manager.handleSetupCommand(interaction);
 
       expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Sora: enabled"));
+      expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Match types: 2v2, 3v3"));
       expect(interaction.editReply).toHaveBeenCalledWith(
         expect.stringContaining("Chat channel: guild-1-chat")
       );

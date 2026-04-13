@@ -51,6 +51,7 @@ describe("GuildConfigStore", () => {
       expect(config).not.toBeNull();
       expect(config?.chatChannelId).toBe("chat-1");
       expect(config?.databaseUrl).toBe("postgres://user:pass@localhost:5432/guild_one");
+      expect(config?.enabledMatchSizes).toEqual([2, 3]);
       expect(config?.queueChannelId).toBe("queue-1");
       expect(config?.enabled).toBe(true);
       expect(config?.soraEnabled).toBe(false);
@@ -75,6 +76,7 @@ describe("GuildConfigStore", () => {
       expect(config).not.toBeNull();
       expect(config?.chatChannelId).toBeUndefined();
       expect(config?.databaseUrl).toBe("postgres://user:pass@localhost:5432/guild_one");
+      expect(config?.enabledMatchSizes).toEqual([2, 3]);
       expect(config?.queueChannelId).toBe("queue-1");
       expect(config?.enabled).toBe(true);
       expect(config?.soraEnabled).toBe(false);
@@ -100,6 +102,27 @@ describe("GuildConfigStore", () => {
 
       expect(config).not.toBeNull();
       expect(config?.soraEnabled).toBe(true);
+    } finally {
+      cleanup(filePath);
+    }
+  });
+
+  it("stores and reads custom enabled match tiers", () => {
+    const { filePath, store } = createStore();
+
+    try {
+      store.setGuildConfig({
+        databaseUrl: "postgres://user:pass@localhost:5432/guild_one",
+        enabledMatchSizes: [1, 4, 8, 12],
+        guildId: "guild-1",
+        leaderboardChannelId: "leaderboard-1",
+        queueChannelId: "queue-1",
+      });
+
+      const config = store.getGuildConfig("guild-1");
+
+      expect(config).not.toBeNull();
+      expect(config?.enabledMatchSizes).toEqual([1, 4, 8, 12]);
     } finally {
       cleanup(filePath);
     }
@@ -230,6 +253,7 @@ describe("GuildConfigStore", () => {
 
       expect(config?.databaseUrl).toBe("postgres://guild-one");
       expect(config?.chatChannelId).toBeUndefined();
+      expect(config?.enabledMatchSizes).toEqual([2, 3]);
       expect(config?.soraEnabled).toBe(false);
       expect(raw).not.toContain("voiceChannelId");
       expect(raw).toContain('"queueChannelId": "queue-1"');

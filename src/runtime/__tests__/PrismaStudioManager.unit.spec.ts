@@ -8,6 +8,7 @@ function createConfig(guildId: string): GuildInstanceConfig {
     chatChannelId: `${guildId}-chat`,
     createdAt: "2026-01-01T00:00:00.000Z",
     databaseUrl: `postgresql://localhost/${guildId}`,
+    enabledMatchSizes: [2, 3],
     enabled: true,
     guildId,
     leaderboardChannelId: `${guildId}-leaderboard`,

@@ -5,10 +5,25 @@ import {
   RESTPostAPIApplicationCommandsJSONBody,
   Routes,
   SlashCommandBuilder,
+  SlashCommandSubcommandBuilder,
 } from "discord.js";
 
 function isSoraEnabled(): boolean {
   return (process.env["ENABLE_SORA"] ?? "false").toLowerCase() === "true";
+}
+
+function addMatchTierOptions(subcommand: SlashCommandSubcommandBuilder): SlashCommandSubcommandBuilder {
+  let builder = subcommand;
+  for (let matchSize = 1; matchSize <= 12; matchSize += 1) {
+    builder = builder.addBooleanOption((option) =>
+      option
+        .setName(`enable_${matchSize}v${matchSize}`)
+        .setDescription(`Enable ${matchSize}v${matchSize} matches for this guild`)
+        .setRequired(false)
+    );
+  }
+
+  return builder;
 }
 
 function buildSlashCommands(): Array<RESTPostAPIApplicationCommandsJSONBody> {
@@ -67,7 +82,8 @@ function buildSlashCommands(): Array<RESTPostAPIApplicationCommandsJSONBody> {
       return subcommand.setName("disable").setDescription("Disable this guild configuration.");
     })
     .addSubcommand((subcommand) => {
-      return subcommand
+      return addMatchTierOptions(
+        subcommand
         .setName("set")
         .setDescription("Create or update the guild configuration.")
         .addChannelOption((option) =>
@@ -112,7 +128,8 @@ function buildSlashCommands(): Array<RESTPostAPIApplicationCommandsJSONBody> {
             .setName("sora_enabled")
             .setDescription("Optional: enable /sora for this guild when ENABLE_SORA=true on the host")
             .setRequired(false)
-        );
+        )
+      );
     })
     .toJSON();
 

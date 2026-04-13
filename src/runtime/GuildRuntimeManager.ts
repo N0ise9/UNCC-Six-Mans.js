@@ -35,9 +35,16 @@ import {
   calculateProbabilityDecimal,
   chooseCaptains,
   countCaptainsRandomVotes,
-  countTwosVotes,
+  countMatchSizeVotes,
   createRandomTeams,
+  DEFAULT_ENABLED_MATCH_SIZES,
+  formatMatchSizeLabel,
+  getCaptainDraftSteps,
+  getCaptainsRandomVoteThreshold,
+  getHighestEnabledMatchSize,
+  getLowerTierVoteMatchSize,
   getQueueTargetSize,
+  normalizeEnabledMatchSizes,
   resolveMatchReport,
 } from "./sixMansRules";
 import {
@@ -47,6 +54,7 @@ import {
 } from "../repositories/ActiveMatchRepository/types";
 import { AddBallChaserToQueueInput, PlayerInQueue } from "../repositories/QueueRepository/types";
 import { ActiveSurfaceState, GuildChannels, GuildConfigUpsertInput, GuildContext, GuildInstanceConfig } from "./types";
+import { createVoteMatchSizeCustomId, parseVoteMatchSizeCustomId } from "../utils/MessageHelper/CustomButtons";
 
 type QueueRender = {
   players: ReadonlyArray<Readonly<PlayerInQueue>>;
@@ -92,6 +100,7 @@ type SetupConfigMergeInput = {
   apiStatusChannelId?: string;
   chatChannelId?: string;
   databaseUrl?: string;
+  enabledMatchSizes?: number[];
   guildId: string;
   leaderboardChannelId?: string;
   openAiConversationId?: string;
@@ -449,6 +458,7 @@ export class GuildRuntimeManager {
           [
             `Guild: ${config.guildId}`,
             `Enabled: ${config.enabled}`,
+            `Match types: ${config.enabledMatchSizes.map((matchSize) => formatMatchSizeLabel(matchSize)).join(", ")}`,
             `Queue channel: ${config.queueChannelId}`,
             `Leaderboard channel: ${config.leaderboardChannelId}`,
             `Leaderboard messages: ${config.leaderboardMessageIds?.join(", ") ?? "not created yet"}`,
@@ -487,6 +497,7 @@ export class GuildRuntimeManager {
         const databaseUrl = interaction.options.getString("database_url") ?? undefined;
         const conversationId = interaction.options.getString("conversation_id") ?? undefined;
         const soraEnabled = interaction.options.getBoolean("sora_enabled") ?? undefined;
+        const matchSizeOverrides = getSetupMatchSizeOverrides(interaction);
 
         if (queueChannel && queueChannel.type !== ChannelType.GuildText) {
           await responder.edit("Queue channel must be a text channel.");
@@ -509,6 +520,7 @@ export class GuildRuntimeManager {
           apiStatusChannelId: apiStatusChannel?.id ?? existingConfig?.apiStatusChannelId,
           chatChannelId: chatChannel?.id ?? existingConfig?.chatChannelId,
           databaseUrl: databaseUrl ?? existingConfig?.databaseUrl,
+          enabledMatchSizes: mergeEnabledMatchSizes(existingConfig?.enabledMatchSizes, matchSizeOverrides),
           guildId: interaction.guildId,
           leaderboardChannelId: leaderboardChannel?.id ?? existingConfig?.leaderboardChannelId,
           openAiConversationId: conversationId ?? existingConfig?.openAiConversationId,
@@ -524,11 +536,16 @@ export class GuildRuntimeManager {
           await responder.edit(`${prefix} Provide these required options: ${missingFields.join(", ")}.`);
           return;
         }
+        if ((mergedInput.enabledMatchSizes?.length ?? 0) === 0) {
+          await responder.edit("At least one match type must stay enabled.");
+          return;
+        }
 
         const input: GuildConfigUpsertInput = {
           apiStatusChannelId: mergedInput.apiStatusChannelId,
           chatChannelId: mergedInput.chatChannelId,
           databaseUrl: mergedInput.databaseUrl!,
+          enabledMatchSizes: mergedInput.enabledMatchSizes,
           guildId: mergedInput.guildId,
           leaderboardChannelId: mergedInput.leaderboardChannelId!,
           openAiConversationId: mergedInput.openAiConversationId,
@@ -661,9 +678,10 @@ export class GuildRuntimeManager {
       scheduler: this.scheduler,
       surfaceRegistry: new InteractiveSurfaceRegistry(),
       voteState: {
+        captainDraftStepIndex: 0,
         captainsRandomVotes: new Map<string, string>(),
-        twosEnabled: false,
-        twosVotes: new Map<string, string>(),
+        selectedMatchSize: null,
+        sizeVotes: new Map<string, number>(),
       },
     };
   }
@@ -856,71 +874,78 @@ export class GuildRuntimeManager {
           status: "ignored",
         };
       } else {
-        switch (interaction.customId) {
-          case ButtonCustomID.JoinQueue: {
-            const result = await joinQueue(context, interaction.user.id, interaction.user.username);
-            if (result.players) {
-              const players = result.players;
-              postCommitEffects.push(() => this.refreshQueueSurface(context, players));
+        const voteMatchSize = parseVoteMatchSizeCustomId(interaction.customId);
+        if (voteMatchSize !== null) {
+          const result = await this.handleMatchSizeVote(
+            context,
+            message,
+            interaction.user.id,
+            voteMatchSize,
+            postCommitEffects
+          );
+          if (result.status === "processed") {
+            postCommitEffects.push(() => this.refreshQueueSurface(context));
+          }
+          auditResult = {
+            reason: result.reason,
+            status: result.status,
+          };
+        } else {
+          switch (interaction.customId) {
+            case ButtonCustomID.JoinQueue: {
+              const result = await joinQueue(context, interaction.user.id, interaction.user.username);
+              if (result.players) {
+                const players = result.players;
+                postCommitEffects.push(() => this.refreshQueueSurface(context, players));
+              }
+              auditResult = {
+                reason: result.reason,
+                status: result.status,
+              };
+              break;
             }
-            auditResult = {
-              reason: result.reason,
-              status: result.status,
-            };
-            break;
-          }
-          case ButtonCustomID.LeaveQueue: {
-            const result = await leaveQueue(context, interaction.user.id);
-            if (result.players) {
-              const players = result.players;
-              postCommitEffects.push(() => this.refreshQueueSurface(context, players));
+            case ButtonCustomID.LeaveQueue: {
+              const result = await leaveQueue(context, interaction.user.id);
+              if (result.players) {
+                const players = result.players;
+                postCommitEffects.push(() => this.refreshQueueSurface(context, players));
+              }
+              auditResult = {
+                reason: result.reason,
+                status: result.status,
+              };
+              break;
             }
-            auditResult = {
-              reason: result.reason,
-              status: result.status,
-            };
-            break;
-          }
-          case ButtonCustomID.Twos: {
-            const result = await this.handleTwosVote(context, interaction.user.id);
-            if (result.status === "processed") {
-              postCommitEffects.push(() => this.refreshQueueSurface(context));
+            case ButtonCustomID.ChooseTeam:
+            case ButtonCustomID.CreateRandomTeam: {
+              auditResult = await this.handleCaptainsOrRandomVote(
+                context,
+                interaction.customId,
+                message,
+                interaction.user.id,
+                postCommitEffects
+              );
+              break;
             }
-            auditResult = {
-              reason: result.reason,
-              status: result.status,
-            };
-            break;
+            case ButtonCustomID.ReportBlue: {
+              auditResult = await this.handleMatchReport(context, interaction, Team.Blue, postCommitEffects);
+              break;
+            }
+            case ButtonCustomID.ReportOrange: {
+              auditResult = await this.handleMatchReport(context, interaction, Team.Orange, postCommitEffects);
+              break;
+            }
+            case ButtonCustomID.BrokenQueue: {
+              auditResult = await this.handleBrokenQueueVote(context, interaction, postCommitEffects);
+              break;
+            }
+            default:
+              auditResult = {
+                reason: "button action is not recognized by the runtime",
+                status: "ignored",
+              };
+              break;
           }
-          case ButtonCustomID.ChooseTeam:
-          case ButtonCustomID.CreateRandomTeam: {
-            auditResult = await this.handleCaptainsOrRandomVote(
-              context,
-              interaction.customId,
-              message,
-              interaction.user.id,
-              postCommitEffects
-            );
-            break;
-          }
-          case ButtonCustomID.ReportBlue: {
-            auditResult = await this.handleMatchReport(context, interaction, Team.Blue, postCommitEffects);
-            break;
-          }
-          case ButtonCustomID.ReportOrange: {
-            auditResult = await this.handleMatchReport(context, interaction, Team.Orange, postCommitEffects);
-            break;
-          }
-          case ButtonCustomID.BrokenQueue: {
-            auditResult = await this.handleBrokenQueueVote(context, interaction, postCommitEffects);
-            break;
-          }
-          default:
-            auditResult = {
-              reason: "button action is not recognized by the runtime",
-              status: "ignored",
-            };
-            break;
         }
       }
     } finally {
@@ -956,27 +981,43 @@ export class GuildRuntimeManager {
       } else {
         switch (interaction.customId) {
           case MenuCustomID.BlueSelect: {
+            const currentDraftStep = getCurrentCaptainDraftStep(context);
+            if (!currentDraftStep || currentDraftStep.team !== Team.Blue) break;
+
             const isCaptain = await context.repositories.queue.isTeamCaptain(interaction.user.id, Team.Blue);
             if (!isCaptain && !isDevEnvironment()) break;
+            if (interaction.values.length !== currentDraftStep.picks) break;
 
-            const playersLeft = await bluePlayerChosen(context, interaction.values[0]);
-            if (context.voteState.twosEnabled) {
+            await assignPlayersToTeam(context, interaction.values, Team.Blue);
+            context.voteState.captainDraftStepIndex += 1;
+            if (isCaptainDraftComplete(context)) {
+              await autoAssignRemainingDraftPlayers(context);
               const activeMatch = await createMatchFromChosenTeams(context);
               resetVoteState(context);
               postCommitEffects.push(() => this.publishActiveMatch(context, message, activeMatch));
             } else {
-              postCommitEffects.push(() => this.refreshQueueSurface(context, playersLeft));
+              postCommitEffects.push(() => this.refreshQueueSurface(context));
             }
             break;
           }
           case MenuCustomID.OrangeSelect: {
+            const currentDraftStep = getCurrentCaptainDraftStep(context);
+            if (!currentDraftStep || currentDraftStep.team !== Team.Orange) break;
+
             const isCaptain = await context.repositories.queue.isTeamCaptain(interaction.user.id, Team.Orange);
             if (!isCaptain && !isDevEnvironment()) break;
+            if (interaction.values.length !== currentDraftStep.picks) break;
 
-            await orangePlayerChosen(context, interaction.values);
-            const activeMatch = await createMatchFromChosenTeams(context);
-            resetVoteState(context);
-            postCommitEffects.push(() => this.publishActiveMatch(context, message, activeMatch));
+            await assignPlayersToTeam(context, interaction.values, Team.Orange);
+            context.voteState.captainDraftStepIndex += 1;
+            if (isCaptainDraftComplete(context)) {
+              await autoAssignRemainingDraftPlayers(context);
+              const activeMatch = await createMatchFromChosenTeams(context);
+              resetVoteState(context);
+              postCommitEffects.push(() => this.publishActiveMatch(context, message, activeMatch));
+            } else {
+              postCommitEffects.push(() => this.refreshQueueSurface(context));
+            }
             break;
           }
         }
@@ -1065,7 +1106,7 @@ export class GuildRuntimeManager {
     }
 
     const queue = await context.repositories.queue.getAllBallChasersInQueue();
-    const target = getQueueTargetSize(context.voteState.twosEnabled);
+    const target = getQueueTargetSize(context.voteState.selectedMatchSize, context.config.enabledMatchSizes);
     if (queue.length !== target) {
       return {
         reason: `queue is not ready for voting (${queue.length}/${target})`,
@@ -1075,10 +1116,11 @@ export class GuildRuntimeManager {
 
     context.voteState.captainsRandomVotes.set(userId, customId);
     const { captains, random } = countCaptainsRandomVotes(context.voteState.captainsRandomVotes);
-    const threshold = context.voteState.twosEnabled ? 3 : 4;
+    const threshold = getCaptainsRandomVoteThreshold(queue.length);
 
     if (captains === threshold) {
       await setCaptains(context, queue);
+      context.voteState.captainDraftStepIndex = 0;
       postCommitEffects.push(() => this.refreshQueueSurface(context));
       return {
         reason: "captains vote reached threshold",
@@ -1099,6 +1141,57 @@ export class GuildRuntimeManager {
     postCommitEffects.push(() => this.refreshQueueSurface(context));
     return {
       reason: customId === ButtonCustomID.ChooseTeam ? "recorded captains vote" : "recorded random teams vote",
+      status: "processed",
+    };
+  }
+
+  private async handleMatchSizeVote(
+    context: GuildContext,
+    sourceMessage: Message,
+    userId: string,
+    requestedMatchSize: number,
+    postCommitEffects: PostCommitEffect[]
+  ): Promise<InteractionAuditResult> {
+    const ballChasers = await context.repositories.queue.getAllBallChasersInQueue();
+    const voteMatchSize = getLowerTierVoteMatchSize(
+      ballChasers.length,
+      context.config.enabledMatchSizes,
+      context.voteState.selectedMatchSize
+    );
+
+    if (voteMatchSize === null || voteMatchSize !== requestedMatchSize) {
+      return {
+        reason: `${formatMatchSizeLabel(requestedMatchSize)} voting is unavailable at the current queue size`,
+        status: "ignored",
+      };
+    }
+    if (!ballChasers.some((player) => player.id === userId)) {
+      return {
+        reason: "user is not currently in the queue",
+        status: "ignored",
+      };
+    }
+
+    context.voteState.sizeVotes.set(userId, requestedMatchSize);
+    let reason = `recorded ${formatMatchSizeLabel(requestedMatchSize)} vote`;
+    if (countMatchSizeVotes(context.voteState.sizeVotes, requestedMatchSize) >= ballChasers.length) {
+      context.voteState.selectedMatchSize = requestedMatchSize;
+      context.voteState.sizeVotes.clear();
+      context.voteState.captainsRandomVotes.clear();
+      context.voteState.captainDraftStepIndex = 0;
+
+      if (requestedMatchSize === 1) {
+        const activeMatch = await createOneVOneMatch(context);
+        resetVoteState(context);
+        postCommitEffects.push(() => this.publishActiveMatch(context, sourceMessage, activeMatch));
+        reason = "1v1 vote reached threshold and started the match";
+      } else {
+        reason = `${formatMatchSizeLabel(requestedMatchSize)} vote reached threshold and selected the queue size`;
+      }
+    }
+
+    return {
+      reason,
       status: "processed",
     };
   }
@@ -1150,35 +1243,6 @@ export class GuildRuntimeManager {
 
     return {
       reason: `recorded ${team === Team.Blue ? "blue" : "orange"} team match report`,
-      status: "processed",
-    };
-  }
-
-  private async handleTwosVote(context: GuildContext, userId: string): Promise<InteractionAuditResult> {
-    const ballChasers = await context.repositories.queue.getAllBallChasersInQueue();
-    if (ballChasers.length < 4) {
-      return {
-        reason: "2s voting is unavailable until at least 4 players are queued",
-        status: "ignored",
-      };
-    }
-    if (!ballChasers.some((player) => player.id === userId)) {
-      return {
-        reason: "user is not currently in the queue",
-        status: "ignored",
-      };
-    }
-
-    context.voteState.twosVotes.set(userId, ButtonCustomID.Twos);
-    let reason = "recorded 2s vote";
-    if (countTwosVotes(context.voteState.twosVotes) >= 4) {
-      context.voteState.twosEnabled = true;
-      context.voteState.captainsRandomVotes.clear();
-      context.voteState.twosVotes.clear();
-      reason = "2s vote reached threshold and enabled 2s queue";
-    }
-    return {
-      reason,
       status: "processed",
     };
   }
@@ -1774,13 +1838,16 @@ function getMissingRequiredSetupFields(input: SetupConfigMergeInput): string[] {
 }
 
 export function describeButtonInteractionAction(customId: string): string {
+  const voteMatchSize = parseVoteMatchSizeCustomId(customId);
+  if (voteMatchSize !== null) {
+    return `Vote ${formatMatchSizeLabel(voteMatchSize)}`;
+  }
+
   switch (customId) {
     case ButtonCustomID.JoinQueue:
       return "Join Queue";
     case ButtonCustomID.LeaveQueue:
       return "Leave Queue";
-    case ButtonCustomID.Twos:
-      return "Vote 2s";
     case ButtonCustomID.ChooseTeam:
       return "Vote Captains";
     case ButtonCustomID.CreateRandomTeam:
@@ -1838,12 +1905,89 @@ function isDevEnvironment(): boolean {
 
 function resetVoteState(context: GuildContext): void {
   context.voteState.captainsRandomVotes.clear();
-  context.voteState.twosVotes.clear();
-  context.voteState.twosEnabled = false;
+  context.voteState.captainDraftStepIndex = 0;
+  context.voteState.selectedMatchSize = null;
+  context.voteState.sizeVotes.clear();
 }
 
-function getVoterList(players: ReadonlyArray<Readonly<PlayerInQueue>>, votes: Map<string, string>): PlayerInQueue[] {
-  return players.filter((player): player is PlayerInQueue => votes.has(player.id));
+function getActiveQueueMatchSize(context: GuildContext): number {
+  return context.voteState.selectedMatchSize ?? getHighestEnabledMatchSize(context.config.enabledMatchSizes);
+}
+
+function getCurrentCaptainDraftStep(context: GuildContext) {
+  return getCaptainDraftSteps(getActiveQueueMatchSize(context))[context.voteState.captainDraftStepIndex] ?? null;
+}
+
+function isCaptainDraftComplete(context: GuildContext): boolean {
+  return getCurrentCaptainDraftStep(context) === null;
+}
+
+async function autoAssignRemainingDraftPlayers(context: GuildContext): Promise<void> {
+  const queue = await context.repositories.queue.getAllBallChasersInQueue();
+  const unassignedPlayers = queue.filter((player) => player.team === null);
+  if (unassignedPlayers.length === 0) {
+    return;
+  }
+
+  const matchSize = getActiveQueueMatchSize(context);
+  const blueCount = queue.filter((player) => player.team === Team.Blue).length;
+  const teamToFill =
+    blueCount < matchSize ? Team.Blue : Team.Orange;
+
+  await assignPlayersToTeam(
+    context,
+    unassignedPlayers.map((player) => player.id),
+    teamToFill
+  );
+}
+
+function getSetupMatchSizeOptionName(matchSize: number): string {
+  return `enable_${matchSize}v${matchSize}`;
+}
+
+function getSetupMatchSizeOverrides(interaction: ChatInputCommandInteraction): Map<number, boolean> {
+  const overrides = new Map<number, boolean>();
+  for (let matchSize = 1; matchSize <= 12; matchSize += 1) {
+    const value = interaction.options.getBoolean(getSetupMatchSizeOptionName(matchSize));
+    if (value !== null) {
+      overrides.set(matchSize, value);
+    }
+  }
+
+  return overrides;
+}
+
+function mergeEnabledMatchSizes(
+  existingMatchSizes: ReadonlyArray<number> | undefined,
+  overrides: ReadonlyMap<number, boolean>
+): number[] {
+  const merged = new Set<number>(
+    normalizeEnabledMatchSizes(existingMatchSizes ?? [...DEFAULT_ENABLED_MATCH_SIZES])
+  );
+
+  for (const [matchSize, enabled] of overrides.entries()) {
+    if (enabled) {
+      merged.add(matchSize);
+    } else {
+      merged.delete(matchSize);
+    }
+  }
+
+  return normalizeEnabledMatchSizes([...merged]);
+}
+
+function getVoterList<T>(
+  players: ReadonlyArray<Readonly<PlayerInQueue>>,
+  votes: ReadonlyMap<string, T>,
+  expectedValue?: T
+): PlayerInQueue[] {
+  return players.filter((player): player is PlayerInQueue => {
+    if (!votes.has(player.id)) {
+      return false;
+    }
+
+    return expectedValue === undefined || votes.get(player.id) === expectedValue;
+  });
 }
 
 async function buildQueueRender(
@@ -1853,9 +1997,11 @@ async function buildQueueRender(
   const players = cachedPlayers ?? (await context.repositories.queue.getAllBallChasersInQueue());
   const unassignedPlayers = players.filter((player) => player.team === null);
   const captainCount = players.filter((player) => player.isCap).length;
+  const activeMatchSize = getActiveQueueMatchSize(context);
+  const currentDraftStep = getCurrentCaptainDraftStep(context);
 
-  if (captainCount > 0 && unassignedPlayers.length > 0) {
-    const isBluePick = context.voteState.twosEnabled ? unassignedPlayers.length === 2 : unassignedPlayers.length >= 4;
+  if (captainCount > 0 && unassignedPlayers.length > 0 && currentDraftStep) {
+    const isBluePick = currentDraftStep.team === Team.Blue;
     return {
       players,
       surface: {
@@ -1863,11 +2009,11 @@ async function buildQueueRender(
         allowedValues: new Set<string>(unassignedPlayers.map((player) => player.id)),
         state: isBluePick ? "captain_blue_pick" : "captain_orange_pick",
       },
-      view: MessageBuilder.captainChooseMessage(isBluePick, players, context.voteState.twosEnabled),
+      view: MessageBuilder.captainChooseMessage(currentDraftStep, players),
     };
   }
 
-  const targetSize = getQueueTargetSize(context.voteState.twosEnabled);
+  const targetSize = getQueueTargetSize(context.voteState.selectedMatchSize, context.config.enabledMatchSizes);
   if (players.length >= targetSize) {
     const { captains, random } = countCaptainsRandomVotes(context.voteState.captainsRandomVotes);
     const voterList = getVoterList(players, context.voteState.captainsRandomVotes);
@@ -1890,17 +2036,23 @@ async function buildQueueRender(
               voterList,
               context.voteState.captainsRandomVotes
             )
-          : MessageBuilder.fullQueueMessage(players),
+          : MessageBuilder.fullQueueMessage(players, activeMatchSize),
     };
   }
 
+  const voteMatchSize = getLowerTierVoteMatchSize(
+    players.length,
+    context.config.enabledMatchSizes,
+    context.voteState.selectedMatchSize
+  );
   const allowedActions = new Set<string>([ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
-  if (players.length >= 4) {
-    allowedActions.add(ButtonCustomID.Twos);
+  if (voteMatchSize !== null) {
+    allowedActions.add(createVoteMatchSizeCustomId(voteMatchSize));
   }
 
-  const twosVotes = countTwosVotes(context.voteState.twosVotes);
-  const voterList = getVoterList(players, context.voteState.twosVotes);
+  const matchSizeVotes = voteMatchSize === null ? 0 : countMatchSizeVotes(context.voteState.sizeVotes, voteMatchSize);
+  const voterList =
+    voteMatchSize === null ? [] : getVoterList(players, context.voteState.sizeVotes, voteMatchSize);
   return {
     players,
     surface: {
@@ -1908,9 +2060,15 @@ async function buildQueueRender(
       state: "queue_open",
     },
     view:
-      twosVotes > 0 && players.length >= 4 && !context.voteState.twosEnabled
-        ? MessageBuilder.vote2v2sMessage(players, twosVotes, voterList, context.voteState.twosVotes)
-        : MessageBuilder.queueMessage(players),
+      matchSizeVotes > 0 && voteMatchSize !== null
+        ? MessageBuilder.voteMatchSizeMessage(
+            players,
+            voteMatchSize,
+            matchSizeVotes,
+            voterList,
+            context.voteState.sizeVotes
+          )
+        : MessageBuilder.queueMessage(players, targetSize, voteMatchSize),
   };
 }
 
@@ -1929,7 +2087,7 @@ async function joinQueue(
   }
 
   const queue = await context.repositories.queue.getAllBallChasersInQueue();
-  const target = getQueueTargetSize(context.voteState.twosEnabled);
+  const target = getQueueTargetSize(context.voteState.selectedMatchSize, context.config.enabledMatchSizes);
   const queueMember = await context.repositories.queue.getBallChaserInQueue(userId);
 
   if (!queueMember && queue.length >= target) {
@@ -1956,11 +2114,7 @@ async function joinQueue(
   }
 
   if (!queueMember) {
-    context.voteState.captainsRandomVotes.clear();
-    context.voteState.twosVotes.clear();
-    if (queue.length + 1 < 4) {
-      context.voteState.twosEnabled = false;
-    }
+    resetVoteState(context);
   }
 
   return {
@@ -2043,20 +2197,11 @@ async function setCaptains(
   return await context.repositories.queue.getAllBallChasersInQueue();
 }
 
-async function bluePlayerChosen(context: GuildContext, chosenPlayer: string): Promise<ReadonlyArray<PlayerInQueue>> {
-  await context.repositories.queue.updateBallChaserInQueue({
-    id: chosenPlayer,
-    team: Team.Blue,
-  });
-
-  return await context.repositories.queue.getAllBallChasersInQueue();
-}
-
-async function orangePlayerChosen(context: GuildContext, chosenPlayers: string[]): Promise<void> {
+async function assignPlayersToTeam(context: GuildContext, chosenPlayers: string[], team: Team): Promise<void> {
   for (const playerId of chosenPlayers) {
     await context.repositories.queue.updateBallChaserInQueue({
       id: playerId,
-      team: Team.Orange,
+      team,
     });
   }
 }
@@ -2092,6 +2237,17 @@ async function createRandomMatch(context: GuildContext): Promise<ActiveMatchCrea
   return await startMatch(context, createRandomTeams(ballChasers));
 }
 
+async function createOneVOneMatch(context: GuildContext): Promise<ActiveMatchCreated> {
+  const ballChasers = await context.repositories.queue.getAllBallChasersInQueue();
+  const players = ballChasers.slice(0, 2);
+  const shuffle = Math.random() >= 0.5 ? players : players.slice().reverse();
+
+  return await startMatch(context, [
+    { id: shuffle[0]!.id, team: Team.Blue },
+    { id: shuffle[1]!.id, team: Team.Orange },
+  ]);
+}
+
 async function getActiveMatch(context: GuildContext, playerInMatchId: string): Promise<ActiveMatchCreated> {
   const teams = await context.repositories.activeMatch.getAllPlayersInActiveMatch(playerInMatchId);
   const { blueProbabilityDecimal, orangeProbabilityDecimal } = calculateProbabilityDecimal(teams);
@@ -2116,13 +2272,11 @@ async function createMatchFromChosenTeams(context: GuildContext): Promise<Active
   const sortedBallChasers = ballchasers.slice().sort((a, b) => (a.team ?? 100) - (b.team ?? 100));
 
   for (const player of sortedBallChasers) {
-    if (player.team !== null) {
-      createdTeams.push({ id: player.id, team: player.team });
-    } else if (context.voteState.twosEnabled) {
-      createdTeams.push({ id: player.id, team: Team.Orange });
-    } else {
-      createdTeams.push({ id: player.id, team: Team.Blue });
+    if (player.team === null) {
+      throw new Error("Cannot create a drafted match while players are still unassigned.");
     }
+
+    createdTeams.push({ id: player.id, team: player.team });
   }
 
   return await startMatch(context, createdTeams);

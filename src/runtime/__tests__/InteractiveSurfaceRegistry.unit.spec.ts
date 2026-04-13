@@ -1,4 +1,4 @@
-import { ButtonCustomID } from "../../utils/MessageHelper/CustomButtons";
+import { ButtonCustomID, createVoteMatchSizeCustomId } from "../../utils/MessageHelper/CustomButtons";
 import { MenuCustomID } from "../../utils/MessageHelper/MessageBuilder";
 import { InteractiveSurfaceRegistry } from "../InteractiveSurfaceRegistry";
 
@@ -8,7 +8,11 @@ describe("InteractiveSurfaceRegistry", () => {
     const messageId = "queue-message";
 
     const openRevision = registry.upsert(messageId, "queue", {
-      allowedActions: new Set<string>([ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue, ButtonCustomID.Twos]),
+      allowedActions: new Set<string>([
+        ButtonCustomID.JoinQueue,
+        ButtonCustomID.LeaveQueue,
+        createVoteMatchSizeCustomId(2),
+      ]),
       state: "queue_open",
     });
 

@@ -19,7 +19,7 @@ describe("Building Buttons", () => {
   };
 
   it("return queue buttons", () => {
-    const result = MessageBuilder.queueMessage(mockBallChasers);
+    const result = MessageBuilder.queueMessage(mockBallChasers, 6);
     expect(getActionRowJson(result)).toEqual({
       components: [
         expect.objectContaining({ custom_id: "joinQueue", label: "Join", style: 3, type: 2 }),
@@ -29,7 +29,7 @@ describe("Building Buttons", () => {
     });
   });
   it("return full queue buttons", () => {
-    const result = MessageBuilder.fullQueueMessage(mockBallChasers);
+    const result = MessageBuilder.fullQueueMessage(mockBallChasers, 3);
     expect(getActionRowJson(result)).toEqual({
       components: [
         expect.objectContaining({ custom_id: "chooseTeam", label: "Captains (0)", style: 1, type: 2 }),
