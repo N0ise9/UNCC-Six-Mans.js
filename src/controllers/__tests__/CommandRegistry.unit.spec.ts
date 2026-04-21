@@ -71,6 +71,26 @@ describe("registerAllSlashCommands", () => {
     );
   });
 
+  it("registers /norm with file attachment options", async () => {
+    const put = jest.spyOn(REST.prototype, "put").mockResolvedValue(undefined as never);
+
+    await registerGuildSlashCommands("client-1", "token-1", "guild-c");
+
+    const [, payload] = put.mock.calls[0] ?? [];
+    const commands = ((payload as { body?: Array<Record<string, unknown>> }).body ?? []) as Array<Record<string, unknown>>;
+    const norm = commands.find((command) => command.name === "norm");
+    const options = (norm?.options as Array<Record<string, unknown>> | undefined) ?? [];
+
+    expect(options).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "file1" }),
+        expect.objectContaining({ name: "file2" }),
+        expect.objectContaining({ name: "file3" }),
+      ])
+    );
+    expect(options).toEqual(expect.not.arrayContaining([expect.objectContaining({ name: "image1" })]));
+  });
+
   it("registers /sora when ENABLE_SORA is true and exposes sora_enabled on /setup set", async () => {
     process.env["ENABLE_SORA"] = "true";
     const put = jest.spyOn(REST.prototype, "put").mockResolvedValue(undefined as never);

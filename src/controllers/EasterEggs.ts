@@ -28,11 +28,35 @@ type OpenAIResponsePayload = {
   };
 };
 
+type NormAttachment = {
+  contentType?: string | null;
+  name?: string | null;
+  size?: number | null;
+  url: string;
+};
+
+type NormInputContent =
+  | {
+      text: string;
+      type: "input_text";
+    }
+  | {
+      detail: "auto";
+      image_url: string;
+      type: "input_image";
+    }
+  | {
+      file_url: string;
+      filename?: string;
+      type: "input_file";
+    };
+
 type SoraVideoClient = Pick<Videos, "create" | "downloadContent" | "retrieve">;
 type SoraVideoSeconds = NonNullable<VideoCreateParams["seconds"]>;
 const VALID_SORA_DURATIONS = new Set<SoraVideoSeconds>(["4", "8", "12"]);
 const SORA_POLL_INTERVAL_MS = 2_000;
 const SORA_MAX_POLL_ATTEMPTS = 150;
+const MAX_OPENAI_FILE_INPUT_BYTES = 50 * 1024 * 1024;
 export const DEFAULT_SORA_MODEL = "sora-2-2025-12-08";
 
 function isSoraEnabled(): boolean {
@@ -77,6 +101,56 @@ function chunkMessage(text: string, max = 1999): string[] {
 
 function sanitizeDiscordText(text: string): string {
   return text.replace(/@everyone/g, "@ everyone").replace(/@here/g, "@ here");
+}
+
+function isImageAttachment(attachment: NormAttachment): boolean {
+  return attachment.contentType?.startsWith("image/") === true;
+}
+
+function getAttachmentFilename(attachment: NormAttachment): string | undefined {
+  const trimmedName = attachment.name?.trim();
+  if (trimmedName) {
+    return trimmedName;
+  }
+
+  try {
+    const filename = new URL(attachment.url).pathname.split("/").pop();
+    return filename ? decodeURIComponent(filename) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function getKnownNonImageFileBytes(attachments: NormAttachment[]): number {
+  return attachments
+    .filter((attachment) => !isImageAttachment(attachment))
+    .reduce((total, attachment) => {
+      return typeof attachment.size === "number" ? total + attachment.size : total;
+    }, 0);
+}
+
+function buildNormInputContent(actor: { id: string; username: string }, prompt: string, attachments: NormAttachment[]) {
+  const content: NormInputContent[] = [{ text: `${actor.id} ${actor.username}: ${prompt}`, type: "input_text" }];
+
+  for (const attachment of attachments.slice(0, 3)) {
+    if (isImageAttachment(attachment)) {
+      content.push({
+        detail: "auto",
+        image_url: attachment.url,
+        type: "input_image",
+      });
+      continue;
+    }
+
+    const filename = getAttachmentFilename(attachment);
+    content.push({
+      ...(filename ? { filename } : {}),
+      file_url: attachment.url,
+      type: "input_file",
+    });
+  }
+
+  return content;
 }
 
 async function ensureConversation(context: GuildContext): Promise<string> {
@@ -178,34 +252,34 @@ async function waitForSoraCompletion(videoClient: SoraVideoClient, video: Video)
 async function runNormPrompt(
   context: GuildContext,
   prompt: string,
-  attachments: Array<{ contentType?: string | null; url: string }>,
+  attachments: NormAttachment[],
   respond: {
     edit: (payload: string | { content?: string; files?: Array<{ attachment: string }> }) => Promise<void>;
     followUp: (payload: string) => Promise<void>;
   },
   actor: { id: string; username: string }
 ): Promise<void> {
+  const knownNonImageFileBytes = getKnownNonImageFileBytes(attachments);
+  if (knownNonImageFileBytes > MAX_OPENAI_FILE_INPUT_BYTES) {
+    await respond.edit(
+      `<@${actor.id}> I can read attached files up to 50 MB total. This set is too large; try fewer or smaller files.`
+    );
+    return;
+  }
+
   const conversationId = await ensureConversation(context);
-  const imageUrls = attachments
-    .filter((attachment) => attachment.contentType?.startsWith("image/"))
-    .map((attachment) => attachment.url)
-    .slice(0, 3);
+  const inputContent = buildNormInputContent(actor, prompt, attachments);
+  const hasAttachmentInputs = inputContent.length > 1;
+  const hasFileInputs = inputContent.some((content) => content.type === "input_file");
 
   let completion: OpenAIResponsePayload;
   try {
-    if (imageUrls.length > 0) {
+    if (hasAttachmentInputs) {
       completion = (await context.openai.responses.create({
         conversation: conversationId,
         input: [
           {
-            content: [
-              { text: `${actor.id} ${actor.username}: ${prompt}`, type: "input_text" },
-              ...imageUrls.map((url) => ({
-                detail: "auto" as const,
-                image_url: url,
-                type: "input_image" as const,
-              })),
-            ],
+            content: inputContent,
             role: "user",
           },
         ],
@@ -254,7 +328,10 @@ async function runNormPrompt(
     console.error(
       `[${context.guildId}] OpenAI responses.create failed (${candidate.status ?? candidate.response?.status ?? "no-status"} ${candidate.code ?? candidate.response?.data?.error?.code ?? ""}): ${candidate.message ?? candidate.response?.data?.error?.message ?? "Unknown error"}`
     );
-    await respond.edit(`<@${actor.id}> I couldn't reach OpenAI right now. Please try again in a bit.`);
+    const reply = hasFileInputs
+      ? `<@${actor.id}> I couldn't read one or more attached files. The file link may have expired, or OpenAI may not support that file type. Try reattaching it or sending a PDF/text file.`
+      : `<@${actor.id}> I couldn't reach OpenAI right now. Please try again in a bit.`;
+    await respond.edit(reply);
     return;
   }
 
@@ -315,14 +392,18 @@ export async function handleEasterEggSlashInteraction(
         return;
       }
 
-      const attachments = [
-        interaction.options.getAttachment("image1"),
-        interaction.options.getAttachment("image2"),
-        interaction.options.getAttachment("image3"),
-      ]
+      const attachments = [1, 2, 3]
+        .map((index) => {
+          return (
+            interaction.options.getAttachment(`file${index}`) ??
+            interaction.options.getAttachment(`image${index}`)
+          );
+        })
         .filter((attachment): attachment is NonNullable<typeof attachment> => Boolean(attachment))
         .map((attachment) => ({
           contentType: attachment.contentType,
+          name: attachment.name,
+          size: attachment.size,
           url: attachment.url,
         }));
 

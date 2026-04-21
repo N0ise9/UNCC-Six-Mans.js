@@ -49,9 +49,9 @@ function buildSlashCommands(): Array<RESTPostAPIApplicationCommandsJSONBody> {
     .setName("norm")
     .setDescription("Ask Norm anything.")
     .addStringOption((opt) => opt.setName("prompt").setDescription("What do you want to say?").setRequired(true))
-    .addAttachmentOption((opt) => opt.setName("image1").setDescription("Optional image 1"))
-    .addAttachmentOption((opt) => opt.setName("image2").setDescription("Optional image 2"))
-    .addAttachmentOption((opt) => opt.setName("image3").setDescription("Optional image 3"))
+    .addAttachmentOption((opt) => opt.setName("file1").setDescription("Optional image or file 1"))
+    .addAttachmentOption((opt) => opt.setName("file2").setDescription("Optional image or file 2"))
+    .addAttachmentOption((opt) => opt.setName("file3").setDescription("Optional image or file 3"))
     .toJSON();
 
   const sora = new SlashCommandBuilder()
