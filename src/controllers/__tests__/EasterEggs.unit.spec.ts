@@ -7,13 +7,12 @@ import { assertSoraRuntimeSupport, DEFAULT_SORA_MODEL, handleEasterEggSlashInter
 
 type TestAttachment = {
   contentType?: string | null;
-  name: string;
   size: number;
   url: string;
 };
 
 function createNormContext(response: { output_text?: string } = { output_text: "I read it." }) {
-  const responsesCreate = jest.fn(async () => response);
+  const responsesCreate = jest.fn(async (_payload: Record<string, unknown>) => response);
   const conversationsRetrieve = jest.fn(async () => ({ id: "conversation-1" }));
   const config = {
     guildId: "guild-1",
@@ -86,13 +85,11 @@ describe("handleEasterEggSlashInteraction", () => {
     const { editReply, interaction } = createNormInteraction({
       file1: {
         contentType: "image/png",
-        name: "queue.png",
         size: 4096,
         url: "https://cdn.discordapp.com/attachments/1/2/queue.png?ex=1",
       },
       file2: {
         contentType: "application/pdf",
-        name: "rules.pdf",
         size: 8192,
         url: "https://cdn.discordapp.com/attachments/1/3/rules.pdf?ex=1",
       },
@@ -114,7 +111,6 @@ describe("handleEasterEggSlashInteraction", () => {
               },
               {
                 file_url: "https://cdn.discordapp.com/attachments/1/3/rules.pdf?ex=1",
-                filename: "rules.pdf",
                 type: "input_file",
               },
             ],
@@ -123,6 +119,10 @@ describe("handleEasterEggSlashInteraction", () => {
         ],
       })
     );
+    const payload = responsesCreate.mock.calls[0]?.[0] as {
+      input: Array<{ content: Array<Record<string, unknown>> }>;
+    };
+    expect(payload.input[0]?.content[2]).not.toHaveProperty("filename");
     expect(editReply).toHaveBeenCalledWith("I read it.");
   });
 
@@ -131,7 +131,6 @@ describe("handleEasterEggSlashInteraction", () => {
     const { editReply, interaction } = createNormInteraction({
       file1: {
         contentType: "application/pdf",
-        name: "huge.pdf",
         size: 50 * 1024 * 1024 + 1,
         url: "https://cdn.discordapp.com/attachments/1/2/huge.pdf?ex=1",
       },

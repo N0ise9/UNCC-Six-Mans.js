@@ -30,7 +30,6 @@ type OpenAIResponsePayload = {
 
 type NormAttachment = {
   contentType?: string | null;
-  name?: string | null;
   size?: number | null;
   url: string;
 };
@@ -47,7 +46,6 @@ type NormInputContent =
     }
   | {
       file_url: string;
-      filename?: string;
       type: "input_file";
     };
 
@@ -107,20 +105,6 @@ function isImageAttachment(attachment: NormAttachment): boolean {
   return attachment.contentType?.startsWith("image/") === true;
 }
 
-function getAttachmentFilename(attachment: NormAttachment): string | undefined {
-  const trimmedName = attachment.name?.trim();
-  if (trimmedName) {
-    return trimmedName;
-  }
-
-  try {
-    const filename = new URL(attachment.url).pathname.split("/").pop();
-    return filename ? decodeURIComponent(filename) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function getKnownNonImageFileBytes(attachments: NormAttachment[]): number {
   return attachments
     .filter((attachment) => !isImageAttachment(attachment))
@@ -142,9 +126,7 @@ function buildNormInputContent(actor: { id: string; username: string }, prompt: 
       continue;
     }
 
-    const filename = getAttachmentFilename(attachment);
     content.push({
-      ...(filename ? { filename } : {}),
       file_url: attachment.url,
       type: "input_file",
     });
@@ -402,7 +384,6 @@ export async function handleEasterEggSlashInteraction(
         .filter((attachment): attachment is NonNullable<typeof attachment> => Boolean(attachment))
         .map((attachment) => ({
           contentType: attachment.contentType,
-          name: attachment.name,
           size: attachment.size,
           url: attachment.url,
         }));
