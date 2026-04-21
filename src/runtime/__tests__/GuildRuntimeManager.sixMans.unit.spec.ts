@@ -115,12 +115,7 @@ function allowQueueSurface(context: GuildContext, message: Message, actions: str
 }
 
 function createManager(): GuildRuntimeManager {
-  return new GuildRuntimeManager(
-    {} as Client,
-    {} as OpenAI,
-    {} as GuildConfigStore,
-    new DiscordWorkScheduler(1, 0)
-  );
+  return new GuildRuntimeManager({} as Client, {} as OpenAI, {} as GuildConfigStore, new DiscordWorkScheduler(1, 0));
 }
 
 async function flushSurfaceWindow(context: GuildContext, ms = 0): Promise<void> {
@@ -161,13 +156,17 @@ function createInMemoryRepositories(
           team: player.team,
         }));
       }),
-      getAllBrokenQueueVotesInActiveMatch: jest.fn(async () => activeMatchState.filter((player) => player.brokenQueue).length),
+      getAllBrokenQueueVotesInActiveMatch: jest.fn(
+        async () => activeMatchState.filter((player) => player.brokenQueue).length
+      ),
       getAllBrokenQueueVotersInActiveMatch: jest.fn(async () => ({
         blueTeam: activeMatchState.filter((player) => player.team === Team.Blue && player.brokenQueue),
         orangeTeam: activeMatchState.filter((player) => player.team === Team.Orange && player.brokenQueue),
       })),
       getAllPlayersInActiveMatch: jest.fn(async () => getActiveTeams()),
-      getPlayerInActiveMatch: jest.fn(async (id: string) => activeMatchState.find((player) => player.id === id) ?? null),
+      getPlayerInActiveMatch: jest.fn(
+        async (id: string) => activeMatchState.find((player) => player.id === id) ?? null
+      ),
       isPlayerInActiveMatch: jest.fn(async (id: string) => activeMatchState.some((player) => player.id === id)),
       removeAllPlayersInActiveMatch: jest.fn(async () => {
         activeMatchState = [];
@@ -240,8 +239,8 @@ function createInMemoryRepositories(
         return player ? { ...player } : null;
       }),
       isPlayerInQueue: jest.fn(async (id: string) => queueState.some((player) => player.id === id)),
-      isTeamCaptain: jest.fn(
-        async (id: string, team: Team) => queueState.some((player) => player.id === id && player.isCap && player.team === team)
+      isTeamCaptain: jest.fn(async (id: string, team: Team) =>
+        queueState.some((player) => player.id === id && player.isCap && player.team === team)
       ),
       removeAllBallChasersFromQueue: jest.fn(async () => {
         queueState = [];
@@ -289,10 +288,7 @@ describe("GuildRuntimeManager six mans interactions", () => {
       },
       queue: {
         addBallChaserToQueue: jest.fn(async () => undefined),
-        getAllBallChasersInQueue: jest
-          .fn()
-          .mockResolvedValueOnce([])
-          .mockResolvedValueOnce(updatedPlayers),
+        getAllBallChasersInQueue: jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce(updatedPlayers),
         getBallChaserInQueue: jest.fn(async () => null),
       },
     });
@@ -308,7 +304,9 @@ describe("GuildRuntimeManager six mans interactions", () => {
     expect(context.repositories.queue.addBallChaserToQueue).toHaveBeenCalledTimes(1);
     expect(context.repositories.queue.updateBallChaserInQueue).not.toHaveBeenCalled();
     expect(queueMessage.edit).toHaveBeenCalledTimes(1);
-    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("Destroyer | Join Queue | PROCESSED | joined the queue"));
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Destroyer | Join Queue | PROCESSED | joined the queue")
+    );
   });
 
   it("refreshes an existing queued player instead of duplicating them", async () => {
@@ -334,7 +332,10 @@ describe("GuildRuntimeManager six mans interactions", () => {
     context.voteState.captainsRandomVotes.set("player-2", ButtonCustomID.ChooseTeam);
     allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")
+    );
     await context.scheduler.drain();
 
     expect(context.repositories.queue.addBallChaserToQueue).not.toHaveBeenCalled();
@@ -360,8 +361,12 @@ describe("GuildRuntimeManager six mans interactions", () => {
     expect(finalQueue).toHaveLength(0);
     expect(join.followUp).not.toHaveBeenCalled();
     expect(leave.followUp).not.toHaveBeenCalled();
-    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("Destroyer | Join Queue | PROCESSED | joined the queue"));
-    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("Destroyer | Leave Queue | PROCESSED | left the queue"));
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Destroyer | Join Queue | PROCESSED | joined the queue")
+    );
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Destroyer | Leave Queue | PROCESSED | left the queue")
+    );
   });
 
   it("rejects a new join when the queue is already full", async () => {
@@ -390,7 +395,9 @@ describe("GuildRuntimeManager six mans interactions", () => {
 
     expect(context.repositories.queue.addBallChaserToQueue).not.toHaveBeenCalled();
     expect(queueMessage.edit).not.toHaveBeenCalled();
-    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("SneakyUser | Join Queue | IGNORED | queue is already full"));
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining("SneakyUser | Join Queue | IGNORED | queue is already full")
+    );
   });
 
   it("rejects queue joins from players already in an active match", async () => {
@@ -404,7 +411,10 @@ describe("GuildRuntimeManager six mans interactions", () => {
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
     allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")
+    );
     await context.scheduler.drain();
 
     expect(context.repositories.queue.addBallChaserToQueue).not.toHaveBeenCalled();
@@ -422,7 +432,10 @@ describe("GuildRuntimeManager six mans interactions", () => {
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
     allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.LeaveQueue, queueMessage, "player-1"));
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.LeaveQueue, queueMessage, "player-1")
+    );
     await context.scheduler.drain();
 
     expect(context.repositories.queue.removeBallChaserFromQueue).not.toHaveBeenCalled();
@@ -446,7 +459,10 @@ describe("GuildRuntimeManager six mans interactions", () => {
     context.voteState.sizeVotes.set("player-2", 2);
     allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.LeaveQueue, queueMessage, "player-1"));
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.LeaveQueue, queueMessage, "player-1")
+    );
     await context.scheduler.drain();
 
     expect(context.voteState.captainsRandomVotes.size).toBe(0);
@@ -471,7 +487,9 @@ describe("GuildRuntimeManager six mans interactions", () => {
     });
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
 
-    await (manager as unknown as { runQueueTimer: (guildContext: GuildContext) => Promise<void> }).runQueueTimer(context);
+    await (manager as unknown as { runQueueTimer: (guildContext: GuildContext) => Promise<void> }).runQueueTimer(
+      context
+    );
     await flushSurfaceWindow(context);
 
     expect(context.repositories.queue.removeBallChaserFromQueue).toHaveBeenCalledWith("expired-player");
@@ -482,7 +500,11 @@ describe("GuildRuntimeManager six mans interactions", () => {
     jest.useFakeTimers({ now: new Date("2026-04-04T12:00:00.000Z").getTime() });
     const manager = createManager();
     const queueMessage = createDiscordMessage({ id: "queue-message-1" });
-    const poppedCaptain = queuePlayer("captain", { isCap: true, team: Team.Blue }, DateTime.fromISO("2026-04-04T11:59:00.000Z"));
+    const poppedCaptain = queuePlayer(
+      "captain",
+      { isCap: true, team: Team.Blue },
+      DateTime.fromISO("2026-04-04T11:59:00.000Z")
+    );
     const repositories = createMockRepositories({
       queue: {
         getAllBallChasersInQueue: jest.fn(async () => [poppedCaptain]),
@@ -491,7 +513,9 @@ describe("GuildRuntimeManager six mans interactions", () => {
     });
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
 
-    await (manager as unknown as { runQueueTimer: (guildContext: GuildContext) => Promise<void> }).runQueueTimer(context);
+    await (manager as unknown as { runQueueTimer: (guildContext: GuildContext) => Promise<void> }).runQueueTimer(
+      context
+    );
     await flushSurfaceWindow(context);
 
     expect(context.repositories.queue.removeBallChaserFromQueue).not.toHaveBeenCalled();
@@ -546,13 +570,25 @@ describe("GuildRuntimeManager six mans interactions", () => {
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
     allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")
+    );
     await flushSurfaceWindow(context);
     expect(queueMessage.edit).toHaveBeenCalledTimes(1);
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.LeaveQueue, queueMessage, "player-1"));
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.LeaveQueue, queueMessage, "player-1"));
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.LeaveQueue, queueMessage, "player-1")
+    );
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")
+    );
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.LeaveQueue, queueMessage, "player-1")
+    );
 
     const queuedPlayersBeforeNextWindow = await context.repositories.queue.getAllBallChasersInQueue();
     expect(queuedPlayersBeforeNextWindow).toHaveLength(0);
@@ -691,7 +727,9 @@ describe("GuildRuntimeManager six mans interactions", () => {
   it("uses a threshold of three random votes after 2v2 is selected", async () => {
     const manager = createManager();
     const queueMessage = createDiscordMessage({ id: "queue-message-1" });
-    const repositories = createInMemoryRepositories(["player-1", "player-2", "player-3", "player-4"].map((id) => queuePlayer(id)));
+    const repositories = createInMemoryRepositories(
+      ["player-1", "player-2", "player-3", "player-4"].map((id) => queuePlayer(id))
+    );
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
     context.voteState.selectedMatchSize = 2;
     allowQueueSurface(context, queueMessage, [
@@ -699,13 +737,16 @@ describe("GuildRuntimeManager six mans interactions", () => {
       ButtonCustomID.ChooseTeam,
       ButtonCustomID.CreateRandomTeam,
     ]);
-    const publishSpy = jest
-      .spyOn(
-        manager as unknown as {
-          publishActiveMatch: (guildContext: GuildContext, sourceMessage: Message, match: ActiveMatchCreated) => Promise<void>;
-        },
-        "publishActiveMatch"
-      );
+    const publishSpy = jest.spyOn(
+      manager as unknown as {
+        publishActiveMatch: (
+          guildContext: GuildContext,
+          sourceMessage: Message,
+          match: ActiveMatchCreated
+        ) => Promise<void>;
+      },
+      "publishActiveMatch"
+    );
 
     try {
       await manager.handleButtonInteraction(
@@ -845,9 +886,15 @@ describe("GuildRuntimeManager six mans interactions", () => {
         isPlayerInActiveMatch: jest.fn(async () => false),
       },
     });
-    const context = createGuildRuntimeTestContext(repositories, { queueMessage: createDiscordMessage({ id: "queue-message-1" }) });
+    const context = createGuildRuntimeTestContext(repositories, {
+      queueMessage: createDiscordMessage({ id: "queue-message-1" }),
+    });
     context.surfaceRegistry.upsert(matchMessage.id, "match", {
-      allowedActions: new Set<string>([ButtonCustomID.BrokenQueue, ButtonCustomID.ReportBlue, ButtonCustomID.ReportOrange]),
+      allowedActions: new Set<string>([
+        ButtonCustomID.BrokenQueue,
+        ButtonCustomID.ReportBlue,
+        ButtonCustomID.ReportOrange,
+      ]),
       state: "match_active",
     });
 
@@ -874,9 +921,18 @@ describe("GuildRuntimeManager six mans interactions", () => {
     allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
     await Promise.all([
-      manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")),
-      manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.LeaveQueue, queueMessage, "player-1")),
-      manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")),
+      manager.handleButtonInteraction(
+        context,
+        createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")
+      ),
+      manager.handleButtonInteraction(
+        context,
+        createButtonInteraction(ButtonCustomID.LeaveQueue, queueMessage, "player-1")
+      ),
+      manager.handleButtonInteraction(
+        context,
+        createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")
+      ),
     ]);
     await context.scheduler.drain();
 
@@ -892,9 +948,18 @@ describe("GuildRuntimeManager six mans interactions", () => {
     allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
     await Promise.all([
-      manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")),
-      manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-2")),
-      manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")),
+      manager.handleButtonInteraction(
+        context,
+        createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")
+      ),
+      manager.handleButtonInteraction(
+        context,
+        createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-2")
+      ),
+      manager.handleButtonInteraction(
+        context,
+        createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")
+      ),
     ]);
     await context.scheduler.drain();
 
@@ -908,21 +973,36 @@ describe("GuildRuntimeManager six mans interactions", () => {
       embeds: [{ title: "Current Match" }],
       id: "match-message-1",
     });
-    const repositories = createInMemoryRepositories([], [
-      activeMatchPlayer("blue-1", Team.Blue),
-      activeMatchPlayer("blue-2", Team.Blue),
-      activeMatchPlayer("orange-1", Team.Orange),
-      activeMatchPlayer("orange-2", Team.Orange),
-    ]);
-    const context = createGuildRuntimeTestContext(repositories, { queueMessage: createDiscordMessage({ id: "queue-message-1" }) });
+    const repositories = createInMemoryRepositories(
+      [],
+      [
+        activeMatchPlayer("blue-1", Team.Blue),
+        activeMatchPlayer("blue-2", Team.Blue),
+        activeMatchPlayer("orange-1", Team.Orange),
+        activeMatchPlayer("orange-2", Team.Orange),
+      ]
+    );
+    const context = createGuildRuntimeTestContext(repositories, {
+      queueMessage: createDiscordMessage({ id: "queue-message-1" }),
+    });
     context.surfaceRegistry.upsert(matchMessage.id, "match", {
-      allowedActions: new Set<string>([ButtonCustomID.BrokenQueue, ButtonCustomID.ReportBlue, ButtonCustomID.ReportOrange]),
+      allowedActions: new Set<string>([
+        ButtonCustomID.BrokenQueue,
+        ButtonCustomID.ReportBlue,
+        ButtonCustomID.ReportOrange,
+      ]),
       state: "match_active",
     });
 
     await Promise.all([
-      manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.ReportBlue, matchMessage, "blue-1")),
-      manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.ReportBlue, matchMessage, "orange-1")),
+      manager.handleButtonInteraction(
+        context,
+        createButtonInteraction(ButtonCustomID.ReportBlue, matchMessage, "blue-1")
+      ),
+      manager.handleButtonInteraction(
+        context,
+        createButtonInteraction(ButtonCustomID.ReportBlue, matchMessage, "orange-1")
+      ),
     ]);
     await context.scheduler.drain();
 
@@ -953,11 +1033,17 @@ describe("GuildRuntimeManager six mans interactions", () => {
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
     allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")
+    );
     await flushSurfaceWindow(context);
     expect(queueMessage.edit).toHaveBeenCalledTimes(1);
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-2"));
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-2")
+    );
 
     const queuedPlayersBeforeRenderRelease = await context.repositories.queue.getAllBallChasersInQueue();
     expect(queuedPlayersBeforeRenderRelease.map((player) => player.id).sort()).toEqual(["player-1", "player-2"]);
@@ -977,17 +1063,30 @@ describe("GuildRuntimeManager six mans interactions", () => {
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
     allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")
+    );
     await flushSurfaceWindow(context);
     expect(queueMessage.edit).toHaveBeenCalledTimes(1);
 
     await Promise.all([
-      manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-2")),
-      manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-3")),
+      manager.handleButtonInteraction(
+        context,
+        createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-2")
+      ),
+      manager.handleButtonInteraction(
+        context,
+        createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-3")
+      ),
     ]);
 
     const queuedPlayersBeforeRenderRelease = await context.repositories.queue.getAllBallChasersInQueue();
-    expect(queuedPlayersBeforeRenderRelease.map((player) => player.id).sort()).toEqual(["player-1", "player-2", "player-3"]);
+    expect(queuedPlayersBeforeRenderRelease.map((player) => player.id).sort()).toEqual([
+      "player-1",
+      "player-2",
+      "player-3",
+    ]);
     expect(queueMessage.edit).toHaveBeenCalledTimes(1);
 
     await flushSurfaceWindow(context, 1249);
@@ -1005,12 +1104,18 @@ describe("GuildRuntimeManager six mans interactions", () => {
     const context = createGuildRuntimeTestContext(repositories, { queueMessage });
     allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue]);
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")
+    );
     await flushSurfaceWindow(context);
     expect(queueMessage.edit).toHaveBeenCalledTimes(1);
 
     await jest.advanceTimersByTimeAsync(1250);
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")
+    );
     await flushSurfaceWindow(context);
 
     expect(queueMessage.edit).toHaveBeenCalledTimes(1);
@@ -1036,13 +1141,19 @@ describe("GuildRuntimeManager six mans interactions", () => {
 
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
-      await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1"));
+      await manager.handleButtonInteraction(
+        context,
+        createButtonInteraction(ButtonCustomID.JoinQueue, queueMessage, "player-1")
+      );
       await jest.advanceTimersByTimeAsync(0);
       await Promise.resolve();
       expect(queueMessage.edit).toHaveBeenCalledTimes(1);
 
-      await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.LeaveQueue, queueMessage, "player-1"));
-      expect((await context.repositories.queue.getAllBallChasersInQueue())).toHaveLength(0);
+      await manager.handleButtonInteraction(
+        context,
+        createButtonInteraction(ButtonCustomID.LeaveQueue, queueMessage, "player-1")
+      );
+      expect(await context.repositories.queue.getAllBallChasersInQueue()).toHaveLength(0);
 
       await jest.advanceTimersByTimeAsync(49);
       await Promise.resolve();
@@ -1066,25 +1177,38 @@ describe("GuildRuntimeManager six mans interactions", () => {
       embeds: [{ title: "Current Match" }],
       id: "match-message-1",
     });
-    const repositories = createInMemoryRepositories([], [
-      activeMatchPlayer("blue-1", Team.Blue),
-      activeMatchPlayer("blue-2", Team.Blue),
-      activeMatchPlayer("orange-1", Team.Orange),
-      activeMatchPlayer("orange-2", Team.Orange),
-    ]);
+    const repositories = createInMemoryRepositories(
+      [],
+      [
+        activeMatchPlayer("blue-1", Team.Blue),
+        activeMatchPlayer("blue-2", Team.Blue),
+        activeMatchPlayer("orange-1", Team.Orange),
+        activeMatchPlayer("orange-2", Team.Orange),
+      ]
+    );
     const context = createGuildRuntimeTestContext(repositories, {
       queueMessage: createDiscordMessage({ id: "queue-message-1" }),
     });
     context.surfaceRegistry.upsert(matchMessage.id, "match", {
-      allowedActions: new Set<string>([ButtonCustomID.BrokenQueue, ButtonCustomID.ReportBlue, ButtonCustomID.ReportOrange]),
+      allowedActions: new Set<string>([
+        ButtonCustomID.BrokenQueue,
+        ButtonCustomID.ReportBlue,
+        ButtonCustomID.ReportOrange,
+      ]),
       state: "match_active",
     });
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.BrokenQueue, matchMessage, "blue-1"));
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.BrokenQueue, matchMessage, "blue-1")
+    );
     await flushSurfaceWindow(context);
     expect(matchMessage.edit).toHaveBeenCalledTimes(1);
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(ButtonCustomID.BrokenQueue, matchMessage, "orange-1"));
+    await manager.handleButtonInteraction(
+      context,
+      createButtonInteraction(ButtonCustomID.BrokenQueue, matchMessage, "orange-1")
+    );
     expect(matchMessage.edit).toHaveBeenCalledTimes(1);
 
     await flushSurfaceWindow(context, 1249);
