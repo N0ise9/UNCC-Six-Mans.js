@@ -55,7 +55,24 @@ const VALID_SORA_DURATIONS = new Set<SoraVideoSeconds>(["4", "8", "12"]);
 const SORA_POLL_INTERVAL_MS = 2_000;
 const SORA_MAX_POLL_ATTEMPTS = 150;
 const MAX_OPENAI_FILE_INPUT_BYTES = 50 * 1024 * 1024;
+const DISCORD_ATTACHMENT_URL_PATTERN = /https:\/\/cdn\.discordapp\.com\/(?:attachments|ephemeral-attachments)\/[^\s"'<>]+/i;
+const DISCORD_ATTACHMENT_URL_PREFIX_PATTERN = /^https:\/\/cdn\.discordapp\.com\/(?:attachments|ephemeral-attachments)\//i;
+const SKIPPED_ATTACHMENT_NOTICE = "I ignored one or more expired or inaccessible attachments.";
 export const DEFAULT_SORA_MODEL = "sora-2-2025-12-08";
+
+type OpenAIErrorDetails = {
+  code?: string;
+  message: string;
+  searchableMessage: string;
+  status?: number;
+};
+
+type OpenAIResponseError = {
+  code?: string;
+  message?: string;
+  response?: { data?: { error?: { code?: string; message?: string } }; status?: number };
+  status?: number;
+};
 
 function isSoraEnabled(): boolean {
   return (process.env["ENABLE_SORA"] ?? "false").toLowerCase() === "true";
@@ -105,6 +122,81 @@ function isImageAttachment(attachment: NormAttachment): boolean {
   return attachment.contentType?.startsWith("image/") === true;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function normalizeExtractedUrl(url: string): string {
+  return url.replace(/[)\].,]+$/g, "");
+}
+
+function isDiscordAttachmentUrl(value: unknown): value is string {
+  return typeof value === "string" && DISCORD_ATTACHMENT_URL_PREFIX_PATTERN.test(normalizeExtractedUrl(value));
+}
+
+function areSameUrl(left: string, right: string): boolean {
+  return normalizeExtractedUrl(left) === normalizeExtractedUrl(right);
+}
+
+function getOpenAIErrorDetails(error: unknown): OpenAIErrorDetails {
+  const candidate = error as OpenAIResponseError;
+  const status = candidate.status ?? candidate.response?.status;
+  const code = candidate.code ?? candidate.response?.data?.error?.code;
+  const responseMessage = candidate.response?.data?.error?.message;
+  const message = candidate.message ?? responseMessage ?? "Unknown error";
+  const searchableMessages = [candidate.message, responseMessage].filter(
+    (value, index, values): value is string => typeof value === "string" && values.indexOf(value) === index
+  );
+
+  return {
+    code,
+    message,
+    searchableMessage: searchableMessages.length > 0 ? searchableMessages.join(" ") : message,
+    status,
+  };
+}
+
+function extractFailedDiscordAttachmentUrl(error: unknown): string | null {
+  const details = getOpenAIErrorDetails(error);
+  if (details.status !== 400) return null;
+  if (details.code && details.code !== "invalid_value") return null;
+  if (!/error while downloading/i.test(details.searchableMessage)) return null;
+
+  const match = details.searchableMessage.match(DISCORD_ATTACHMENT_URL_PATTERN);
+  if (!match) return null;
+
+  const url = normalizeExtractedUrl(match[0]);
+  return isDiscordAttachmentUrl(url) ? url : null;
+}
+
+function messageItemHasDiscordAttachmentReference(item: unknown): boolean {
+  if (!isRecord(item) || item.type !== "message" || !Array.isArray(item.content)) {
+    return false;
+  }
+
+  return item.content.some((content) => {
+    if (!isRecord(content)) return false;
+    return (
+      (content.type === "input_file" && isDiscordAttachmentUrl(content.file_url)) ||
+      (content.type === "input_image" && isDiscordAttachmentUrl(content.image_url))
+    );
+  });
+}
+
+async function deleteDiscordAttachmentConversationItems(context: GuildContext, conversationId: string): Promise<number> {
+  let deletedCount = 0;
+
+  for await (const item of context.openai.conversations.items.list(conversationId, { order: "asc" })) {
+    if (!messageItemHasDiscordAttachmentReference(item)) continue;
+    if (!isRecord(item) || typeof item.id !== "string") continue;
+
+    await context.openai.conversations.items.delete(item.id, { conversation_id: conversationId });
+    deletedCount += 1;
+  }
+
+  return deletedCount;
+}
+
 function getKnownNonImageFileBytes(attachments: NormAttachment[]): number {
   return attachments
     .filter((attachment) => !isImageAttachment(attachment))
@@ -133,6 +225,56 @@ function buildNormInputContent(actor: { id: string; username: string }, prompt: 
   }
 
   return content;
+}
+
+function buildNormResponseRequest(
+  conversationId: string,
+  actor: { id: string; username: string },
+  prompt: string,
+  attachments: NormAttachment[]
+): { hasAttachmentInputs: boolean; request: Record<string, unknown> } {
+  const inputContent = buildNormInputContent(actor, prompt, attachments);
+  const hasAttachmentInputs = inputContent.length > 1;
+  const baseRequest = {
+    conversation: conversationId,
+    model: "gpt-5.4",
+    parallel_tool_calls: true,
+    stream: false,
+    tool_choice: "auto",
+    tools: [
+      { type: "web_search" },
+      {
+        input_fidelity: "high",
+        model: "gpt-image-1",
+        moderation: "low",
+        output_format: "png",
+        type: "image_generation",
+      },
+    ],
+  };
+
+  if (!hasAttachmentInputs) {
+    return {
+      hasAttachmentInputs,
+      request: {
+        ...baseRequest,
+        input: `${actor.id} ${actor.username}: ${prompt}`,
+      },
+    };
+  }
+
+  return {
+    hasAttachmentInputs,
+    request: {
+      ...baseRequest,
+      input: [
+        {
+          content: inputContent,
+          role: "user",
+        },
+      ],
+    },
+  };
 }
 
 async function ensureConversation(context: GuildContext): Promise<string> {
@@ -250,71 +392,53 @@ async function runNormPrompt(
   }
 
   const conversationId = await ensureConversation(context);
-  const inputContent = buildNormInputContent(actor, prompt, attachments);
-  const hasAttachmentInputs = inputContent.length > 1;
-  const hasFileInputs = inputContent.some((content) => content.type === "input_file");
+  let activeAttachments = attachments.slice(0, 3);
+  let completion: OpenAIResponsePayload | undefined;
+  let cleanedStaleConversationAttachments = false;
+  let skippedUnavailableAttachments = false;
+  let staleConversationCleanupAttempted = false;
 
-  let completion: OpenAIResponsePayload;
-  try {
-    if (hasAttachmentInputs) {
-      completion = (await context.openai.responses.create({
-        conversation: conversationId,
-        input: [
-          {
-            content: inputContent,
-            role: "user",
-          },
-        ],
-        model: "gpt-5.4",
-        parallel_tool_calls: true,
-        stream: false,
-        tool_choice: "auto",
-        tools: [
-          { type: "web_search" },
-          {
-            input_fidelity: "high",
-            model: "gpt-image-1",
-            moderation: "low",
-            output_format: "png",
-            type: "image_generation",
-          },
-        ],
-      })) as OpenAIResponsePayload;
-    } else {
-      completion = (await context.openai.responses.create({
-        conversation: conversationId,
-        input: `${actor.id} ${actor.username}: ${prompt}`,
-        model: "gpt-5.4",
-        parallel_tool_calls: true,
-        stream: false,
-        tool_choice: "auto",
-        tools: [
-          { type: "web_search" },
-          {
-            input_fidelity: "high",
-            model: "gpt-image-1",
-            moderation: "low",
-            output_format: "png",
-            type: "image_generation",
-          },
-        ],
-      })) as OpenAIResponsePayload;
+  while (!completion) {
+    const request = buildNormResponseRequest(conversationId, actor, prompt, activeAttachments);
+    const hasAttachmentInputs = request.hasAttachmentInputs;
+
+    try {
+      completion = (await context.openai.responses.create(request.request)) as OpenAIResponsePayload;
+    } catch (error: unknown) {
+      const details = getOpenAIErrorDetails(error);
+      console.error(
+        `[${context.guildId}] OpenAI responses.create failed (${details.status ?? "no-status"} ${details.code ?? ""}): ${details.message}`
+      );
+
+      const failedDiscordUrl = extractFailedDiscordAttachmentUrl(error);
+      if (failedDiscordUrl) {
+        const nextAttachments = activeAttachments.filter((attachment) => !areSameUrl(attachment.url, failedDiscordUrl));
+        if (nextAttachments.length < activeAttachments.length) {
+          activeAttachments = nextAttachments;
+          skippedUnavailableAttachments = true;
+          continue;
+        }
+
+        if (!staleConversationCleanupAttempted) {
+          staleConversationCleanupAttempted = true;
+          try {
+            const deletedCount = await deleteDiscordAttachmentConversationItems(context, conversationId);
+            if (deletedCount > 0) {
+              cleanedStaleConversationAttachments = true;
+              continue;
+            }
+          } catch (cleanupError) {
+            console.error(`[${context.guildId}] Failed to remove stale OpenAI conversation attachments:`, cleanupError);
+          }
+        }
+      }
+
+      const reply = hasAttachmentInputs || attachments.length > 0
+        ? `<@${actor.id}> I couldn't read one or more attached files. The file link may have expired, or OpenAI may not support that file type. Try reattaching it or sending a PDF/text file.`
+        : `<@${actor.id}> I couldn't reach OpenAI right now. Please try again in a bit.`;
+      await respond.edit(reply);
+      return;
     }
-  } catch (error: unknown) {
-    const candidate = error as {
-      code?: string;
-      message?: string;
-      response?: { data?: { error?: { code?: string; message?: string } }; status?: number };
-      status?: number;
-    };
-    console.error(
-      `[${context.guildId}] OpenAI responses.create failed (${candidate.status ?? candidate.response?.status ?? "no-status"} ${candidate.code ?? candidate.response?.data?.error?.code ?? ""}): ${candidate.message ?? candidate.response?.data?.error?.message ?? "Unknown error"}`
-    );
-    const reply = hasFileInputs
-      ? `<@${actor.id}> I couldn't read one or more attached files. The file link may have expired, or OpenAI may not support that file type. Try reattaching it or sending a PDF/text file.`
-      : `<@${actor.id}> I couldn't reach OpenAI right now. Please try again in a bit.`;
-    await respond.edit(reply);
-    return;
   }
 
   const outputText = sanitizeDiscordText((completion.output_text || "").trim());
@@ -349,6 +473,10 @@ async function runNormPrompt(
     }
   } else {
     await respond.edit(`<@${actor.id}> I didn't get anything back from OpenAI.`);
+  }
+
+  if (skippedUnavailableAttachments || cleanedStaleConversationAttachments) {
+    await respond.followUp(SKIPPED_ATTACHMENT_NOTICE);
   }
 
   await maybeRotateConversation(context, completion, async (content) => {
