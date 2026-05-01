@@ -193,9 +193,7 @@ describe("handleEasterEggSlashInteraction", () => {
     expect(conversationsItemsList).toHaveBeenCalledWith("conversation-1", { order: "asc" });
     expect(conversationsItemsDelete).toHaveBeenCalledWith("item-stale-file", { conversation_id: "conversation-1" });
     expect(editReply).toHaveBeenCalledWith("Hello from clean history.");
-    expect(followUp).toHaveBeenCalledWith(
-      expect.objectContaining({ content: "I ignored one or more expired or inaccessible attachments." })
-    );
+    expect(followUp).not.toHaveBeenCalled();
   });
 
   it("skips an inaccessible current attachment and retries with the remaining input", async () => {
@@ -232,9 +230,7 @@ describe("handleEasterEggSlashInteraction", () => {
       { file_url: goodUrl, type: "input_file" },
     ]);
     expect(editReply).toHaveBeenCalledWith("I read the available file.");
-    expect(followUp).toHaveBeenCalledWith(
-      expect.objectContaining({ content: "I ignored one or more expired or inaccessible attachments." })
-    );
+    expect(followUp).not.toHaveBeenCalled();
   });
 
   it("skips all inaccessible current attachments and still sends the text prompt", async () => {
@@ -267,9 +263,7 @@ describe("handleEasterEggSlashInteraction", () => {
       expect.objectContaining({ input: "user-1 Destroyer: summarize this" })
     );
     expect(editReply).toHaveBeenCalledWith("Text still works.");
-    expect(followUp).toHaveBeenCalledWith(
-      expect.objectContaining({ content: "I ignored one or more expired or inaccessible attachments." })
-    );
+    expect(followUp).not.toHaveBeenCalled();
   });
 
   it("does not retry forever when stale conversation cleanup fails", async () => {

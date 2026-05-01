@@ -57,7 +57,6 @@ const SORA_MAX_POLL_ATTEMPTS = 150;
 const MAX_OPENAI_FILE_INPUT_BYTES = 50 * 1024 * 1024;
 const DISCORD_ATTACHMENT_URL_PATTERN = /https:\/\/cdn\.discordapp\.com\/(?:attachments|ephemeral-attachments)\/[^\s"'<>]+/i;
 const DISCORD_ATTACHMENT_URL_PREFIX_PATTERN = /^https:\/\/cdn\.discordapp\.com\/(?:attachments|ephemeral-attachments)\//i;
-const SKIPPED_ATTACHMENT_NOTICE = "I ignored one or more expired or inaccessible attachments.";
 export const DEFAULT_SORA_MODEL = "sora-2-2025-12-08";
 
 type OpenAIErrorDetails = {
@@ -394,8 +393,6 @@ async function runNormPrompt(
   const conversationId = await ensureConversation(context);
   let activeAttachments = attachments.slice(0, 3);
   let completion: OpenAIResponsePayload | undefined;
-  let cleanedStaleConversationAttachments = false;
-  let skippedUnavailableAttachments = false;
   let staleConversationCleanupAttempted = false;
 
   while (!completion) {
@@ -415,7 +412,6 @@ async function runNormPrompt(
         const nextAttachments = activeAttachments.filter((attachment) => !areSameUrl(attachment.url, failedDiscordUrl));
         if (nextAttachments.length < activeAttachments.length) {
           activeAttachments = nextAttachments;
-          skippedUnavailableAttachments = true;
           continue;
         }
 
@@ -424,7 +420,6 @@ async function runNormPrompt(
           try {
             const deletedCount = await deleteDiscordAttachmentConversationItems(context, conversationId);
             if (deletedCount > 0) {
-              cleanedStaleConversationAttachments = true;
               continue;
             }
           } catch (cleanupError) {
@@ -473,10 +468,6 @@ async function runNormPrompt(
     }
   } else {
     await respond.edit(`<@${actor.id}> I didn't get anything back from OpenAI.`);
-  }
-
-  if (skippedUnavailableAttachments || cleanedStaleConversationAttachments) {
-    await respond.followUp(SKIPPED_ATTACHMENT_NOTICE);
   }
 
   await maybeRotateConversation(context, completion, async (content) => {
