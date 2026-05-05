@@ -127,7 +127,7 @@ export class GuildRuntimeManager {
   private static readonly HOT_SURFACE_RENDER_INTERVAL_MS = 1250;
 
   private readonly contexts = new Map<string, GuildContext>();
-  private readonly contextLoads = new Map<string, Promise<GuildContext | null>>();
+  private readonly contextLoads = new Map<string, Promise<GuildRuntimeLoadResult>>();
   private readonly queueTimers = new Map<string, NodeJS.Timeout>();
   private readonly queueMessageCreates = new Map<string, Promise<Message | undefined>>();
   private readonly renderCoordinators = new Map<string, RenderCoordinator>();
@@ -188,7 +188,7 @@ export class GuildRuntimeManager {
 
     const existingLoad = this.contextLoads.get(guildId);
     if (existingLoad) {
-      return await existingLoad;
+      return (await existingLoad).context;
     }
 
     const configResult = this.configStore.getGuildConfigResult(guildId);
@@ -210,13 +210,7 @@ export class GuildRuntimeManager {
       return null;
     }
 
-    const load = this.loadContext(config).then((result) => result.context);
-    this.contextLoads.set(guildId, load);
-    try {
-      return await load;
-    } finally {
-      this.contextLoads.delete(guildId);
-    }
+    return (await this.loadContextOnce(config)).context;
   }
 
   async handleSlashCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -582,13 +576,17 @@ export class GuildRuntimeManager {
         continue;
       }
 
-      await this.loadContext(configResult.config);
+      await this.loadContextOnce(configResult.config);
     }
   }
 
   async reloadContext(guildId: string): Promise<GuildRuntimeLoadFailure | null> {
+    const activeLoad = this.contextLoads.get(guildId);
+    if (activeLoad) {
+      await activeLoad;
+    }
+
     await this.teardownContext(guildId);
-    this.contextLoads.delete(guildId);
 
     const configResult = this.configStore.getGuildConfigResult(guildId);
     if (!configResult) {
@@ -611,8 +609,26 @@ export class GuildRuntimeManager {
       return null;
     }
 
-    const result = await this.loadContext(config);
+    const result = await this.loadContextOnce(config);
     return result.failure;
+  }
+
+  private async loadContextOnce(config: GuildInstanceConfig): Promise<GuildRuntimeLoadResult> {
+    const activeLoad = this.contextLoads.get(config.guildId);
+    if (activeLoad) {
+      return await activeLoad;
+    }
+
+    const load = this.loadContext(config);
+    this.contextLoads.set(config.guildId, load);
+
+    try {
+      return await load;
+    } finally {
+      if (this.contextLoads.get(config.guildId) === load) {
+        this.contextLoads.delete(config.guildId);
+      }
+    }
   }
 
   private async bootstrapContext(context: GuildContext): Promise<void> {

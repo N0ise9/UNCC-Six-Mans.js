@@ -7,6 +7,7 @@ import { PrismaStudioAccessGate } from "../PrismaStudioAccessGate";
 import { GuildRuntimeManager, logInteractionAudit } from "../GuildRuntimeManager";
 import { DiscordWorkScheduler } from "../DiscordWorkScheduler";
 import { PrismaStudioManager } from "../PrismaStudioManager";
+import { ApiStatusRuntime } from "../ApiStatusRuntime";
 import { GuildContext, GuildInstanceConfig } from "../types";
 
 function createConfig(guildId: string): GuildInstanceConfig {
@@ -69,6 +70,27 @@ function createTextChannel(id: string): TextChannel {
     id,
     type: ChannelType.GuildText,
   } as unknown as TextChannel;
+}
+
+function createDeferred<T = void>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+
+  return {
+    promise,
+    resolve,
+  };
+}
+
+async function flushPromises(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 function createSetupInteraction(options?: {
@@ -169,6 +191,87 @@ describe("GuildRuntimeManager", () => {
       );
     } finally {
       errorSpy.mockRestore();
+      await manager.dispose();
+    }
+  });
+
+  it("shares a startup guild load with interactions instead of bootstrapping twice", async () => {
+    const config = {
+      ...createConfigResult("guild-1"),
+      config: {
+        ...createConfig("guild-1"),
+        apiStatusChannelId: "guild-1-status",
+      },
+    };
+    const configStore = {
+      getGuildConfigResult: jest.fn(() => config),
+      getGuildConfigResults: jest.fn(() => [config]),
+    } as unknown as GuildConfigStore;
+    const apiStatusRegistration = createDeferred();
+    const apiStatusRuntime = {
+      registerGuild: jest.fn(async () => await apiStatusRegistration.promise),
+      unregisterGuild: jest.fn(),
+    } as unknown as ApiStatusRuntime;
+    const manager = new GuildRuntimeManager(
+      {} as Client,
+      {} as OpenAI,
+      configStore,
+      new DiscordWorkScheduler(1, 0),
+      apiStatusRuntime
+    );
+    const context = createContext("guild-1");
+    context.channels = {
+      apiStatusChannel: createTextChannel("guild-1-status"),
+      chatChannel: null,
+      leaderboardChannel: createTextChannel("guild-1-leaderboard"),
+      queueChannel: createTextChannel("guild-1-queue"),
+    };
+    context.repositories = {
+      event: {
+        ensureCurrentEvent: jest.fn(async () => ({ created: false, event: { name: "Default" } })),
+      },
+    } as unknown as GuildContext["repositories"];
+    let ensureResolved = false;
+
+    try {
+      const createContextSpy = jest
+        .spyOn(
+          manager as unknown as { createContext: (guildConfig: GuildInstanceConfig) => Promise<GuildContext> },
+          "createContext"
+        )
+        .mockResolvedValue(context);
+      jest
+        .spyOn(manager as unknown as { refreshLeaderboard: (guildContext: GuildContext) => Promise<void> }, "refreshLeaderboard")
+        .mockResolvedValue(undefined);
+      jest
+        .spyOn(manager as unknown as { refreshQueueSurface: (guildContext: GuildContext) => Promise<void> }, "refreshQueueSurface")
+        .mockResolvedValue(undefined);
+      jest
+        .spyOn(manager as unknown as { startQueueTimer: (guildContext: GuildContext) => void }, "startQueueTimer")
+        .mockImplementation(() => undefined);
+
+      const startupLoad = manager.initializeConfiguredGuilds();
+      await flushPromises();
+      expect(apiStatusRuntime.registerGuild).toHaveBeenCalledTimes(1);
+
+      const interactionLoad = manager.ensureContext("guild-1").then((loadedContext) => {
+        ensureResolved = true;
+        return loadedContext;
+      });
+      await flushPromises();
+
+      expect(ensureResolved).toBe(false);
+      expect(createContextSpy).toHaveBeenCalledTimes(1);
+
+      apiStatusRegistration.resolve();
+
+      await expect(interactionLoad).resolves.toBe(context);
+      await startupLoad;
+
+      expect(createContextSpy).toHaveBeenCalledTimes(1);
+      expect(apiStatusRuntime.registerGuild).toHaveBeenCalledTimes(1);
+    } finally {
+      apiStatusRegistration.resolve();
       await manager.dispose();
     }
   });

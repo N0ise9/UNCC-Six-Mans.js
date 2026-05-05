@@ -10,6 +10,7 @@ import {
   getApiStatusCatalog,
   summarizeIssues,
 } from "../services/ApiStatusService";
+import AsyncMutex from "../utils/AsyncMutex";
 import { DiscordWorkScheduler } from "./DiscordWorkScheduler";
 import { reconcileKeyedTrackedMessages } from "./reconcileTrackedMessages";
 
@@ -90,6 +91,7 @@ export class ApiStatusRuntime {
   private readonly generalRecords: PollRecord[];
   private readonly awsRecords: PollRecord[];
   private readonly recordsById = new Map<string, PollRecord>();
+  private readonly registrationLocks = new Map<string, AsyncMutex>();
   private disposed = false;
   private latestPayloads: KeyedStatusPayload[] | null = null;
   private latestSnapshotAt = 0;
@@ -145,30 +147,36 @@ export class ApiStatusRuntime {
   }
 
   async registerGuild(guildId: string, channel: TextChannel): Promise<void> {
-    const registration = this.registrations.get(guildId);
-    if (registration) {
-      registration.channel = channel;
-      if (!registration.messages.every((trackedMessage) => trackedMessage.message.channelId === channel.id)) {
+    const release = await this.getRegistrationLock(guildId).acquire();
+    try {
+      const registration = this.registrations.get(guildId);
+      if (registration) {
+        registration.channel = channel;
+        if (!registration.messages.every((trackedMessage) => trackedMessage.message.channelId === channel.id)) {
+          const existingMessages = await this.fetchManagedStatusMessages(channel);
+          await this.deleteManagedStatusMessages(existingMessages, guildId);
+          registration.messages = [];
+        }
+      } else {
         const existingMessages = await this.fetchManagedStatusMessages(channel);
         await this.deleteManagedStatusMessages(existingMessages, guildId);
-        registration.messages = [];
+        this.registrations.set(guildId, {
+          channel,
+          messages: [],
+        });
       }
-    } else {
-      const existingMessages = await this.fetchManagedStatusMessages(channel);
-      await this.deleteManagedStatusMessages(existingMessages, guildId);
-      this.registrations.set(guildId, {
-        channel,
-        messages: [],
-      });
-    }
 
-    await this.ensureStartupSnapshot();
-    await this.publishRegistration(guildId, this.registrations.get(guildId)!);
-    this.scheduleNextPoll();
+      await this.ensureStartupSnapshot();
+      await this.publishAllGuilds();
+      this.scheduleNextPoll();
+    } finally {
+      release();
+    }
   }
 
   unregisterGuild(guildId: string): void {
     this.registrations.delete(guildId);
+    this.registrationLocks.delete(guildId);
     if (this.registrations.size === 0) {
       if (this.pollTimer) {
         clearTimeout(this.pollTimer);
@@ -182,6 +190,17 @@ export class ApiStatusRuntime {
       this.startupSnapshotReady = false;
       this.startupSnapshotPromise = null;
     }
+  }
+
+  private getRegistrationLock(guildId: string): AsyncMutex {
+    const existing = this.registrationLocks.get(guildId);
+    if (existing) {
+      return existing;
+    }
+
+    const lock = new AsyncMutex();
+    this.registrationLocks.set(guildId, lock);
+    return lock;
   }
 
   private async ensureStartupSnapshot(): Promise<void> {

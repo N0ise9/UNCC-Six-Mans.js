@@ -261,6 +261,105 @@ describe("ApiStatusRuntime", () => {
     }
   });
 
+  it("serializes concurrent guild registration so startup status messages are sent once", async () => {
+    const service = createService({
+      id: "openai",
+      name: "OpenAI",
+      pageUrl: "https://status.openai.com/",
+      type: "statuspage",
+    });
+    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), {
+      catalog: createCatalog(
+        [{ name: "Developer Tools", services: [service] }],
+        [{ categoryName: "Developer Tools", service }]
+      ),
+      checkService: async () => createStatus(service, { status: "operational" }),
+      publishDebounceMs: 0,
+    });
+    const channel = createChannel("channel-1");
+
+    try {
+      await Promise.all([runtime.registerGuild("guild-1", channel), runtime.registerGuild("guild-1", channel)]);
+
+      expect(channel.messages.fetch).toHaveBeenCalledTimes(1);
+      expect(channel.send).toHaveBeenCalledTimes(1);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("retains created status messages when a later incident publish fails", async () => {
+    const service = createService({
+      id: "elastic",
+      name: "Elastic Cloud",
+      pageUrl: "https://status.elastic.co/",
+      type: "statuspage",
+    });
+    const runtime = new ApiStatusRuntime(new DiscordWorkScheduler(1, 0), {
+      catalog: createCatalog([{ name: "Monitoring", services: [service] }], [{ categoryName: "Monitoring", service }]),
+      checkService: async () =>
+        createStatus(service, {
+          description: "Elastic incident",
+          incidents: [
+            {
+              created_at: "2026-04-04T18:00:00.000Z",
+              id: "incident-1",
+              incident_updates: [],
+              name: "Elastic incident",
+              shortlink: "https://status.elastic.co/incidents/incident-1",
+              status: "identified",
+            },
+          ],
+          status: "partial_outage",
+        }),
+      publishDebounceMs: 0,
+    });
+    const channel = createChannel("channel-1");
+    const send = channel.send as jest.Mock;
+    const defaultSend = send.getMockImplementation();
+    let failedIncidentCreate = false;
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      send.mockImplementation(async (payload) => {
+        const title = asEmbedPayload(payload).embeds?.[0]?.toJSON().title;
+        if (title === "Incident - Elastic Cloud" && !failedIncidentCreate) {
+          failedIncidentCreate = true;
+          throw new Error("Discord send failed");
+        }
+
+        return await defaultSend!(payload);
+      });
+
+      await runtime.registerGuild("guild-1", channel);
+
+      const summaryMessages = channel.__sentMessages.filter((message) =>
+        message.embeds[0]?.footer?.text?.includes("NormJS Status Summary")
+      );
+      expect(summaryMessages).toHaveLength(1);
+      expect(channel.__sentMessages).toHaveLength(1);
+
+      await runtime.registerGuild("guild-1", channel);
+
+      const summarySendCalls = send.mock.calls.filter((call) => {
+        const title = asEmbedPayload(call[0]).embeds?.[0]?.toJSON().title;
+        return typeof title === "string" && title.startsWith("API and Platform Status");
+      });
+      const incidentSendCalls = send.mock.calls.filter((call) => {
+        const title = asEmbedPayload(call[0]).embeds?.[0]?.toJSON().title;
+        return title === "Incident - Elastic Cloud";
+      });
+
+      expect(summarySendCalls).toHaveLength(1);
+      expect(incidentSendCalls).toHaveLength(2);
+      expect(summaryMessages[0]!.edit).toHaveBeenCalledTimes(1);
+      expect(channel.__sentMessages).toHaveLength(2);
+    } finally {
+      errorSpy.mockRestore();
+      await runtime.dispose();
+    }
+  });
+
   it("cleans up more than 50 pre-existing status messages on startup", async () => {
     const service = createService({
       id: "openai",

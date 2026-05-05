@@ -117,6 +117,7 @@ export async function reconcileKeyedTrackedMessages({
         key: keyedPayload.key,
         message: edited ?? trackedMessage.message,
       });
+      checkpointKeyedTrackedMessage(trackedMessages, keyedPayload.key, edited ?? trackedMessage.message);
       usedKeys.add(keyedPayload.key);
       continue;
     }
@@ -132,6 +133,7 @@ export async function reconcileKeyedTrackedMessages({
         key: keyedPayload.key,
         message: created,
       });
+      checkpointKeyedTrackedMessage(trackedMessages, keyedPayload.key, created);
     }
     usedKeys.add(keyedPayload.key);
   }
@@ -169,6 +171,22 @@ export async function reconcileKeyedTrackedMessages({
   }
 
   return nextMessages;
+}
+
+function checkpointKeyedTrackedMessage(
+  trackedMessages: KeyedTrackedMessage[],
+  key: string,
+  message: Message
+): void {
+  const existingIndex = trackedMessages.findIndex((trackedMessage) => trackedMessage.key === key);
+  const checkpoint = { key, message };
+
+  if (existingIndex >= 0) {
+    trackedMessages[existingIndex] = checkpoint;
+    return;
+  }
+
+  trackedMessages.push(checkpoint);
 }
 
 function normalizeKeyedPayloads(
