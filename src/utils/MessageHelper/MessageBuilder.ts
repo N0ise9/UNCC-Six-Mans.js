@@ -32,6 +32,22 @@ export default class MessageBuilder {
     return process.env["ENVIRONMENT"] === "dev";
   }
 
+  private static lowerTierVoteMarker(matchSize: number): string {
+    if (matchSize >= 1 && matchSize <= 9) {
+      return `${matchSize}\uFE0F\u20E3`;
+    }
+
+    if (matchSize === 10) {
+      return "\uD83D\uDD1F";
+    }
+
+    if (matchSize === 11) {
+      return "1\uFE0F\u20E31\uFE0F\u20E3";
+    }
+
+    return "";
+  }
+
   static leaderboardMessage(leaderboardInfo: string[]): MessageOptions[] {
     const embeds = leaderboardInfo.map((content, index) => {
       const embedCtr = leaderboardInfo.length > 1 ? `(${index + 1}/${leaderboardInfo.length})` : "";
@@ -403,14 +419,14 @@ export default class MessageBuilder {
       style: ButtonStyle.Danger,
     });
 
-    const voteMarker = "\u2705";
+    const voteMarker = this.lowerTierVoteMarker(matchSize);
     const ballChaserList = ballchasers
       .map((ballChaser) => {
         // + 1 since it seems that joining the queue calculates to 59 instead of 60
         const queueTime = ballChaser.queueTime?.diffNow().as("minutes") ?? 0;
         const voter = voterList.find((p) => p.id == ballChaser.id);
         const vote = players.get(ballChaser.id);
-        if (voter && vote === matchSize) {
+        if (voter && vote === matchSize && voteMarker) {
           return `${voteMarker} <@${ballChaser.id}> (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
         } else {
           return `<@${ballChaser.id}> (${Math.min(queueTime + 1, 60).toFixed()} mins)`;

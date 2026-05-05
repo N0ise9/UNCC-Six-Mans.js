@@ -995,6 +995,7 @@ export class GuildRuntimeManager {
               const activeMatch = await createMatchFromChosenTeams(context);
               resetVoteState(context);
               postCommitEffects.push(() => this.publishActiveMatch(context, message, activeMatch));
+              postCommitEffects.push(() => this.refreshQueueSurface(context));
             } else {
               postCommitEffects.push(() => this.refreshQueueSurface(context));
             }
@@ -1015,6 +1016,7 @@ export class GuildRuntimeManager {
               const activeMatch = await createMatchFromChosenTeams(context);
               resetVoteState(context);
               postCommitEffects.push(() => this.publishActiveMatch(context, message, activeMatch));
+              postCommitEffects.push(() => this.refreshQueueSurface(context));
             } else {
               postCommitEffects.push(() => this.refreshQueueSurface(context));
             }
@@ -1079,10 +1081,9 @@ export class GuildRuntimeManager {
     const teams = await context.repositories.activeMatch.getAllBrokenQueueVotersInActiveMatch(interaction.user.id);
     const currentMatch = await getActiveMatch(context, interaction.user.id);
     const event = await context.repositories.event.getCurrentEvent();
-    const revision = context.surfaceRegistry.upsert(message.id, "match", matchSurfaceState());
     const payload = await MessageBuilder.voteBrokenQueueMessage(currentMatch, teams, brokenQueueVotes, event.mmrMult);
 
-    postCommitEffects.push(() => this.editMatchSurface(context, message, payload, revision));
+    postCommitEffects.push(() => this.editMatchSurface(context, message, payload));
 
     return {
       reason: vote ? "recorded broken queue vote" : "removed broken queue vote",
@@ -1132,6 +1133,7 @@ export class GuildRuntimeManager {
       const activeMatch = await createRandomMatch(context);
       resetVoteState(context);
       postCommitEffects.push(() => this.publishActiveMatch(context, sourceMessage, activeMatch));
+      postCommitEffects.push(() => this.refreshQueueSurface(context));
       return {
         reason: "random teams vote reached threshold",
         status: "processed",
@@ -1236,10 +1238,9 @@ export class GuildRuntimeManager {
       };
     }
 
-    const revision = context.surfaceRegistry.upsert(message.id, "match", matchSurfaceState());
     const previousEmbed = message.embeds[0];
     const payload = MessageBuilder.reportedTeamButtons(interaction, EmbedBuilder.from(previousEmbed));
-    postCommitEffects.push(() => this.editMatchSurface(context, message, payload, revision));
+    postCommitEffects.push(() => this.editMatchSurface(context, message, payload));
 
     return {
       reason: `recorded ${team === Team.Blue ? "blue" : "orange"} team match report`,
@@ -1271,8 +1272,6 @@ export class GuildRuntimeManager {
           error
         );
       });
-
-    this.refreshQueueSurface(context);
   }
 
   private async runPostCommitEffects(effects: PostCommitEffect[]): Promise<void> {
@@ -1284,11 +1283,15 @@ export class GuildRuntimeManager {
   private editMatchSurface(
     context: GuildContext,
     message: Message,
-    payload: Parameters<Message["edit"]>[0],
-    revision: number
+    payload: Parameters<Message["edit"]>[0]
   ): void {
     const key = this.getMatchRenderKey(context.guildId, message.id);
     const fingerprint = fingerprintDiscordPayload(payload);
+    if (context.surfaceRegistry.get(message.id) && !this.shouldRequestCollapsedRender(key, fingerprint)) {
+      return;
+    }
+
+    const revision = context.surfaceRegistry.upsert(message.id, "match", matchSurfaceState());
     this.requestCollapsedRender(key, fingerprint, async (version, dispatchId) => {
       const edited = await this.scheduler.enqueue(async () => await message.edit(payload), {
         coalesce: "replace",
@@ -1329,12 +1332,41 @@ export class GuildRuntimeManager {
     key: string,
     fingerprint: string,
     render: (version: number, dispatchId: number) => Promise<boolean>
-  ): void {
+  ): boolean {
     const coordinator = this.getOrCreateRenderCoordinator(key);
+    if (!this.shouldRequestCollapsedRenderForCoordinator(coordinator, fingerprint)) {
+      return false;
+    }
+
     coordinator.latestVersion += 1;
     coordinator.latestFingerprint = fingerprint;
     coordinator.render = render;
     this.armCollapsedRender(key);
+    return true;
+  }
+
+  private shouldRequestCollapsedRender(key: string, fingerprint: string): boolean {
+    const coordinator = this.renderCoordinators.get(key);
+    return !coordinator || this.shouldRequestCollapsedRenderForCoordinator(coordinator, fingerprint);
+  }
+
+  private shouldRequestCollapsedRenderForCoordinator(
+    coordinator: RenderCoordinator,
+    fingerprint: string
+  ): boolean {
+    if (
+      coordinator.latestFingerprint === fingerprint &&
+      coordinator.latestVersion > coordinator.lastSuccessfulVersion
+    ) {
+      return false;
+    }
+
+    return !(
+      coordinator.lastSuccessfulFingerprint === fingerprint &&
+      coordinator.latestVersion <= coordinator.lastSuccessfulVersion &&
+      coordinator.pendingDispatchId === null &&
+      !coordinator.scheduledTimer
+    );
   }
 
   private getOrCreateRenderCoordinator(key: string): RenderCoordinator {
@@ -1379,14 +1411,7 @@ export class GuildRuntimeManager {
       coordinator.latestFingerprint !== null &&
       coordinator.latestFingerprint === coordinator.lastSuccessfulFingerprint
     ) {
-      if (coordinator.latestVersion > coordinator.lastSuccessfulVersion) {
-        console.info(
-          `[${this.formatRenderLogLabel(key)}] ` +
-            "Skipped hot-surface render; payload matches the last successful render."
-        );
-        coordinator.lastSuccessfulVersion = coordinator.latestVersion;
-      }
-
+      coordinator.lastSuccessfulVersion = Math.max(coordinator.lastSuccessfulVersion, coordinator.latestVersion);
       this.clearScheduledRender(coordinator);
       this.cleanupRenderCoordinator(key);
       return;
@@ -1449,11 +1474,7 @@ export class GuildRuntimeManager {
       coordinator.latestFingerprint !== null &&
       coordinator.latestFingerprint === coordinator.lastSuccessfulFingerprint
     ) {
-      console.info(
-        `[${this.formatRenderLogLabel(key)}] ` +
-          "Skipped hot-surface render; payload matches the last successful render."
-      );
-      coordinator.lastSuccessfulVersion = coordinator.latestVersion;
+      coordinator.lastSuccessfulVersion = Math.max(coordinator.lastSuccessfulVersion, coordinator.latestVersion);
       this.cleanupRenderCoordinator(key);
       return;
     }
@@ -1619,10 +1640,14 @@ export class GuildRuntimeManager {
       return;
     }
 
-    const revision = context.surfaceRegistry.upsert(existingQueueMessage.id, "queue", render.surface);
     const expectedMessageId = existingQueueMessage.id;
     const key = this.getQueueRenderKey(context.guildId);
     const fingerprint = fingerprintDiscordPayload(render.view);
+    if (context.surfaceRegistry.get(existingQueueMessage.id) && !this.shouldRequestCollapsedRender(key, fingerprint)) {
+      return;
+    }
+
+    const revision = context.surfaceRegistry.upsert(existingQueueMessage.id, "queue", render.surface);
     this.requestCollapsedRender(key, fingerprint, async (version, dispatchId) => {
       const currentQueueMessage = context.queueMessage;
       if (!currentQueueMessage) {

@@ -307,6 +307,11 @@ describe("GuildRuntimeManager six mans interactions", () => {
     expect(infoSpy).toHaveBeenCalledWith(
       expect.stringContaining("Destroyer | Join Queue | PROCESSED | joined the queue")
     );
+    expect(
+      infoSpy.mock.calls.filter(
+        ([message]) => typeof message === "string" && message.includes("Destroyer | Join Queue |")
+      )
+    ).toHaveLength(1);
   });
 
   it("refreshes an existing queued player instead of duplicating them", async () => {
@@ -632,10 +637,26 @@ describe("GuildRuntimeManager six mans interactions", () => {
     context.config.enabledMatchSizes = [1, 2, 3];
     const voteOneVOne = createVoteMatchSizeCustomId(1);
     allowQueueSurface(context, queueMessage, [ButtonCustomID.JoinQueue, ButtonCustomID.LeaveQueue, voteOneVOne]);
+    const refreshQueueSurfaceSpy = jest.spyOn(
+      manager as unknown as {
+        refreshQueueSurface: (
+          guildContext: GuildContext,
+          players?: ReadonlyArray<Readonly<PlayerInQueue>>
+        ) => Promise<void>;
+      },
+      "refreshQueueSurface"
+    );
 
-    await manager.handleButtonInteraction(context, createButtonInteraction(voteOneVOne, queueMessage, "player-1"));
-    await manager.handleButtonInteraction(context, createButtonInteraction(voteOneVOne, queueMessage, "player-2"));
-    await context.scheduler.drain();
+    try {
+      await manager.handleButtonInteraction(context, createButtonInteraction(voteOneVOne, queueMessage, "player-1"));
+      refreshQueueSurfaceSpy.mockClear();
+
+      await manager.handleButtonInteraction(context, createButtonInteraction(voteOneVOne, queueMessage, "player-2"));
+      expect(refreshQueueSurfaceSpy).toHaveBeenCalledTimes(1);
+      await context.scheduler.drain();
+    } finally {
+      refreshQueueSurfaceSpy.mockRestore();
+    }
 
     const finalQueue = await context.repositories.queue.getAllBallChasersInQueue();
     const activeMatch = await context.repositories.activeMatch.getAllPlayersInActiveMatch("player-1");
@@ -747,6 +768,15 @@ describe("GuildRuntimeManager six mans interactions", () => {
       },
       "publishActiveMatch"
     );
+    const refreshQueueSurfaceSpy = jest.spyOn(
+      manager as unknown as {
+        refreshQueueSurface: (
+          guildContext: GuildContext,
+          players?: ReadonlyArray<Readonly<PlayerInQueue>>
+        ) => Promise<void>;
+      },
+      "refreshQueueSurface"
+    );
 
     try {
       await manager.handleButtonInteraction(
@@ -758,6 +788,7 @@ describe("GuildRuntimeManager six mans interactions", () => {
         createButtonInteraction(ButtonCustomID.CreateRandomTeam, queueMessage, "player-2")
       );
       expect(publishSpy).not.toHaveBeenCalled();
+      refreshQueueSurfaceSpy.mockClear();
 
       await manager.handleButtonInteraction(
         context,
@@ -765,7 +796,9 @@ describe("GuildRuntimeManager six mans interactions", () => {
       );
 
       expect(publishSpy).toHaveBeenCalledTimes(1);
+      expect(refreshQueueSurfaceSpy).toHaveBeenCalledTimes(1);
     } finally {
+      refreshQueueSurfaceSpy.mockRestore();
       publishSpy.mockRestore();
     }
   });
@@ -1096,7 +1129,7 @@ describe("GuildRuntimeManager six mans interactions", () => {
     expect(queueMessage.edit).toHaveBeenCalledTimes(2);
   });
 
-  it("skips queue edits when a refreshed queue timer would not change the visible payload", async () => {
+  it("silently skips queue edits when a refreshed queue timer would not change the visible payload", async () => {
     jest.useFakeTimers({ now: new Date("2026-04-04T12:00:00.000Z").getTime() });
     const manager = createManager();
     const queueMessage = createDiscordMessage({ id: "queue-message-1" });
@@ -1119,6 +1152,8 @@ describe("GuildRuntimeManager six mans interactions", () => {
     await flushSurfaceWindow(context);
 
     expect(queueMessage.edit).toHaveBeenCalledTimes(1);
+    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("Join Queue | PROCESSED | refreshed queue timer"));
+    expect(infoSpy).not.toHaveBeenCalledWith(expect.stringContaining("Skipped hot-surface render"));
   });
 
   it("supersedes a queued retry with the latest queue state after a lane-local rate limit", async () => {
