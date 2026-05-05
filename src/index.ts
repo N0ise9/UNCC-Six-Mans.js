@@ -14,6 +14,7 @@ import {
 import { ensurePackagedRuntimeSupportFiles } from "./runtime/PackagedRuntimeSupport";
 import { startGeneratedMediaPruner } from "./runtime/generatedMediaRetention";
 import { ensurePrismaStudioAssetsExtracted } from "./runtime/PrismaStudioAssets";
+import { pauseForPackagedFailure } from "./runtime/packagedFailurePause";
 import { loadRuntimeEnv } from "./runtime/runtimePaths";
 import { getEnvVariable } from "./utils";
 
@@ -79,6 +80,7 @@ async function shutdown(code: number, reason: string, error?: unknown): Promise<
       // Keep shutdown best-effort even if the live log stream is already gone.
     }
 
+    await pauseForPackagedFailure({ code });
     process.exit(code);
   })();
 
@@ -241,6 +243,7 @@ void main().catch((error) => {
     } catch {
       // Startup failure should still terminate even if the live log stream cannot close cleanly.
     }
+    await pauseForPackagedFailure({ code: 1 });
     process.exit(1);
   })();
 });

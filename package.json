@@ -45,6 +45,7 @@
     "postject": "^1.0.0-alpha.6",
     "prettier": "^3.8.1",
     "prisma": "^7.6.0",
+    "rcedit": "^5.0.2",
     "ts-jest": "^29.4.9",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2"

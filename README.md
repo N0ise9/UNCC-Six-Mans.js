@@ -229,7 +229,6 @@ npm run package:windows
 
 That produces `release/windows-portable` with:
 - `Norm.exe`
-- `Norm.cmd`
 - `.env.sample`
 - `README.md`
 
@@ -237,14 +236,14 @@ The packaged build does not require the source repo beside it.
 
 Packaged runtime behavior:
 - `Norm.exe` can be run directly on first launch
-- if companion files are missing, it auto-creates `.env.sample`, `README.md`, `Norm.cmd`, and `.env`
+- if companion files are missing, it auto-creates `.env.sample`, `README.md`, and `.env`
 - the generated `.env` is only a starter template; you still need to fill in real values before the bot can start successfully
 - runtime files live beside the EXE by default unless `NORM_HOME` is set
 - `.guild-instance-config.json` is written beside the EXE by default
 - generated media is written under `data/generated-media`
 - embedded Prisma Studio assets are extracted on demand under `.norm-internal/sea-assets/<version>/`
 
-Use `Norm.cmd` as the default double-click launcher. It runs `Norm.exe` from its own directory and keeps the console window open after exit so you can read startup or crash output.
+Use `Norm.exe` as the only supported launcher. The EXE uses the Norm icon and keeps its console window open on interactive Windows startup/runtime failures so you can read the error. If Explorer keeps showing an old Node.js icon after replacing an existing local package, refresh Explorer or rebuild into a fresh folder because Windows can cache EXE icons by path. If Norm is launched under Windows Terminal, the taskbar may show the Terminal icon because Terminal owns the visible console window.
 
 Packaging notes:
 - build the EXE on Windows with the same Node version you want to ship
@@ -331,7 +330,7 @@ If `/prisma` fails:
 If the packaged EXE starts and exits immediately:
 - open the generated `.env`
 - fill in the required bot-wide values like `token`, `openai`, and `CONFIG_ENCRYPTION_KEY`
-- run `Norm.exe` or `Norm.cmd` again
+- run `Norm.exe` again
 
 If Sora fails at startup:
 - set `ENABLE_SORA=false`, or

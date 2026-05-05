@@ -43,20 +43,18 @@ describe("PackagedRuntimeSupport", () => {
         }
       },
       packaged: true,
-      platform: "win32",
       runtimeRoot: tempDirectory,
     });
 
     expect(result.createdFiles.map((file) => path.basename(file.path)).sort()).toEqual([
       ".env",
       ".env.sample",
-      "Norm.cmd",
       "README.md",
     ]);
     expect(fs.readFileSync(path.resolve(tempDirectory, ".env"), "utf8")).toBe("token=\nopenai=\n");
     expect(fs.readFileSync(path.resolve(tempDirectory, ".env.sample"), "utf8")).toBe("token=\nopenai=\n");
     expect(fs.readFileSync(path.resolve(tempDirectory, "README.md"), "utf8")).toBe("# Norm\n");
-    expect(fs.readFileSync(path.resolve(tempDirectory, "Norm.cmd"), "utf8")).toContain('".\\Norm.exe" %*');
+    expect(fs.existsSync(path.resolve(tempDirectory, "Norm.cmd"))).toBe(false);
   });
 
   it("does not overwrite existing runtime files", () => {
@@ -76,12 +74,11 @@ describe("PackagedRuntimeSupport", () => {
         }
       },
       packaged: true,
-      platform: "win32",
       runtimeRoot: tempDirectory,
     });
 
     expect(fs.readFileSync(path.resolve(tempDirectory, ".env"), "utf8")).toBe("token=custom\n");
     expect(fs.readFileSync(path.resolve(tempDirectory, "README.md"), "utf8")).toBe("custom readme\n");
-    expect(result.createdFiles.map((file) => path.basename(file.path)).sort()).toEqual([".env.sample", "Norm.cmd"]);
+    expect(result.createdFiles.map((file) => path.basename(file.path)).sort()).toEqual([".env.sample"]);
   });
 });
