@@ -1,6 +1,6 @@
 import { Client } from "discord.js";
 import OpenAI from "openai";
-import { registerAllSlashCommands, registerGuildSlashCommands } from "./controllers/CommandRegistry";
+import { registerGuildSlashCommands } from "./controllers/CommandRegistry";
 import { assertSoraRuntimeSupport } from "./controllers/EasterEggs";
 import { ApiStatusRuntime } from "./runtime/ApiStatusRuntime";
 import { startConsoleFileLogger } from "./runtime/ConsoleFileLogger";
@@ -16,6 +16,7 @@ import { startGeneratedMediaPruner } from "./runtime/generatedMediaRetention";
 import { ensurePrismaStudioAssetsExtracted } from "./runtime/PrismaStudioAssets";
 import { pauseForPackagedFailure } from "./runtime/packagedFailurePause";
 import { loadRuntimeEnv } from "./runtime/runtimePaths";
+import { runClientReadyStartup } from "./runtime/runClientReadyStartup";
 import { getEnvVariable } from "./utils";
 
 const packagedRuntimeSupport = ensurePackagedRuntimeSupportFiles();
@@ -118,18 +119,12 @@ function registerProcessLifecycleHandlers(): void {
 function registerDiscordHandlers(client: Client, discordToken: string): void {
   client.on("clientReady", async (readyClient) => {
     await runSafely("clientReady", async () => {
-      console.info("NormJS single-instance runtime is starting.");
-
-      if (!readyClient.user) throw new Error("No client id");
-      const guilds = await readyClient.guilds.fetch();
-      await registerAllSlashCommands(
-        readyClient.user.id,
+      await runClientReadyStartup({
+        configStore,
         discordToken,
-        guilds.map((guild) => guild.id)
-      );
-      await runtimeManager?.initializeConfiguredGuilds();
-
-      console.info(`NormJS is running with config store at ${configStore.getConfigPath()}.`);
+        readyClient,
+        runtimeManager,
+      });
     });
   });
 

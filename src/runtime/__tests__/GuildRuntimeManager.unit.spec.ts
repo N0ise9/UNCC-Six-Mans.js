@@ -1,4 +1,4 @@
-import { ChannelType, Client, Message, MessageFlags, TextChannel } from "discord.js";
+import { ButtonStyle, ChannelType, Client, Message, MessageFlags, TextChannel } from "discord.js";
 import { DateTime } from "luxon";
 import OpenAI from "openai";
 import * as EasterEggsController from "../../controllers/EasterEggs";
@@ -9,6 +9,7 @@ import { DiscordWorkScheduler } from "../DiscordWorkScheduler";
 import { PrismaStudioManager } from "../PrismaStudioManager";
 import { ApiStatusRuntime } from "../ApiStatusRuntime";
 import { GuildContext, GuildInstanceConfig } from "../types";
+import { runClientReadyStartup } from "../runClientReadyStartup";
 
 function createConfig(guildId: string): GuildInstanceConfig {
   return {
@@ -72,6 +73,65 @@ function createTextChannel(id: string): TextChannel {
   } as unknown as TextChannel;
 }
 
+function createTrackedQueueMessage(options?: {
+  components?: Array<{ toJSON: () => unknown }>;
+  embeds?: Array<Record<string, unknown>>;
+  id?: string;
+}): Message & { edit: jest.Mock } {
+  let message!: Message & { edit: jest.Mock };
+  message = {
+    components:
+      options?.components ??
+      [
+        {
+          toJSON: () => ({
+            components: [
+              {
+                custom_id: "joinQueue",
+                label: "Join",
+                style: ButtonStyle.Success,
+                type: 2,
+              },
+            ],
+            type: 1,
+          }),
+        },
+      ],
+    edit: jest.fn(async () => message),
+    embeds: options?.embeds ?? [{ title: "Current Queue" }],
+    id: options?.id ?? "queue-message-1",
+  } as unknown as Message & { edit: jest.Mock };
+
+  return message;
+}
+
+function createTextChannelWithQueueMessage(message: Message): TextChannel {
+  return {
+    guild: {
+      name: "Guild guild-1",
+    },
+    id: "guild-1-queue",
+    messages: {
+      fetch: jest.fn(async (messageId: string) => {
+        if (messageId !== message.id) {
+          throw new Error("missing message");
+        }
+
+        return message;
+      }),
+    },
+    type: ChannelType.GuildText,
+  } as unknown as TextChannel;
+}
+
+function createClientWithChannel(channel: TextChannel): Client {
+  return {
+    channels: {
+      fetch: jest.fn(async () => channel),
+    },
+  } as unknown as Client;
+}
+
 function createDeferred<T = void>(): {
   promise: Promise<T>;
   resolve: (value: T | PromiseLike<T>) => void;
@@ -122,6 +182,51 @@ function createSetupInteraction(options?: {
 }
 
 describe("GuildRuntimeManager", () => {
+  it("prepares startup queue surfaces before registering slash commands and loading guild contexts", async () => {
+    const calls: string[] = [];
+    const runtimeManager = {
+      initializeConfiguredGuilds: jest.fn(async () => {
+        calls.push("initialize");
+      }),
+      prepareStartupQueueSurfaces: jest.fn(async () => {
+        calls.push("prepare");
+      }),
+    } as unknown as GuildRuntimeManager;
+    const registerSlashCommands = jest.fn(async () => {
+      calls.push("register");
+    });
+    const readyClient = {
+      guilds: {
+        fetch: jest.fn(async () => {
+          calls.push("fetch-guilds");
+          return [{ id: "guild-1" }];
+        }),
+      },
+      user: {
+        id: "bot-user",
+      },
+    } as unknown as Client;
+    const configStore = {
+      getConfigPath: jest.fn(() => "config.json"),
+    } as unknown as GuildConfigStore;
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => undefined);
+
+    try {
+      await runClientReadyStartup({
+        configStore,
+        discordToken: "discord-token",
+        readyClient,
+        registerSlashCommands,
+        runtimeManager,
+      });
+
+      expect(calls).toEqual(["prepare", "fetch-guilds", "register", "initialize"]);
+      expect(registerSlashCommands).toHaveBeenCalledWith("bot-user", "discord-token", ["guild-1"]);
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
   it("formats interaction audit logs with the guild name when one is available", () => {
     const infoSpy = jest.spyOn(console, "info").mockImplementation(() => undefined);
 
@@ -243,7 +348,7 @@ describe("GuildRuntimeManager", () => {
       jest
         .spyOn(manager as unknown as { refreshLeaderboard: (guildContext: GuildContext) => Promise<void> }, "refreshLeaderboard")
         .mockResolvedValue(undefined);
-      jest
+      const refreshQueueSurfaceSpy = jest
         .spyOn(manager as unknown as { refreshQueueSurface: (guildContext: GuildContext) => Promise<void> }, "refreshQueueSurface")
         .mockResolvedValue(undefined);
       jest
@@ -253,6 +358,7 @@ describe("GuildRuntimeManager", () => {
       const startupLoad = manager.initializeConfiguredGuilds();
       await flushPromises();
       expect(apiStatusRuntime.registerGuild).toHaveBeenCalledTimes(1);
+      expect(refreshQueueSurfaceSpy).not.toHaveBeenCalled();
 
       const interactionLoad = manager.ensureContext("guild-1").then((loadedContext) => {
         ensureResolved = true;
@@ -270,6 +376,7 @@ describe("GuildRuntimeManager", () => {
 
       expect(createContextSpy).toHaveBeenCalledTimes(1);
       expect(apiStatusRuntime.registerGuild).toHaveBeenCalledTimes(1);
+      expect(refreshQueueSurfaceSpy).toHaveBeenCalledWith(context);
     } finally {
       apiStatusRegistration.resolve();
       await manager.dispose();
@@ -357,6 +464,121 @@ describe("GuildRuntimeManager", () => {
       });
     } finally {
       warningSpy.mockRestore();
+    }
+  });
+
+  it("temporarily replaces only tracked startup queue message components with a disabled wait button", async () => {
+    const queueMessage = createTrackedQueueMessage();
+    const queueChannel = createTextChannelWithQueueMessage(queueMessage);
+    const config = {
+      ...createConfig("guild-1"),
+      queueMessageId: queueMessage.id,
+    };
+    const configStore = {
+      getGuildConfigResults: jest.fn(() => [
+        {
+          config,
+          enabled: true,
+          guildId: "guild-1",
+        },
+      ]),
+      updateGuildRuntimeFields: jest.fn(),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager(
+      createClientWithChannel(queueChannel),
+      {} as OpenAI,
+      configStore,
+      new DiscordWorkScheduler(1, 0)
+    );
+
+    try {
+      await manager.prepareStartupQueueSurfaces();
+
+      expect(queueMessage.edit).toHaveBeenCalledTimes(1);
+      const payload = queueMessage.edit.mock.calls[0]?.[0] as {
+        components: Array<{ toJSON: () => { components: Array<Record<string, unknown>> } }>;
+        embeds?: unknown;
+      };
+      expect(payload.embeds).toBeUndefined();
+      expect(payload.components).toHaveLength(1);
+
+      const row = payload.components[0]!.toJSON();
+      expect(row.components).toHaveLength(1);
+      expect(row.components[0]).toMatchObject({
+        custom_id: "queueStartupLoading",
+        disabled: true,
+        label: "Please Wait...",
+        style: ButtonStyle.Secondary,
+      });
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it("restores original queue components when startup fails after applying the wait button", async () => {
+    const originalComponent = {
+      components: [
+        {
+          custom_id: "joinQueue",
+          label: "Join",
+          style: ButtonStyle.Success,
+          type: 2,
+        },
+      ],
+      type: 1,
+    };
+    const queueMessage = createTrackedQueueMessage({
+      components: [
+        {
+          toJSON: () => originalComponent,
+        },
+      ],
+    });
+    const queueChannel = createTextChannelWithQueueMessage(queueMessage);
+    const config = {
+      ...createConfig("guild-1"),
+      queueMessageId: queueMessage.id,
+    };
+    const configStore = {
+      getGuildConfigResults: jest.fn(() => [
+        {
+          config,
+          enabled: true,
+          guildId: "guild-1",
+        },
+      ]),
+      updateGuildRuntimeFields: jest.fn(),
+    } as unknown as GuildConfigStore;
+    const manager = new GuildRuntimeManager(
+      createClientWithChannel(queueChannel),
+      {} as OpenAI,
+      configStore,
+      new DiscordWorkScheduler(1, 0)
+    );
+    const context = createContext("guild-1");
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      jest
+        .spyOn(
+          manager as unknown as { createContext: (guildConfig: GuildInstanceConfig) => Promise<GuildContext> },
+          "createContext"
+        )
+        .mockResolvedValue(context);
+      jest
+        .spyOn(manager as unknown as { bootstrapContext: (guildContext: GuildContext) => Promise<void> }, "bootstrapContext")
+        .mockRejectedValue(new Error("bootstrap failed"));
+
+      await manager.prepareStartupQueueSurfaces();
+      await manager.initializeConfiguredGuilds();
+
+      expect(queueMessage.edit).toHaveBeenCalledTimes(2);
+      expect(queueMessage.edit.mock.calls[1]?.[0]).toEqual({
+        components: [originalComponent],
+      });
+    } finally {
+      errorSpy.mockRestore();
+      await manager.dispose();
     }
   });
 

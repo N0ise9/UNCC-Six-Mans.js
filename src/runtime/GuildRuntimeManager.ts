@@ -1,4 +1,5 @@
 import {
+  BaseMessageOptions,
   ButtonInteraction,
   ChannelType,
   ChatInputCommandInteraction,
@@ -60,6 +61,13 @@ type QueueRender = {
   players: ReadonlyArray<Readonly<PlayerInQueue>>;
   surface: ActiveSurfaceState;
   view: Awaited<ReturnType<typeof MessageBuilder.activeMatchMessage>> | ReturnType<typeof MessageBuilder.queueMessage>;
+};
+
+type MessageComponents = NonNullable<BaseMessageOptions["components"]>;
+
+type StartupQueueSurfaceSnapshot = {
+  components: MessageComponents;
+  message: Message;
 };
 
 type PostCommitEffect = () => Promise<void> | void;
@@ -131,6 +139,7 @@ export class GuildRuntimeManager {
   private readonly queueTimers = new Map<string, NodeJS.Timeout>();
   private readonly queueMessageCreates = new Map<string, Promise<Message | undefined>>();
   private readonly renderCoordinators = new Map<string, RenderCoordinator>();
+  private readonly startupQueueSurfaceSnapshots = new Map<string, StartupQueueSurfaceSnapshot>();
 
   constructor(
     private readonly client: Client,
@@ -173,6 +182,7 @@ export class GuildRuntimeManager {
     this.renderCoordinators.clear();
     this.queueMessageCreates.clear();
     this.contextLoads.clear();
+    this.startupQueueSurfaceSnapshots.clear();
 
     for (const context of this.contexts.values()) {
       this.apiStatusRuntime?.unregisterGuild(context.guildId);
@@ -580,6 +590,56 @@ export class GuildRuntimeManager {
     }
   }
 
+  async prepareStartupQueueSurfaces(): Promise<void> {
+    const configs = this.configStore.getGuildConfigResults();
+    for (const configResult of configs) {
+      if (configResult.error) {
+        console.error(
+          `[${this.formatGuildLogLabel(configResult.guildId)}] ` +
+            "Failed to decrypt stored guild configuration during startup queue preparation.",
+          configResult.error
+        );
+        continue;
+      }
+
+      const config = configResult.config;
+      if (!config?.enabled || !config.queueMessageId) {
+        continue;
+      }
+
+      try {
+        const queueChannel = await fetchTextChannel(this.client, config.queueChannelId);
+        const queueMessage = await this.restoreQueueMessage(config, queueChannel);
+        if (!queueMessage || queueMessage.embeds.length === 0 || queueMessage.components.length === 0) {
+          continue;
+        }
+
+        if (!this.startupQueueSurfaceSnapshots.has(config.guildId)) {
+          this.startupQueueSurfaceSnapshots.set(config.guildId, {
+            components: serializeMessageComponents(queueMessage),
+            message: queueMessage,
+          });
+        }
+
+        await this.scheduler.enqueue(
+          async () => await queueMessage.edit(MessageBuilder.queueStartupLoadingComponents()),
+          {
+            coalesce: "replace",
+            dedupeKey: `message-edit:${queueMessage.id}`,
+            label: `queue-startup-lockdown:${config.guildId}`,
+            priority: "high",
+            rateLimitKey: getMessageEditLane(queueMessage.id),
+          }
+        );
+      } catch (error) {
+        console.error(
+          `[${this.formatGuildLogLabel(config.guildId)}] Failed to prepare the startup queue surface:`,
+          error
+        );
+      }
+    }
+  }
+
   async reloadContext(guildId: string): Promise<GuildRuntimeLoadFailure | null> {
     const activeLoad = this.contextLoads.get(guildId);
     if (activeLoad) {
@@ -642,12 +702,13 @@ export class GuildRuntimeManager {
     }
 
     await this.refreshLeaderboard(context);
-    await this.refreshQueueSurface(context);
     if (context.channels.apiStatusChannel) {
       await this.apiStatusRuntime?.registerGuild(context.guildId, context.channels.apiStatusChannel);
     } else {
       this.apiStatusRuntime?.unregisterGuild(context.guildId);
     }
+    await this.refreshQueueSurface(context);
+    this.clearStartupQueueSurfaceSnapshot(context.guildId);
     this.startQueueTimer(context);
   }
 
@@ -795,6 +856,13 @@ export class GuildRuntimeManager {
         error
       );
       this.apiStatusRuntime?.unregisterGuild(config.guildId);
+      await this.restoreStartupQueueSurfaceSnapshot(config.guildId).catch((restoreError) => {
+        console.error(
+          `[${this.formatGuildLogLabel(config.guildId)}] ` +
+            "Failed to restore startup queue components after initialization failure:",
+          restoreError
+        );
+      });
       if (context) {
         await context.prisma.$disconnect().catch(() => undefined);
       }
@@ -814,6 +882,7 @@ export class GuildRuntimeManager {
 
     this.cancelRenderCoordinatorsForGuild(guildId);
     this.queueMessageCreates.delete(guildId);
+    this.startupQueueSurfaceSnapshots.delete(guildId);
 
     const existing = this.contexts.get(guildId);
     if (!existing) {
@@ -1628,6 +1697,26 @@ export class GuildRuntimeManager {
     }
   }
 
+  private clearStartupQueueSurfaceSnapshot(guildId: string): void {
+    this.startupQueueSurfaceSnapshots.delete(guildId);
+  }
+
+  private async restoreStartupQueueSurfaceSnapshot(guildId: string): Promise<void> {
+    const snapshot = this.startupQueueSurfaceSnapshots.get(guildId);
+    if (!snapshot) {
+      return;
+    }
+
+    this.startupQueueSurfaceSnapshots.delete(guildId);
+    await this.scheduler.enqueue(async () => await snapshot.message.edit({ components: snapshot.components }), {
+      coalesce: "replace",
+      dedupeKey: `message-edit:${snapshot.message.id}`,
+      label: `queue-startup-restore:${guildId}`,
+      priority: "high",
+      rateLimitKey: getMessageEditLane(snapshot.message.id),
+    });
+  }
+
   private async refreshLeaderboard(context: GuildContext): Promise<void> {
     const strings = await leaderboardToStrings(context);
     const payloads = MessageBuilder.leaderboardMessage(strings);
@@ -1825,6 +1914,10 @@ function getMessageEditLane(messageId: string): string {
 
 function getMessageReplyLane(message: Message): string {
   return `channel:${message.channelId}:reply`;
+}
+
+function serializeMessageComponents(message: Message): MessageComponents {
+  return message.components.map((component) => component.toJSON()) as MessageComponents;
 }
 
 function fingerprintDiscordPayload(payload: unknown): string {

@@ -58,6 +58,23 @@ export default class MessageBuilder {
     return MessageBuilder.chunkEmbeds(embeds);
   }
 
+  static queueStartupLoadingComponents(): Pick<MessageOptions, "components"> {
+    return {
+      components: [
+        new ActionRowBuilder<ButtonBuilder>({
+          components: [
+            new MessageButton({
+              customId: "queueStartupLoading",
+              disabled: true,
+              label: "Please Wait...",
+              style: ButtonStyle.Secondary,
+            }),
+          ],
+        }),
+      ],
+    };
+  }
+
   static queueMessage(
     ballchasers: ReadonlyArray<Readonly<PlayerInQueue>>,
     targetPlayerCount: number,
