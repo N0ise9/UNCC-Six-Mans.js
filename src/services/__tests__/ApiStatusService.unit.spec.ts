@@ -10,9 +10,26 @@ function createStatuspageService(overrides: Partial<ServiceConfig> = {}): Servic
   };
 }
 
+function createSteamService(overrides: Partial<ServiceConfig> = {}): ServiceConfig {
+  return {
+    id: "steam",
+    name: "Steam",
+    pageUrl: "https://steamstat.us/",
+    type: "generic",
+    ...overrides,
+  };
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     headers: { "content-type": "application/json" },
+    status,
+  });
+}
+
+function htmlResponse(body = "<!doctype html><html></html>", status = 200): Response {
+  return new Response(body, {
+    headers: { "content-type": "text/html" },
     status,
   });
 }
@@ -44,6 +61,10 @@ describe("ApiStatusService statuspage fetching", () => {
 
   function getSecondRequestedUrl(fetchMock: jest.Mock): string | undefined {
     return fetchMock.mock.calls[1]?.[0] as string | undefined;
+  }
+
+  function getRequestedUrls(fetchMock: jest.Mock): string[] {
+    return fetchMock.mock.calls.map((call) => call[0] as string);
   }
 
   it("derives the summary endpoint from the host root before anything else", async () => {
@@ -572,6 +593,98 @@ describe("ApiStatusService statuspage fetching", () => {
 
     expect(status.status).toBe("operational");
     expect(status.description).toBe("");
+    expect(status.incidents).toEqual([]);
+  });
+
+  it("checks direct Steam endpoints instead of fetching the SteamStat.us page", async () => {
+    const fetchMock = jest.fn(async (url: string) => {
+      switch (url) {
+        case "https://store.steampowered.com/":
+        case "https://steamcommunity.com/":
+          return htmlResponse();
+        case "https://api.steampowered.com/ISteamWebAPIUtil/GetServerInfo/v1/?format=json":
+          return jsonResponse({ servertime: 1780053787, servertimestring: "Fri May 29 04:23:07 2026" });
+        default:
+          throw new Error(`Unexpected Steam probe URL: ${url}`);
+      }
+    });
+    global.fetch = fetchMock as typeof fetch;
+
+    const status = await checkSingleService(createSteamService());
+
+    expect(status.status).toBe("operational");
+    expect(status.description).toBe("");
+    expect(status.incidents).toEqual([]);
+    expect(getRequestedUrls(fetchMock)).toEqual([
+      "https://store.steampowered.com/",
+      "https://steamcommunity.com/",
+      "https://api.steampowered.com/ISteamWebAPIUtil/GetServerInfo/v1/?format=json",
+    ]);
+    expect(getRequestedUrls(fetchMock)).not.toContain("https://steamstat.us/");
+  });
+
+  it("reports a partial Steam outage when one direct core probe has a concrete failure", async () => {
+    const fetchMock = jest.fn(async (url: string) => {
+      switch (url) {
+        case "https://store.steampowered.com/":
+          return htmlResponse("Service unavailable", 503);
+        case "https://steamcommunity.com/":
+          return htmlResponse();
+        case "https://api.steampowered.com/ISteamWebAPIUtil/GetServerInfo/v1/?format=json":
+          return jsonResponse({ servertime: 1780053787 });
+        default:
+          throw new Error(`Unexpected Steam probe URL: ${url}`);
+      }
+    });
+    global.fetch = fetchMock as typeof fetch;
+
+    const status = await checkSingleService(createSteamService());
+
+    expect(status.status).toBe("partial_outage");
+    expect(status.description).toBe("Steam Store: HTTP 503");
+    expect(status.incidents).toHaveLength(1);
+    expect(status.incidents?.[0]?.name).toBe("Steam component probe failing");
+    expect(status.incidents?.[0]?.incident_updates?.map((update) => update.body)).toEqual(["Steam Store: HTTP 503"]);
+  });
+
+  it("reports a major Steam outage when every direct core probe has a concrete HTTP failure", async () => {
+    const fetchMock = jest.fn(async (url: string) => {
+      switch (url) {
+        case "https://store.steampowered.com/":
+          return htmlResponse("Service unavailable", 503);
+        case "https://steamcommunity.com/":
+          return htmlResponse("Bad gateway", 502);
+        case "https://api.steampowered.com/ISteamWebAPIUtil/GetServerInfo/v1/?format=json":
+          return jsonResponse({ error: "server error" }, 500);
+        default:
+          throw new Error(`Unexpected Steam probe URL: ${url}`);
+      }
+    });
+    global.fetch = fetchMock as typeof fetch;
+
+    const status = await checkSingleService(createSteamService());
+
+    expect(status.status).toBe("major_outage");
+    expect(status.description).toBe("All Steam probes failed");
+    expect(status.incidents).toHaveLength(1);
+    expect(status.incidents?.[0]?.name).toBe("Steam probes failing");
+    expect(status.incidents?.[0]?.incident_updates?.map((update) => update.body)).toEqual([
+      "Steam Store: HTTP 503",
+      "Steam Community: HTTP 502",
+      "Steam Web API: HTTP 500",
+    ]);
+  });
+
+  it("keeps all-network Steam probe failures as unknown unreachable instead of a real outage", async () => {
+    const fetchMock = jest.fn(async () => {
+      throw new Error("network blocked");
+    });
+    global.fetch = fetchMock as typeof fetch;
+
+    const status = await checkSingleService(createSteamService());
+
+    expect(status.status).toBe("unknown");
+    expect(status.description).toBe("Unreachable");
     expect(status.incidents).toEqual([]);
   });
 });

@@ -1222,157 +1222,137 @@ function escalateStatus(a: StatusLevel, b: StatusLevel): StatusLevel {
   return isWorseStatus(b, a, STATUS_RANK) ? b : a;
 }
 
-function extractSpanById(html: string, id: string): { text: string | null; openTag: string | null } {
-  const re = new RegExp(`<span[^>]*id=["']${id}["'][^>]*>(.*?)</span>`, "is");
-  const m = html.match(re);
-  if (!m) return { openTag: null, text: null };
-  const openTagMatch = m[0].match(/<span[^>]*>/i);
-  const openTag = openTagMatch ? openTagMatch[0] : null;
-  // Strip HTML tags inside text if any
-  const raw = m[1] ?? "";
-  const text = raw.replace(/<[^>]*>/g, "").trim();
-  return { openTag, text };
+type SteamProbeConfig = {
+  name: string;
+  url: string;
+  validate?: (response: Response) => Promise<string | null>;
+};
+
+type SteamProbeFailureKind = "http" | "network" | "validation";
+
+type SteamProbeResult =
+  | {
+      name: string;
+      ok: true;
+    }
+  | {
+      detail: string;
+      kind: SteamProbeFailureKind;
+      name: string;
+      ok: false;
+    };
+
+const STEAM_CORE_PROBES: SteamProbeConfig[] = [
+  {
+    name: "Steam Store",
+    url: "https://store.steampowered.com/",
+  },
+  {
+    name: "Steam Community",
+    url: "https://steamcommunity.com/",
+  },
+  {
+    name: "Steam Web API",
+    url: "https://api.steampowered.com/ISteamWebAPIUtil/GetServerInfo/v1/?format=json",
+    validate: validateSteamWebApiResponse,
+  },
+];
+
+async function validateSteamWebApiResponse(response: Response): Promise<string | null> {
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    return "Invalid JSON response";
+  }
+
+  if (!data || typeof data !== "object" || !("servertime" in data)) {
+    return "Missing servertime";
+  }
+
+  const { servertime } = data as { servertime?: unknown };
+  return typeof servertime === "number" || typeof servertime === "string" ? null : "Invalid servertime";
 }
 
-function classifySteamTextStatus(text: string): StatusLevel {
-  const t = text.toLowerCase();
-  if (/full load|0\.0%/.test(t)) return "major_outage";
-  if (/high load/.test(t)) return "partial_outage";
-  if (/medium load/.test(t)) return "degraded_performance";
-  if (/normal|ok|online/.test(t)) return "operational";
-  return "unknown";
+async function probeSteamEndpoint(probe: SteamProbeConfig): Promise<SteamProbeResult> {
+  try {
+    const res = await fetchWithTimeout(probe.url);
+    if (!res.ok) {
+      return {
+        detail: `HTTP ${res.status}`,
+        kind: "http",
+        name: probe.name,
+        ok: false,
+      };
+    }
+
+    const validationError = probe.validate ? await probe.validate(res) : null;
+    if (validationError) {
+      return {
+        detail: validationError,
+        kind: "validation",
+        name: probe.name,
+        ok: false,
+      };
+    }
+
+    return {
+      name: probe.name,
+      ok: true,
+    };
+  } catch (error) {
+    return {
+      detail: error instanceof Error && error.message ? error.message : "Unreachable",
+      kind: "network",
+      name: probe.name,
+      ok: false,
+    };
+  }
+}
+
+function buildSteamProbeIncident(
+  service: ServiceConfig,
+  failures: Array<Extract<SteamProbeResult, { ok: false }>>,
+  status: Exclude<StatusLevel, "operational" | "unknown">
+): IncidentInfo {
+  const nowIso = new Date().toISOString();
+  return {
+    created_at: nowIso,
+    id: `${service.id}-direct-probes`,
+    impact: status,
+    incident_updates: failures.map((failure) => ({
+      body: `${failure.name}: ${failure.detail}`,
+      created_at: nowIso,
+    })),
+    name: status === "major_outage" ? "Steam probes failing" : "Steam component probe failing",
+    shortlink: service.pageUrl,
+    status,
+  };
 }
 
 async function fetchSteamStatus(service: ServiceConfig): Promise<ServiceStatus> {
-  try {
-    const res = await fetchWithTimeout(service.pageUrl);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const html = await res.text();
+  const probeResults = await Promise.all(STEAM_CORE_PROBES.map((probe) => probeSteamEndpoint(probe)));
+  const failures = probeResults.filter((result): result is Extract<SteamProbeResult, { ok: false }> => !result.ok);
+  const concreteFailures = failures.filter((failure) => failure.kind !== "network");
+  const reachableCount = probeResults.length - failures.length;
 
-    const idsToCheck = [
-      "store",
-      "community",
-      "webapi",
-      "cms",
-      "online",
-      "ingame",
-      "cs2",
-      "dota2",
-      "tf2",
-      "pageviews",
-    ] as const;
-
-    let overall: StatusLevel = "operational";
-    const parts: string[] = [];
-    const offlineComponents: string[] = [];
-
-    for (const id of idsToCheck) {
-      const { text } = extractSpanById(html, id);
-      if (text) {
-        // Summarize nicely
-        switch (id) {
-          case "online":
-            parts.push(`Online: ${text}`);
-            break;
-          case "ingame":
-            parts.push(`In-Game: ${text}`);
-            break;
-          case "cms":
-            parts.push(`CMs: ${text}`);
-            overall = escalateStatus(overall, classifySteamTextStatus(text));
-            break;
-          case "store":
-            parts.push(`Store: ${text}`);
-            overall = escalateStatus(overall, classifySteamTextStatus(text));
-            if (/offline/i.test(text)) offlineComponents.push(`Store: ${text}`);
-            break;
-          case "community":
-            parts.push(`Community: ${text}`);
-            overall = escalateStatus(overall, classifySteamTextStatus(text));
-            if (/offline/i.test(text)) offlineComponents.push(`Community: ${text}`);
-            break;
-          case "webapi":
-            parts.push(`Web API: ${text}`);
-            overall = escalateStatus(overall, classifySteamTextStatus(text));
-            if (/offline/i.test(text)) offlineComponents.push(`Web API: ${text}`);
-            break;
-          case "cs2":
-            parts.push(`CS2: ${text}`);
-            overall = escalateStatus(overall, classifySteamTextStatus(text));
-            if (/offline/i.test(text)) offlineComponents.push(`CS2: ${text}`);
-            break;
-          case "dota2":
-            parts.push(`Dota2: ${text}`);
-            overall = escalateStatus(overall, classifySteamTextStatus(text));
-            if (/offline/i.test(text)) offlineComponents.push(`Dota2: ${text}`);
-            break;
-          case "tf2":
-            parts.push(`TF2: ${text}`);
-            overall = escalateStatus(overall, classifySteamTextStatus(text));
-            if (/offline/i.test(text)) offlineComponents.push(`TF2: ${text}`);
-            break;
-          case "pageviews":
-            parts.push(`Page Views: ${text}`);
-            break;
-        }
-      }
-    }
-
-    // PSA
-    const psaMatch = html.match(/<div\s+id=["']psa["'][^>]*>(.*?)<\/div>/is);
-    let incidents: IncidentInfo[] = [];
-    if (psaMatch) {
-      const psaText = psaMatch[1].replace(/<[^>]*>/g, "").trim();
-      if (psaText && !/Loading…/i.test(psaText)) {
-        incidents = [
-          {
-            created_at: new Date().toISOString(),
-            id: `${service.id}-psa`,
-            impact: "partial_outage",
-            incident_updates: [{ body: psaText, created_at: new Date().toISOString() }],
-            name: "Steam PSA",
-            shortlink: service.pageUrl,
-            status: "partial_outage",
-          },
-        ];
-        overall = escalateStatus(overall, "partial_outage");
-      }
-    }
-
-    // If any core component is Offline, mark as major outage and create an incident with details
-    if (offlineComponents.length > 0) {
-      overall = "major_outage";
-      const nowIso = new Date().toISOString();
-      const updateLines = offlineComponents.map((c) => ({ body: c, created_at: nowIso }));
-      incidents.unshift({
-        created_at: nowIso,
-        id: `${service.id}-offline`,
-        impact: "major_outage",
-        incident_updates: updateLines,
-        name: "Steam Outage",
-        shortlink: service.pageUrl,
-        status: "major_outage",
-      });
-    }
-
-    // If we discovered incidents but overall is still operational/unknown, escalate based on incident impacts
-    if (incidents.length > 0 && (overall === "operational" || overall === "unknown")) {
-      let worst: StatusLevel = "operational";
-      for (const inc of incidents)
-        worst = escalateStatus(worst, impactToStatusLevel(inc.impact, "degraded_performance"));
-      overall = escalateStatus(overall, worst);
-    }
-
-    // Keep concise; only append text for noteworthy states
-    const description = overall === "operational" ? "" : overall === "major_outage" ? "Major Outage" : parts.join("; ");
-    return buildStatus(service, {
-      description: description || "Parsed Steam status",
-      incidents,
-      status: overall,
-    });
-  } catch {
-    return errorStatus(service, "Unreachable", "major_outage");
+  if (concreteFailures.length === 0) {
+    return reachableCount > 0
+      ? buildStatus(service, { description: "", incidents: [], status: "operational" })
+      : errorStatus(service, "Unreachable");
   }
+
+  const status: StatusLevel = concreteFailures.length === STEAM_CORE_PROBES.length ? "major_outage" : "partial_outage";
+  const description =
+    status === "major_outage"
+      ? "All Steam probes failed"
+      : concreteFailures.map((failure) => `${failure.name}: ${failure.detail}`).join("; ");
+
+  return buildStatus(service, {
+    description,
+    incidents: [buildSteamProbeIncident(service, concreteFailures, status)],
+    status,
+  });
 }
 
 function mapAuth0ImpactToStatus(impact?: string, status?: string): StatusLevel {
