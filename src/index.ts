@@ -1,131 +1,244 @@
-import { Client, Message, TextChannel } from "discord.js";
-import { updateLeaderboardChannel } from "./controllers/LeaderboardChannelController";
-import { handleInteraction, postCurrentQueue } from "./controllers/Interactions";
-import { getDiscordChannelById } from "./utils/discordUtils";
-import { getEnvVariable } from "./utils";
-import { handleDevInteraction } from "./controllers/DevInteractions";
-import { handleAdminInteraction, registerAdminSlashCommands } from "./controllers/AdminController";
-import { handleMenuInteraction } from "./controllers/MenuInteractions";
-import { startQueueTimer } from "./controllers/QueueController";
-import { normCommand, startChatMonitor } from "./controllers/EasterEggs";
+import { Client } from "discord.js";
 import OpenAI from "openai";
+import { registerGuildSlashCommands } from "./controllers/CommandRegistry";
+import { assertSoraRuntimeSupport } from "./controllers/EasterEggs";
+import { ApiStatusRuntime } from "./runtime/ApiStatusRuntime";
+import { startConsoleFileLogger } from "./runtime/ConsoleFileLogger";
+import { DiscordWorkScheduler } from "./runtime/DiscordWorkScheduler";
+import { GuildConfigStore } from "./runtime/GuildConfigStore";
+import {
+  describeButtonInteractionAction,
+  GuildRuntimeManager,
+  logInteractionAudit,
+} from "./runtime/GuildRuntimeManager";
+import { ensurePackagedRuntimeSupportFiles } from "./runtime/PackagedRuntimeSupport";
+import { startGeneratedMediaPruner } from "./runtime/generatedMediaRetention";
+import { ensurePrismaStudioAssetsExtracted } from "./runtime/PrismaStudioAssets";
+import { pauseForPackagedFailure } from "./runtime/packagedFailurePause";
+import { loadRuntimeEnv } from "./runtime/runtimePaths";
+import { runClientReadyStartup } from "./runtime/runClientReadyStartup";
+import { getEnvVariable } from "./utils";
 
-const NormClient = new Client({
-  intents: ["Guilds", "GuildMessages", "GuildMessageReactions", "GuildMessageTyping", "MessageContent"],
-});
+const packagedRuntimeSupport = ensurePackagedRuntimeSupportFiles();
+loadRuntimeEnv();
+const consoleFileLogger = startConsoleFileLogger();
 
-const guildId = getEnvVariable("guild_id");
-const leaderboardChannelId = getEnvVariable("leaderboard_channel_id");
-const queueChannelId = getEnvVariable("queue_channel_id");
-const chatChannelId = getEnvVariable("chat_channel_id");
-const discordToken = getEnvVariable("token");
-const openai = new OpenAI({ apiKey: getEnvVariable("openai") });
+const scheduler = new DiscordWorkScheduler(2, 75);
+const apiStatusRuntime = new ApiStatusRuntime(scheduler);
+const configStore = new GuildConfigStore();
+let generatedMediaPruner: NodeJS.Timeout | null = null;
+let normClient: Client | null = null;
+let runtimeManager: GuildRuntimeManager | null = null;
+let shutdownInFlight: Promise<void> | null = null;
 
-let queueEmbed: Message | null;
-let chatChannelMonitor: boolean = false;
-let chatChannel: TextChannel;
+async function runSafely(label: string, handler: () => Promise<void>): Promise<void> {
+  try {
+    await handler();
+  } catch (error) {
+    console.error(`${label} failed:`, error);
+  }
+}
 
-// function called on startup
-NormClient.on("ready", async (client) => {
-  console.info("NormJS is running.");
+async function shutdown(code: number, reason: string, error?: unknown): Promise<void> {
+  if (shutdownInFlight) {
+    await shutdownInFlight;
+    return;
+  }
 
-  if (!client.user) throw new Error("No client id");
-  const registerAdminCommandsPromise = registerAdminSlashCommands(client.user.id, guildId, discordToken);
-
-  const updateLeaderboardPromise = getDiscordChannelById(NormClient, leaderboardChannelId).then(
-    (leaderboardChannel) => {
-      if (leaderboardChannel) {
-        updateLeaderboardChannel(leaderboardChannel);
-      }
-    }
-  );
-
-  const postCurrentQueuePromise = getDiscordChannelById(NormClient, queueChannelId)
-    .then((queueChannel) => {
-      if (queueChannel) {
-        return postCurrentQueue(queueChannel);
-      }
-    })
-    .then((queueEmbedMsg) => {
-      queueEmbed = queueEmbedMsg ?? null;
-    });
-
-  const registerChatPromise = getDiscordChannelById(NormClient, chatChannelId).then((getChatChannel) => {
-    if (!getChatChannel) {
-      console.warn("Unable to access chat channel.");
+  shutdownInFlight = (async () => {
+    if (error !== undefined) {
+      console.error(`[Shutdown] ${reason}:`, error);
     } else {
-      chatChannel = getChatChannel;
-      return (chatChannelMonitor = true);
+      console.info(`[Shutdown] ${reason}.`);
     }
+
+    if (generatedMediaPruner) {
+      clearInterval(generatedMediaPruner);
+      generatedMediaPruner = null;
+    }
+
+    try {
+      await runtimeManager?.dispose();
+    } catch (disposeError) {
+      console.error("[Shutdown] Failed to dispose guild runtime manager:", disposeError);
+    }
+
+    try {
+      await apiStatusRuntime.dispose();
+    } catch (disposeError) {
+      console.error("[Shutdown] Failed to dispose API status runtime:", disposeError);
+    }
+
+    try {
+      await normClient?.destroy();
+    } catch (destroyError) {
+      console.error("[Shutdown] Failed to destroy Discord client:", destroyError);
+    }
+
+    try {
+      await consoleFileLogger.dispose();
+    } catch {
+      // Keep shutdown best-effort even if the live log stream is already gone.
+    }
+
+    await pauseForPackagedFailure({ code });
+    process.exit(code);
+  })();
+
+  await shutdownInFlight;
+}
+
+async function maybeRunCliMode(args: string[]): Promise<boolean> {
+  if (!args.includes("--extract-internal-assets")) {
+    return false;
+  }
+
+  const extractedRoot = ensurePrismaStudioAssetsExtracted();
+  console.info(`Extracted internal Prisma Studio assets to ${extractedRoot}.`);
+  return true;
+}
+
+function registerProcessLifecycleHandlers(): void {
+  process.on("SIGINT", async () => {
+    await shutdown(0, "Received SIGINT");
   });
 
-  await Promise.all([
-    registerAdminCommandsPromise,
-    updateLeaderboardPromise,
-    postCurrentQueuePromise,
-    registerChatPromise,
-  ]);
+  process.on("SIGTERM", async () => {
+    await shutdown(0, "Received SIGTERM");
+  });
 
-  if (queueEmbed) {
-    startQueueTimer(queueEmbed);
-  } else {
-    console.warn("Unable to start queue timers since queue embed is null.");
+  process.on("uncaughtException", (error) => {
+    void shutdown(1, "Uncaught exception", error);
+  });
+
+  process.on("unhandledRejection", (reason) => {
+    void shutdown(1, "Unhandled promise rejection", reason);
+  });
+}
+
+function registerDiscordHandlers(client: Client, discordToken: string): void {
+  client.on("clientReady", async (readyClient) => {
+    await runSafely("clientReady", async () => {
+      await runClientReadyStartup({
+        configStore,
+        discordToken,
+        readyClient,
+        runtimeManager,
+      });
+    });
+  });
+
+  client.on("interactionCreate", async (interaction) => {
+    await runSafely("interactionCreate", async () => {
+      if (!interaction.inCachedGuild()) {
+        return;
+      }
+
+      if (interaction.isButton()) {
+        if (!runtimeManager) {
+          logInteractionAudit({
+            action: describeButtonInteractionAction(interaction.customId),
+            guildId: interaction.guildId,
+            guildName: interaction.guild.name,
+            reason: "guild runtime manager is not ready",
+            status: "ignored",
+            username: interaction.user.username,
+          });
+          return;
+        }
+
+        await interaction.deferUpdate();
+        const context = await runtimeManager.ensureContext(interaction.guildId);
+        if (!context) {
+          logInteractionAudit({
+            action: describeButtonInteractionAction(interaction.customId),
+            guildId: interaction.guildId,
+            guildName: interaction.guild.name,
+            reason: "guild runtime is unavailable or not configured",
+            status: "ignored",
+            username: interaction.user.username,
+          });
+          return;
+        }
+        await runtimeManager.handleButtonInteraction(context, interaction);
+        return;
+      }
+
+      if (!runtimeManager) {
+        return;
+      }
+
+      if (interaction.isStringSelectMenu()) {
+        await interaction.deferUpdate();
+        const context = await runtimeManager.ensureContext(interaction.guildId);
+        if (!context) return;
+        await runtimeManager.handleSelectMenuInteraction(context, interaction);
+        return;
+      }
+
+      if (interaction.isChatInputCommand()) {
+        await runtimeManager.handleSlashCommand(interaction);
+      }
+    });
+  });
+
+  client.on("error", (error) => {
+    console.error("Discord client error:", error);
+  });
+
+  client.on("guildCreate", async (guild) => {
+    await runSafely("guildCreate", async () => {
+      if (!client.user) {
+        return;
+      }
+
+      await registerGuildSlashCommands(client.user.id, discordToken, guild.id);
+      console.info(`[SlashCommands] Registered commands for newly joined guild ${guild.name} (${guild.id}).`);
+    });
+  });
+}
+
+async function startBot(): Promise<void> {
+  if (packagedRuntimeSupport.createdFiles.length > 0) {
+    const createdNames = packagedRuntimeSupport.createdFiles.map((file) => `"${file.path}"`).join(", ");
+    console.info(`[PackagedRuntime] Created missing companion files: ${createdNames}.`);
   }
 
-  if (chatChannelMonitor) {
-    startChatMonitor();
-  } else {
-    console.warn("Unable to start chat monitoring timer on a channel that doesn't exist.");
+  const discordToken = getEnvVariable("token");
+  const openai = new OpenAI({ apiKey: getEnvVariable("openai") });
+  assertSoraRuntimeSupport(openai);
+
+  normClient = new Client({
+    intents: ["Guilds"],
+  });
+  runtimeManager = new GuildRuntimeManager(normClient, openai, configStore, scheduler, apiStatusRuntime);
+  generatedMediaPruner = startGeneratedMediaPruner();
+
+  registerProcessLifecycleHandlers();
+  registerDiscordHandlers(normClient, discordToken);
+
+  await normClient.login(discordToken).catch((error) => {
+    return shutdown(1, "Discord login failed", error);
+  });
+}
+
+async function main(): Promise<void> {
+  if (await maybeRunCliMode(process.argv.slice(2))) {
+    return;
   }
+
+  await startBot();
+}
+
+void main().catch((error) => {
+  void (async () => {
+    console.error("NormJS failed to start:", error);
+    try {
+      await consoleFileLogger.dispose();
+    } catch {
+      // Startup failure should still terminate even if the live log stream cannot close cleanly.
+    }
+    await pauseForPackagedFailure({ code: 1 });
+    process.exit(1);
+  })();
 });
-
-NormClient.on("interactionCreate", async (interaction) => {
-  if (interaction.isButton()) {
-    await interaction.deferUpdate();
-
-    await handleInteraction(interaction, NormClient);
-    await handleDevInteraction(interaction);
-  } else if (interaction.isStringSelectMenu()) {
-    await interaction.deferUpdate();
-
-    await handleMenuInteraction(interaction);
-  } else if (interaction.isCommand()) {
-    if (!queueEmbed) throw new Error("No queue embed set.");
-
-    await interaction.deferReply({ ephemeral: true });
-    await handleAdminInteraction(interaction, queueEmbed);
-  }
-});
-
-NormClient.on("messageCreate", async (message) => {
-  if (message.channelId === chatChannelId) {
-    normCommand(chatChannel, message, openai);
-    //console.info("message sent");
-  }
-});
-
-NormClient.on("messageUpdate", async (message) => {
-  if (message.channelId === chatChannelId) {
-    console.info("message updated");
-  }
-});
-
-NormClient.on("typingStart", async (typing) => {
-  if (typing.channel.id === chatChannelId) {
-    console.info("typing");
-  }
-});
-
-NormClient.on("messageReactionAdd", async (reaction) => {
-  if (reaction.message.channelId === chatChannelId) {
-    console.info("reaction added");
-  }
-});
-
-NormClient.on("messageReactionRemove", async (reaction) => {
-  if (reaction.message.channelId === chatChannelId) {
-    console.info("reaction removed");
-  }
-});
-
-NormClient.login(discordToken);

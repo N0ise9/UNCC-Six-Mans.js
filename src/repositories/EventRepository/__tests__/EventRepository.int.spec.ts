@@ -1,26 +1,26 @@
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient } from "../../../prisma";
 import { Event } from "../types";
 import * as faker from "faker";
-import EventRepository from "../EventRepository";
+import { EventRepository } from "../EventRepository";
+import { createIntegrationTestPrismaClient, resetIntegrationDatabase } from "../../../../.jest/integrationPrisma";
 
 let prisma: PrismaClient;
+let eventRepository: EventRepository;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  await resetIntegrationDatabase(prisma);
+  eventRepository = new EventRepository(prisma);
 });
 
 beforeAll(async () => {
-  prisma = new PrismaClient();
+  prisma = createIntegrationTestPrismaClient();
   await prisma.$connect();
-  await prisma.event.deleteMany();
-});
-
-afterEach(async () => {
-  await prisma.event.deleteMany();
 });
 
 afterAll(async () => {
-  await prisma.$disconnect();
+  await resetIntegrationDatabase(prisma);
+  await prisma?.$disconnect();
 });
 
 describe("EventRepository tests", () => {
@@ -33,7 +33,7 @@ describe("EventRepository tests", () => {
       },
     });
 
-    await expect(EventRepository.getCurrentEvent()).rejects.toThrowError();
+    await expect(eventRepository.getCurrentEvent()).rejects.toThrow();
   });
 
   it("returns the correct current event", async () => {
@@ -50,7 +50,7 @@ describe("EventRepository tests", () => {
       ],
     });
 
-    const actual = await EventRepository.getCurrentEvent();
+    const actual = await eventRepository.getCurrentEvent();
     expect(actual).toEqual<Event>({
       id: expect.any(Number),
       name: "Actual Current Season",
