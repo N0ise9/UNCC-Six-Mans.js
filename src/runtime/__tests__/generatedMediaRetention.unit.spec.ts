@@ -27,12 +27,12 @@ describe("generatedMediaRetention", () => {
   it("prunes files older than the retention window and keeps newer files", () => {
     const directory = createTempDirectory();
     const imagesDirectory = path.join(directory, "images");
-    const videosDirectory = path.join(directory, "videos");
+    const nestedImagesDirectory = path.join(imagesDirectory, "nested");
     fs.mkdirSync(imagesDirectory, { recursive: true });
-    fs.mkdirSync(videosDirectory, { recursive: true });
+    fs.mkdirSync(nestedImagesDirectory, { recursive: true });
 
     const oldFile = path.join(imagesDirectory, "old.png");
-    const newFile = path.join(videosDirectory, "new.mp4");
+    const newFile = path.join(nestedImagesDirectory, "new.png");
     fs.writeFileSync(oldFile, "old");
     fs.writeFileSync(newFile, "new");
 

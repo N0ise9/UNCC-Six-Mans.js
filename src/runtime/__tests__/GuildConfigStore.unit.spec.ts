@@ -54,7 +54,6 @@ describe("GuildConfigStore", () => {
       expect(config?.enabledMatchSizes).toEqual([2, 3]);
       expect(config?.queueChannelId).toBe("queue-1");
       expect(config?.enabled).toBe(true);
-      expect(config?.soraEnabled).toBe(false);
     } finally {
       cleanup(filePath);
     }
@@ -79,29 +78,6 @@ describe("GuildConfigStore", () => {
       expect(config?.enabledMatchSizes).toEqual([2, 3]);
       expect(config?.queueChannelId).toBe("queue-1");
       expect(config?.enabled).toBe(true);
-      expect(config?.soraEnabled).toBe(false);
-    } finally {
-      cleanup(filePath);
-    }
-  });
-
-  it("stores and reads a guild config with Sora enabled", () => {
-    const { filePath, store } = createStore();
-
-    try {
-      store.setGuildConfig({
-        chatChannelId: "chat-1",
-        databaseUrl: "postgres://user:pass@localhost:5432/guild_one",
-        guildId: "guild-1",
-        leaderboardChannelId: "leaderboard-1",
-        queueChannelId: "queue-1",
-        soraEnabled: true,
-      });
-
-      const config = store.getGuildConfig("guild-1");
-
-      expect(config).not.toBeNull();
-      expect(config?.soraEnabled).toBe(true);
     } finally {
       cleanup(filePath);
     }
@@ -123,6 +99,38 @@ describe("GuildConfigStore", () => {
 
       expect(config).not.toBeNull();
       expect(config?.enabledMatchSizes).toEqual([1, 4, 8, 12]);
+    } finally {
+      cleanup(filePath);
+    }
+  });
+
+  it("removes retired fields from existing configs while preserving current settings and encrypted credentials", () => {
+    const { filePath, store } = createStore();
+
+    try {
+      store.setGuildConfig({
+        apiStatusChannelId: "status-1",
+        chatChannelId: "chat-1",
+        databaseUrl: "postgres://guild-one",
+        enabledMatchSizes: [1, 4],
+        guildId: "guild-1",
+        leaderboardChannelId: "leaderboard-1",
+        openAiConversationId: "conversation-1",
+        queueChannelId: "queue-1",
+      });
+      const currentConfig = store.updateGuildRuntimeFields("guild-1", {
+        leaderboardMessageIds: ["leaderboard-message-1"],
+        queueMessageId: "queue-message-1",
+      });
+      const currentFile = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      const legacyFile = JSON.parse(JSON.stringify(currentFile)) as {
+        guilds: Array<Record<string, unknown>>;
+      };
+      legacyFile.guilds[0]!["retiredFeatureEnabled"] = true;
+      fs.writeFileSync(filePath, JSON.stringify(legacyFile), "utf8");
+
+      expect(store.getGuildConfig("guild-1")).toEqual(currentConfig);
+      expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toEqual(currentFile);
     } finally {
       cleanup(filePath);
     }
@@ -254,7 +262,6 @@ describe("GuildConfigStore", () => {
       expect(config?.databaseUrl).toBe("postgres://guild-one");
       expect(config?.chatChannelId).toBeUndefined();
       expect(config?.enabledMatchSizes).toEqual([2, 3]);
-      expect(config?.soraEnabled).toBe(false);
       expect(raw).not.toContain("voiceChannelId");
       expect(raw).toContain('"queueChannelId": "queue-1"');
     } finally {

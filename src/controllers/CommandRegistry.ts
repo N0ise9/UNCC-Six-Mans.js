@@ -8,10 +8,6 @@ import {
   SlashCommandSubcommandBuilder,
 } from "discord.js";
 
-function isSoraEnabled(): boolean {
-  return (process.env["ENABLE_SORA"] ?? "false").toLowerCase() === "true";
-}
-
 function addMatchTierOptions(subcommand: SlashCommandSubcommandBuilder): SlashCommandSubcommandBuilder {
   let builder = subcommand;
   for (let matchSize = 1; matchSize <= 12; matchSize += 1) {
@@ -54,23 +50,6 @@ function buildSlashCommands(): Array<RESTPostAPIApplicationCommandsJSONBody> {
     .addAttachmentOption((opt) => opt.setName("file3").setDescription("Optional image or file 3"))
     .toJSON();
 
-  const sora = new SlashCommandBuilder()
-    .setName("sora")
-    .setDescription("Generate a short video with Sora.")
-    .addStringOption((opt) => opt.setName("prompt").setDescription("Video prompt").setRequired(true))
-    .addStringOption((opt) =>
-      opt
-        .setName("duration")
-        .setDescription("Duration in seconds (4, 8, 12)")
-        .setRequired(false)
-        .addChoices(
-          { name: "4 seconds", value: "4" },
-          { name: "8 seconds", value: "8" },
-          { name: "12 seconds", value: "12" }
-        )
-    )
-    .toJSON();
-
   const setup = new SlashCommandBuilder()
     .setName("setup")
     .setDescription("Configure this guild for the single-instance bot runtime.")
@@ -103,7 +82,7 @@ function buildSlashCommands(): Array<RESTPostAPIApplicationCommandsJSONBody> {
         .addChannelOption((option) =>
           option
             .setName("chat_channel")
-            .setDescription("Chat channel where /norm and /sora may be used")
+            .setDescription("Chat channel where /norm may be used")
             .addChannelTypes(ChannelType.GuildText)
             .setRequired(false)
         )
@@ -123,12 +102,6 @@ function buildSlashCommands(): Array<RESTPostAPIApplicationCommandsJSONBody> {
             .setDescription("Optional existing OpenAI conversation ID to reuse")
             .setRequired(false)
         )
-        .addBooleanOption((option) =>
-          option
-            .setName("sora_enabled")
-            .setDescription("Optional: enable /sora for this guild when ENABLE_SORA=true on the host")
-            .setRequired(false)
-        )
       );
     })
     .toJSON();
@@ -140,10 +113,6 @@ function buildSlashCommands(): Array<RESTPostAPIApplicationCommandsJSONBody> {
     prismaCommand,
     norm,
   ];
-  if (isSoraEnabled()) {
-    commands.push(sora);
-  }
-
   return commands;
 }
 

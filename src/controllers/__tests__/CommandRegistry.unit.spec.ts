@@ -4,7 +4,6 @@ import { registerAllSlashCommands, registerGuildSlashCommands } from "../Command
 describe("registerAllSlashCommands", () => {
   afterEach(() => {
     jest.restoreAllMocks();
-    delete process.env["ENABLE_SORA"];
   });
 
   it("clears global commands and registers the slash commands per guild", async () => {
@@ -58,17 +57,15 @@ describe("registerAllSlashCommands", () => {
     expect(put).toHaveBeenCalledTimes(1);
   });
 
-  it("omits /sora from registration when ENABLE_SORA is not true", async () => {
+  it("registers the complete supported command set", async () => {
     const put = jest.spyOn(REST.prototype, "put").mockResolvedValue(undefined as never);
 
     await registerGuildSlashCommands("client-1", "token-1", "guild-c");
 
-    expect(put).toHaveBeenCalledWith(
-      Routes.applicationGuildCommands("client-1", "guild-c"),
-      expect.objectContaining({
-        body: expect.not.arrayContaining([expect.objectContaining({ name: "sora" })]),
-      })
-    );
+    const [, payload] = put.mock.calls[0] ?? [];
+    const commands = (payload as { body: Array<{ name: string }> }).body;
+
+    expect(commands.map((command) => command.name)).toEqual(["setup", "kick", "clear", "prisma", "norm"]);
   });
 
   it("registers /norm with file attachment options", async () => {
@@ -91,8 +88,7 @@ describe("registerAllSlashCommands", () => {
     expect(options).toEqual(expect.not.arrayContaining([expect.objectContaining({ name: "image1" })]));
   });
 
-  it("registers /sora when ENABLE_SORA is true and exposes sora_enabled on /setup set", async () => {
-    process.env["ENABLE_SORA"] = "true";
+  it("registers the guild configuration and all match tier options on /setup set", async () => {
     const put = jest.spyOn(REST.prototype, "put").mockResolvedValue(undefined as never);
 
     await registerGuildSlashCommands("client-1", "token-1", "guild-c");
@@ -105,13 +101,14 @@ describe("registerAllSlashCommands", () => {
     );
     const setOptions = (setSubcommand?.options as Array<Record<string, unknown>> | undefined) ?? [];
 
-    expect(commands).toEqual(expect.arrayContaining([expect.objectContaining({ name: "sora" })]));
-    expect(setOptions).toEqual(expect.arrayContaining([expect.objectContaining({ name: "sora_enabled" })]));
-    expect(setOptions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ name: "enable_1v1" }),
-        expect.objectContaining({ name: "enable_12v12" }),
-      ])
-    );
+    expect(setOptions.map((option) => option.name)).toEqual([
+      "queue_channel",
+      "leaderboard_channel",
+      "chat_channel",
+      "database_url",
+      "api_status_channel",
+      "conversation_id",
+      ...Array.from({ length: 12 }, (_, index) => `enable_${index + 1}v${index + 1}`),
+    ]);
   });
 });

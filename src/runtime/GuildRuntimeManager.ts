@@ -113,7 +113,6 @@ type SetupConfigMergeInput = {
   leaderboardChannelId?: string;
   openAiConversationId?: string;
   queueChannelId?: string;
-  soraEnabled?: boolean;
 };
 
 type QueueInteractionAuditResult = InteractionAuditResult & {
@@ -319,26 +318,16 @@ export class GuildRuntimeManager {
       return;
     }
 
-    if (interaction.commandName === "norm" || interaction.commandName === "sora") {
-      if (interaction.commandName === "sora" && !context.config.soraEnabled) {
-        await interaction.reply({
-          content: "Sora is disabled for this server. A server admin can enable it with /setup set.",
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-
+    if (interaction.commandName === "norm") {
       if (!context.config.chatChannelId) {
-        if (interaction.commandName === "norm") {
-          logInteractionAudit({
-            action: "/norm",
-            guildId: interaction.guildId,
-            guildName: context.guildName,
-            reason: "OpenAI chat channel is not configured",
-            status: "ignored",
-            username: interaction.user.username,
-          });
-        }
+        logInteractionAudit({
+          action: "/norm",
+          guildId: interaction.guildId,
+          guildName: context.guildName,
+          reason: "OpenAI chat channel is not configured",
+          status: "ignored",
+          username: interaction.user.username,
+        });
         await interaction.reply({
           content: "This guild is missing its OpenAI chat channel. A server admin needs to rerun /setup set.",
           flags: MessageFlags.Ephemeral,
@@ -347,16 +336,14 @@ export class GuildRuntimeManager {
       }
 
       if (interaction.channelId !== context.config.chatChannelId) {
-        if (interaction.commandName === "norm") {
-          logInteractionAudit({
-            action: "/norm",
-            guildId: interaction.guildId,
-            guildName: context.guildName,
-            reason: `wrong channel; use ${context.config.chatChannelId}`,
-            status: "ignored",
-            username: interaction.user.username,
-          });
-        }
+        logInteractionAudit({
+          action: "/norm",
+          guildId: interaction.guildId,
+          guildName: context.guildName,
+          reason: `wrong channel; use ${context.config.chatChannelId}`,
+          status: "ignored",
+          username: interaction.user.username,
+        });
         await interaction.reply({
           content: `Use this command in <#${context.config.chatChannelId}>.`,
           flags: MessageFlags.Ephemeral,
@@ -364,16 +351,14 @@ export class GuildRuntimeManager {
         return;
       }
 
-      if (interaction.commandName === "norm") {
-        logInteractionAudit({
-          action: "/norm",
-          guildId: interaction.guildId,
-          guildName: context.guildName,
-          reason: "OpenAI",
-          status: "processed",
-          username: interaction.user.username,
-        });
-      }
+      logInteractionAudit({
+        action: "/norm",
+        guildId: interaction.guildId,
+        guildName: context.guildName,
+        reason: "OpenAI",
+        status: "processed",
+        username: interaction.user.username,
+      });
       await interaction.deferReply();
       await handleEasterEggSlashInteraction(context, interaction);
     }
@@ -466,9 +451,8 @@ export class GuildRuntimeManager {
             `Queue channel: ${config.queueChannelId}`,
             `Leaderboard channel: ${config.leaderboardChannelId}`,
             `Leaderboard messages: ${config.leaderboardMessageIds?.join(", ") ?? "not created yet"}`,
-            `Chat channel: ${config.chatChannelId ?? "not configured; /norm and /sora unavailable"}`,
+            `Chat channel: ${config.chatChannelId ?? "not configured; /norm unavailable"}`,
             `API status channel: ${config.apiStatusChannelId ?? "none"}`,
-            `Sora: ${config.soraEnabled ? "enabled" : "disabled"}`,
             `Database URL: ${maskSecret(config.databaseUrl)}`,
             `Queue message: ${config.queueMessageId ?? "not created yet"}`,
             `Conversation: ${config.openAiConversationId ?? "not created yet"}`,
@@ -500,7 +484,6 @@ export class GuildRuntimeManager {
         const apiStatusChannel = interaction.options.getChannel("api_status_channel");
         const databaseUrl = interaction.options.getString("database_url") ?? undefined;
         const conversationId = interaction.options.getString("conversation_id") ?? undefined;
-        const soraEnabled = interaction.options.getBoolean("sora_enabled") ?? undefined;
         const matchSizeOverrides = getSetupMatchSizeOverrides(interaction);
 
         if (queueChannel && queueChannel.type !== ChannelType.GuildText) {
@@ -529,7 +512,6 @@ export class GuildRuntimeManager {
           leaderboardChannelId: leaderboardChannel?.id ?? existingConfig?.leaderboardChannelId,
           openAiConversationId: conversationId ?? existingConfig?.openAiConversationId,
           queueChannelId: queueChannel?.id ?? existingConfig?.queueChannelId,
-          soraEnabled: soraEnabled ?? existingConfig?.soraEnabled ?? false,
         };
 
         const missingFields = getMissingRequiredSetupFields(mergedInput);
@@ -554,7 +536,6 @@ export class GuildRuntimeManager {
           leaderboardChannelId: mergedInput.leaderboardChannelId!,
           openAiConversationId: mergedInput.openAiConversationId,
           queueChannelId: mergedInput.queueChannelId!,
-          soraEnabled: mergedInput.soraEnabled,
         };
 
         this.configStore.setGuildConfig(input);

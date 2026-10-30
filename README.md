@@ -26,7 +26,7 @@ Important runtime behavior:
 - slash commands are registered per guild on startup
 - any old global application commands are pruned on startup
 - newly joined guilds get the current command set automatically
-- `/norm` and optional `/sora` are slash-command-only and only work when a `chat_channel` is configured
+- `/norm` is slash-command-only and only works when a `chat_channel` is configured
 - one bad guild database URL should not block the rest of the process
 - stale queued button/select interactions are ignored when the authoritative state has already changed
 - queue timers refresh every minute so displayed wait times stay current
@@ -70,7 +70,6 @@ NORM_HOME=
 ENVIRONMENT=dev
 PRISMA_STUDIO_PASSWORD=replace-this-with-a-host-only-password
 conversation_token_limit=120000
-ENABLE_SORA=false
 ```
 
 What these do:
@@ -81,7 +80,6 @@ What these do:
 - `ENVIRONMENT`: optional runtime mode; `dev` enables development-only behavior in a few helper paths
 - `PRISMA_STUDIO_PASSWORD`: required by `/prisma` in addition to the `Bot Admin` role
 - `conversation_token_limit`: optional per-guild OpenAI conversation rotation threshold
-- `ENABLE_SORA`: host-level master switch for `/sora` registration; when enabled, Norm uses the fixed model `sora-2-2025-12-08`
 
 Important notes:
 - `.env` is bot-wide only
@@ -139,7 +137,6 @@ database_url:<postgres connection string>
 [api_status_channel:<text channel>]
 [conversation_id:<existing OpenAI conversation id>]
 [enable_1v1:true|false] ... [enable_12v12:true|false]
-[sora_enabled:true|false]
 ```
 
 Required fields:
@@ -152,7 +149,6 @@ Optional fields:
 - `api_status_channel`
 - `conversation_id`
 - `enable_1v1` through `enable_12v12`
-- `sora_enabled`
 
 Match tier defaults and behavior:
 - new and legacy guilds default to `2v2, 3v3`
@@ -172,7 +168,6 @@ database_url: postgresql://Norm:NormTheNiner@localhost:5432/SixMansGuildA
 conversation_id: conv_1234567890abcdef
 enable_4v4: true
 enable_5v5: true
-sora_enabled: true
 ```
 
 Other setup commands:
@@ -193,19 +188,21 @@ Queue/admin commands:
 
 OpenAI commands:
 - `/norm`
-- `/sora` when `ENABLE_SORA=true`
 
 Current command behavior:
 - commands are registered per guild, not globally
 - `/norm` uses a stored conversation per guild
-- `/norm` supports optional image attachments
-- `/norm` and `/sora` are optional features and only work when a `chat_channel` is configured
-- `ENABLE_SORA=false` means `/sora` is not registered anywhere
-- `ENABLE_SORA=true` means `/sora` is registered, but each guild must still enable it with `/setup set sora_enabled:true`
-- Sora is disabled by default for each guild
-- Sora always uses the fixed model `sora-2-2025-12-08`
-- `/sora` writes generated media under `data/generated-media`
+- `/norm` supports up to three optional image or file attachments
+- `/norm` is an optional feature and only works when a `chat_channel` is configured
+- `/norm` uses `gpt-6.1-sol` through the Responses API for text, attachment analysis, and web search
+- image generation and editing use `gpt-image-2.5-sunburst-2026-09-08` through the Responses image generation tool
+- generated images are saved under `data/generated-media`
 - `/prisma` is not `chat_channel`-gated
+
+API compatibility:
+- text requests leave `reasoning.effort` unset to use the API default, currently `medium`; GPT-6.1 Sol has no `auto` effort value, so this does not dynamically select an effort level ([model documentation](https://developers.openai.com/api/docs/models/gpt-6.1-sol))
+- sampling parameters such as `temperature` and `top_p` are omitted because GPT-6.1 Sol requires reasoning ([GPT-6 migration guide](https://developers.openai.com/api/docs/guides/latest-model))
+- the image tool returns PNG with automatic quality and size, keeps `moderation: "low"`, and omits the legacy `input_fidelity` parameter ([image generation guide](https://developers.openai.com/api/docs/guides/tools-image-generation))
 
 `/prisma` behavior:
 - requires the `Bot Admin` role
@@ -314,12 +311,10 @@ If a guild fails to initialize:
 - verify the configured Discord channels still exist
 - verify `CONFIG_ENCRYPTION_KEY` has not changed since the guild config was saved
 
-If `/norm` or `/sora` refuse to run:
+If `/norm` refuses to run:
 - make sure the guild has a `chat_channel` configured if you want to use OpenAI features
 - make sure you are running the command in the configured `chat_channel`
 - rerun `/setup set` if the stored `chat_channel` is missing or points to the wrong channel
-- if `/sora` says it is disabled for the server, rerun `/setup set sora_enabled:true`
-- if `/sora` is missing entirely, make sure `ENABLE_SORA=true` on the host and restart the bot
 
 If `/prisma` fails:
 - make sure the guild has already been configured with `/setup set`
@@ -331,7 +326,3 @@ If the packaged EXE starts and exits immediately:
 - open the generated `.env`
 - fill in the required bot-wide values like `token`, `openai`, and `CONFIG_ENCRYPTION_KEY`
 - run `Norm.exe` again
-
-If Sora fails at startup:
-- set `ENABLE_SORA=false`, or
-- ensure your OpenAI project has access to the Videos API used by the fixed `sora-2-2025-12-08` model

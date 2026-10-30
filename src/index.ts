@@ -1,7 +1,6 @@
 import { Client } from "discord.js";
 import OpenAI from "openai";
 import { registerGuildSlashCommands } from "./controllers/CommandRegistry";
-import { assertSoraRuntimeSupport } from "./controllers/EasterEggs";
 import { ApiStatusRuntime } from "./runtime/ApiStatusRuntime";
 import { startConsoleFileLogger } from "./runtime/ConsoleFileLogger";
 import { DiscordWorkScheduler } from "./runtime/DiscordWorkScheduler";
@@ -206,7 +205,6 @@ async function startBot(): Promise<void> {
 
   const discordToken = getEnvVariable("token");
   const openai = new OpenAI({ apiKey: getEnvVariable("openai") });
-  assertSoraRuntimeSupport(openai);
 
   normClient = new Client({
     intents: ["Guilds"],

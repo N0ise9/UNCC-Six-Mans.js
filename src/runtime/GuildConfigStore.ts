@@ -10,10 +10,6 @@ interface GuildConfigFile {
   version: 1;
 }
 
-type LegacyGuildConfigEntry = GuildInstanceStoredConfig & {
-  voiceChannelId?: string;
-};
-
 export interface GuildConfigReadResult {
   enabled: boolean;
   error?: Error;
@@ -71,7 +67,6 @@ export class GuildConfigStore {
       ...file.guilds[index],
       enabled: false,
       enabledMatchSizes: normalizeEnabledMatchSizes(file.guilds[index]?.enabledMatchSizes),
-      soraEnabled: file.guilds[index]?.soraEnabled ?? false,
       updatedAt: new Date().toISOString(),
     };
     file.guilds[index] = updated;
@@ -98,7 +93,6 @@ export class GuildConfigStore {
       openAiConversationId: input.openAiConversationId ?? previous?.openAiConversationId,
       queueChannelId: input.queueChannelId,
       queueMessageId: previous?.queueMessageId,
-      soraEnabled: input.soraEnabled ?? previous?.soraEnabled ?? false,
       updatedAt: now,
     };
 
@@ -224,7 +218,7 @@ export class GuildConfigStore {
       };
     }
 
-    const parsed = JSON.parse(content) as { guilds?: LegacyGuildConfigEntry[] };
+    const parsed = JSON.parse(content) as { guilds?: GuildInstanceStoredConfig[] };
     const guilds = (parsed.guilds ?? []).map((entry) => normalizeLegacyGuildEntry(entry));
     const normalizedFile: GuildConfigFile = {
       guilds,
@@ -256,19 +250,31 @@ function toError(error: unknown): Error {
   return new Error(typeof error === "string" ? error : "Unknown guild config error");
 }
 
-function hasLegacyGuildConfigEntries(entries: LegacyGuildConfigEntry[]): boolean {
-  return entries.some(
-    (entry) =>
-      "voiceChannelId" in entry || entry.soraEnabled === undefined || entry.enabledMatchSizes === undefined
-  );
+function hasLegacyGuildConfigEntries(entries: GuildInstanceStoredConfig[]): boolean {
+  return entries.some((entry) => {
+    const normalized = normalizeLegacyGuildEntry(entry);
+    return (
+      Object.keys(entry).some((key) => !Object.prototype.hasOwnProperty.call(normalized, key)) ||
+      entry.enabledMatchSizes === undefined
+    );
+  });
 }
 
-function normalizeLegacyGuildEntry(entry: LegacyGuildConfigEntry): GuildInstanceStoredConfig {
-  const normalized = { ...entry };
-  delete normalized.voiceChannelId;
-  normalized.enabledMatchSizes = normalizeEnabledMatchSizes(
-    normalized.enabledMatchSizes ?? [...DEFAULT_ENABLED_MATCH_SIZES]
-  );
-  normalized.soraEnabled ??= false;
-  return normalized;
+function normalizeLegacyGuildEntry(entry: GuildInstanceStoredConfig): GuildInstanceStoredConfig {
+  // Keep only current fields so retired settings do not survive config upgrades.
+  return {
+    apiStatusChannelId: entry.apiStatusChannelId,
+    chatChannelId: entry.chatChannelId,
+    createdAt: entry.createdAt,
+    databaseUrl: entry.databaseUrl,
+    enabled: entry.enabled,
+    enabledMatchSizes: normalizeEnabledMatchSizes(entry.enabledMatchSizes ?? [...DEFAULT_ENABLED_MATCH_SIZES]),
+    guildId: entry.guildId,
+    leaderboardChannelId: entry.leaderboardChannelId,
+    leaderboardMessageIds: entry.leaderboardMessageIds,
+    openAiConversationId: entry.openAiConversationId,
+    queueChannelId: entry.queueChannelId,
+    queueMessageId: entry.queueMessageId,
+    updatedAt: entry.updatedAt,
+  };
 }

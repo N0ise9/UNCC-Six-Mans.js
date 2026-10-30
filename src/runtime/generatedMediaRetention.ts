@@ -5,7 +5,7 @@ import { getGeneratedMediaRoot } from "./runtimePaths";
 export const GENERATED_MEDIA_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const GENERATED_MEDIA_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-type GeneratedMediaKind = "images" | "videos";
+type GeneratedMediaKind = "images";
 
 export function buildGeneratedMediaPath(kind: GeneratedMediaKind, baseName: string, extension: string): string {
   const directory = path.join(getGeneratedMediaRootPath(), kind);

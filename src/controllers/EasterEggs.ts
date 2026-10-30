@@ -1,7 +1,6 @@
 /* eslint-disable max-len */
 import { ChatInputCommandInteraction } from "discord.js";
-import OpenAI from "openai";
-import type { Video, VideoCreateParams, Videos } from "openai/resources/videos";
+import type { ResponseCreateParamsNonStreaming } from "openai/resources/responses/responses";
 import * as fs from "fs";
 import { GuildContext } from "../runtime/types";
 import { createScheduledCommandResponder } from "../runtime/createScheduledCommandResponder";
@@ -9,7 +8,6 @@ import { buildGeneratedMediaPath } from "../runtime/generatedMediaRetention";
 
 export const EASTER_EGG_SLASH_COMMANDS = {
   Norm: "norm",
-  Sora: "sora",
 } as const;
 
 const systemMessage =
@@ -49,15 +47,11 @@ type NormInputContent =
       type: "input_file";
     };
 
-type SoraVideoClient = Pick<Videos, "create" | "downloadContent" | "retrieve">;
-type SoraVideoSeconds = NonNullable<VideoCreateParams["seconds"]>;
-const VALID_SORA_DURATIONS = new Set<SoraVideoSeconds>(["4", "8", "12"]);
-const SORA_POLL_INTERVAL_MS = 2_000;
-const SORA_MAX_POLL_ATTEMPTS = 150;
 const MAX_OPENAI_FILE_INPUT_BYTES = 50 * 1024 * 1024;
-const DISCORD_ATTACHMENT_URL_PATTERN = /https:\/\/cdn\.discordapp\.com\/(?:attachments|ephemeral-attachments)\/[^\s"'<>]+/i;
-const DISCORD_ATTACHMENT_URL_PREFIX_PATTERN = /^https:\/\/cdn\.discordapp\.com\/(?:attachments|ephemeral-attachments)\//i;
-export const DEFAULT_SORA_MODEL = "sora-2-2025-12-08";
+const DISCORD_ATTACHMENT_URL_PATTERN =
+  /https:\/\/cdn\.discordapp\.com\/(?:attachments|ephemeral-attachments)\/[^\s"'<>]+/i;
+const DISCORD_ATTACHMENT_URL_PREFIX_PATTERN =
+  /^https:\/\/cdn\.discordapp\.com\/(?:attachments|ephemeral-attachments)\//i;
 
 type OpenAIErrorDetails = {
   code?: string;
@@ -72,38 +66,6 @@ type OpenAIResponseError = {
   response?: { data?: { error?: { code?: string; message?: string } }; status?: number };
   status?: number;
 };
-
-function isSoraEnabled(): boolean {
-  return (process.env["ENABLE_SORA"] ?? "false").toLowerCase() === "true";
-}
-
-function getSoraModel(): string {
-  return DEFAULT_SORA_MODEL;
-}
-
-function getSoraVideoClient(openai: OpenAI): SoraVideoClient | null {
-  const candidate = openai as OpenAI & { videos?: Partial<SoraVideoClient> };
-  if (
-    candidate.videos &&
-    typeof candidate.videos.create === "function" &&
-    typeof candidate.videos.downloadContent === "function" &&
-    typeof candidate.videos.retrieve === "function"
-  ) {
-    return candidate.videos as SoraVideoClient;
-  }
-
-  return null;
-}
-
-export function assertSoraRuntimeSupport(openai: OpenAI): void {
-  if (!isSoraEnabled()) {
-    return;
-  }
-
-  if (!getSoraVideoClient(openai)) {
-    throw new Error("ENABLE_SORA is true, but this installed OpenAI SDK does not expose the Videos API.");
-  }
-}
 
 function chunkMessage(text: string, max = 1999): string[] {
   const chunks: string[] = [];
@@ -182,7 +144,10 @@ function messageItemHasDiscordAttachmentReference(item: unknown): boolean {
   });
 }
 
-async function deleteDiscordAttachmentConversationItems(context: GuildContext, conversationId: string): Promise<number> {
+async function deleteDiscordAttachmentConversationItems(
+  context: GuildContext,
+  conversationId: string
+): Promise<number> {
   let deletedCount = 0;
 
   for await (const item of context.openai.conversations.items.list(conversationId, { order: "asc" })) {
@@ -231,20 +196,19 @@ function buildNormResponseRequest(
   actor: { id: string; username: string },
   prompt: string,
   attachments: NormAttachment[]
-): { hasAttachmentInputs: boolean; request: Record<string, unknown> } {
+): { hasAttachmentInputs: boolean; request: ResponseCreateParamsNonStreaming } {
   const inputContent = buildNormInputContent(actor, prompt, attachments);
   const hasAttachmentInputs = inputContent.length > 1;
-  const baseRequest = {
+  const baseRequest: ResponseCreateParamsNonStreaming = {
     conversation: conversationId,
-    model: "gpt-5.4",
+    model: "gpt-6.1-sol",
     parallel_tool_calls: true,
     stream: false,
     tool_choice: "auto",
     tools: [
       { type: "web_search" },
       {
-        input_fidelity: "high",
-        model: "gpt-image-1",
+        model: "gpt-image-2.5-sunburst-2026-09-08",
         moderation: "low",
         output_format: "png",
         type: "image_generation",
@@ -352,26 +316,6 @@ async function maybeRotateConversation(
   await notify("I've wiped my memory to limit contextual input, in order to keep costs lower.");
 }
 
-async function waitForSoraCompletion(videoClient: SoraVideoClient, video: Video): Promise<Video> {
-  let currentVideo = video;
-  let attempt = 0;
-
-  while (
-    (currentVideo.status === "in_progress" || currentVideo.status === "queued") &&
-    attempt < SORA_MAX_POLL_ATTEMPTS
-  ) {
-    attempt += 1;
-    await new Promise((resolve) => setTimeout(resolve, SORA_POLL_INTERVAL_MS));
-    currentVideo = await videoClient.retrieve(currentVideo.id);
-  }
-
-  if (currentVideo.status === "in_progress" || currentVideo.status === "queued") {
-    throw new Error("Sora generation timed out before the video completed.");
-  }
-
-  return currentVideo;
-}
-
 async function runNormPrompt(
   context: GuildContext,
   prompt: string,
@@ -428,9 +372,10 @@ async function runNormPrompt(
         }
       }
 
-      const reply = hasAttachmentInputs || attachments.length > 0
-        ? `<@${actor.id}> I couldn't read one or more attached files. The file link may have expired, or OpenAI may not support that file type. Try reattaching it or sending a PDF/text file.`
-        : `<@${actor.id}> I couldn't reach OpenAI right now. Please try again in a bit.`;
+      const reply =
+        hasAttachmentInputs || attachments.length > 0
+          ? `<@${actor.id}> I couldn't read one or more attached files. The file link may have expired, or OpenAI may not support that file type. Try reattaching it or sending a PDF/text file.`
+          : `<@${actor.id}> I couldn't reach OpenAI right now. Please try again in a bit.`;
       await respond.edit(reply);
       return;
     }
@@ -496,8 +441,7 @@ export async function handleEasterEggSlashInteraction(
       const attachments = [1, 2, 3]
         .map((index) => {
           return (
-            interaction.options.getAttachment(`file${index}`) ??
-            interaction.options.getAttachment(`image${index}`)
+            interaction.options.getAttachment(`file${index}`) ?? interaction.options.getAttachment(`image${index}`)
           );
         })
         .filter((attachment): attachment is NonNullable<typeof attachment> => Boolean(attachment))
@@ -527,60 +471,6 @@ export async function handleEasterEggSlashInteraction(
           }
         );
       });
-      break;
-    }
-    case EASTER_EGG_SLASH_COMMANDS.Sora: {
-      if (!isSoraEnabled()) {
-        await responder.edit("Sora video generation is disabled for this runtime.");
-        return;
-      }
-
-      const prompt = interaction.options.getString("prompt");
-      const durationStr = interaction.options.getString("duration") ?? "8";
-      const seconds = VALID_SORA_DURATIONS.has(durationStr as SoraVideoSeconds)
-        ? (durationStr as SoraVideoSeconds)
-        : "8";
-
-      if (!prompt) {
-        await responder.edit("Prompt was empty.");
-        return;
-      }
-
-      try {
-        const videoClient = getSoraVideoClient(context.openai);
-        if (!videoClient) {
-          throw new Error("Sora is enabled, but the active OpenAI client does not support Videos.");
-        }
-
-        const soraModel = getSoraModel();
-
-        const completion = await videoClient.create({
-          model: soraModel,
-          prompt,
-          seconds,
-        });
-        const completedVideo = await waitForSoraCompletion(videoClient, completion);
-
-        if (completedVideo.status === "failed") {
-          const reason = completedVideo.error?.message ? ` ${completedVideo.error.message}` : "";
-          await responder.edit(`<@${interaction.user.id}> I couldn't create a video right now.${reason}`);
-          return;
-        }
-
-        const video = await videoClient.downloadContent(completedVideo.id);
-        const body = await video.arrayBuffer();
-        const buffer = Buffer.from(body);
-        const filePath = buildGeneratedMediaPath("videos", `${interaction.user.username}-sora`, "mp4");
-        fs.writeFileSync(filePath, buffer);
-
-        await responder.edit({
-          content: `<@${interaction.user.id}> Here's your Sora video.`,
-          files: [{ attachment: filePath }],
-        });
-      } catch (error) {
-        console.error(`[${context.guildId}] /sora error:`, error);
-        await responder.edit(`<@${interaction.user.id}> I couldn't generate the video. Please try again later.`);
-      }
       break;
     }
   }

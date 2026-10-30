@@ -37,7 +37,6 @@ export interface GuildInstanceStoredConfig {
   openAiConversationId?: string;
   queueChannelId: string;
   queueMessageId?: string;
-  soraEnabled: boolean;
   updatedAt: string;
 }
 
@@ -54,7 +53,6 @@ export interface GuildInstanceConfig {
   openAiConversationId?: string;
   queueChannelId: string;
   queueMessageId?: string;
-  soraEnabled: boolean;
   updatedAt: string;
 }
 
@@ -67,7 +65,6 @@ export interface GuildConfigUpsertInput {
   leaderboardChannelId: string;
   openAiConversationId?: string;
   queueChannelId: string;
-  soraEnabled?: boolean;
 }
 
 export interface InteractiveSurfaceRecord {

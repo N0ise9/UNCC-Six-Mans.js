@@ -1,9 +1,12 @@
 import { ChatInputCommandInteraction } from "discord.js";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import OpenAI from "openai";
 import { GuildConfigStore } from "../../runtime/GuildConfigStore";
 import { DiscordWorkScheduler } from "../../runtime/DiscordWorkScheduler";
 import { GuildContext, GuildInstanceConfig } from "../../runtime/types";
-import { assertSoraRuntimeSupport, DEFAULT_SORA_MODEL, handleEasterEggSlashInteraction } from "../EasterEggs";
+import { handleEasterEggSlashInteraction } from "../EasterEggs";
 
 type TestAttachment = {
   contentType?: string | null;
@@ -85,10 +88,7 @@ function createNormContext(
   };
 }
 
-function createNormInteraction(
-  attachments: Partial<Record<string, TestAttachment | null>>,
-  prompt = "summarize this"
-) {
+function createNormInteraction(attachments: Partial<Record<string, TestAttachment | null>>, prompt = "summarize this") {
   const editReply = jest.fn(async () => undefined);
   const followUp = jest.fn(async () => undefined);
   const getAttachment = jest.fn((name: string) => attachments[name] ?? null);
@@ -119,6 +119,97 @@ function createNormInteraction(
 }
 
 describe("handleEasterEggSlashInteraction", () => {
+  it.each([false, true])(
+    "serializes compatible model parameters through the SDK (attachments: %s)",
+    async (withAttachments) => {
+      const { context } = createNormContext();
+      const fetchMock = jest.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              id: "response-1",
+              object: "response",
+              output: [
+                {
+                  content: [{ annotations: [], text: "Ready.", type: "output_text" }],
+                  id: "message-1",
+                  role: "assistant",
+                  status: "completed",
+                  type: "message",
+                },
+              ],
+              status: "completed",
+            }),
+            { headers: { "Content-Type": "application/json" } }
+          )
+      );
+      const client = new OpenAI({ apiKey: "test-key", fetch: fetchMock });
+      context.openai.responses = client.responses;
+      const { editReply, interaction } = createNormInteraction(
+        withAttachments
+          ? {
+              file1: { contentType: "image/png", size: 4096, url: "https://example.com/reference.png" },
+            }
+          : {},
+        "hello"
+      );
+
+      await handleEasterEggSlashInteraction(context, interaction);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://api.openai.com/v1/responses",
+        expect.objectContaining({ method: "POST" })
+      );
+      const request = JSON.parse((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body as string);
+      expect(request.model).toBe("gpt-6.1-sol");
+      expect(request).not.toHaveProperty("reasoning");
+      expect(request.stream).toBe(false);
+      expect(request.conversation).toBe("conversation-1");
+      for (const parameter of ["temperature", "top_p", "top_logprobs", "max_tokens", "response_format"]) {
+        expect(request).not.toHaveProperty(parameter);
+      }
+      expect(request.tools).toContainEqual({ type: "web_search" });
+      expect(request.tools.find((tool: { type: string }) => tool.type === "image_generation")).toEqual({
+        model: "gpt-image-2.5-sunburst-2026-09-08",
+        moderation: "low",
+        output_format: "png",
+        type: "image_generation",
+      });
+      expect(editReply).toHaveBeenCalledWith("Ready.");
+    }
+  );
+
+  it("delivers a generated PNG returned by the Responses API", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "norm-image-"));
+    const originalNormHome = process.env["NORM_HOME"];
+    process.env["NORM_HOME"] = directory;
+
+    try {
+      const { context } = createNormContext();
+      const imageBytes = Buffer.from("generated-image");
+      context.openai.responses.create = jest.fn().mockResolvedValue({
+        output: [{ result: imageBytes.toString("base64"), type: "image_generation_call" }],
+        output_text: "Here's your image.",
+      });
+      const { editReply, interaction } = createNormInteraction({}, "draw a mascot");
+
+      await handleEasterEggSlashInteraction(context, interaction);
+
+      const reply = (
+        editReply.mock.calls[0] as unknown as [{ content: string; files: Array<{ attachment: string }> }]
+      )[0];
+      expect(reply.content).toBe("Here's your image.");
+      expect(reply.files).toHaveLength(1);
+      expect(path.extname(reply.files[0].attachment)).toBe(".png");
+      expect(fs.readFileSync(reply.files[0].attachment)).toEqual(imageBytes);
+    } finally {
+      if (originalNormHome === undefined) delete process.env["NORM_HOME"];
+      else process.env["NORM_HOME"] = originalNormHome;
+      fs.rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   it("sends mixed images and files to OpenAI as multimodal input", async () => {
     const { context, responsesCreate } = createNormContext();
     const { editReply, interaction } = createNormInteraction({
@@ -299,47 +390,5 @@ describe("handleEasterEggSlashInteraction", () => {
     expect(conversationsRetrieve).not.toHaveBeenCalled();
     expect(responsesCreate).not.toHaveBeenCalled();
     expect(editReply).toHaveBeenCalledWith(expect.stringContaining("50 MB total"));
-  });
-});
-
-describe("assertSoraRuntimeSupport", () => {
-  const originalEnableSora = process.env["ENABLE_SORA"];
-
-  afterEach(() => {
-    if (originalEnableSora === undefined) {
-      delete process.env["ENABLE_SORA"];
-    } else {
-      process.env["ENABLE_SORA"] = originalEnableSora;
-    }
-  });
-
-  it("does nothing when sora is disabled", () => {
-    delete process.env["ENABLE_SORA"];
-
-    expect(() => assertSoraRuntimeSupport({} as never)).not.toThrow();
-  });
-
-  it("uses the fixed Sora model", () => {
-    expect(DEFAULT_SORA_MODEL).toBe("sora-2-2025-12-08");
-  });
-
-  it("fails fast when sora is enabled without a video-capable client", () => {
-    process.env["ENABLE_SORA"] = "true";
-
-    expect(() => assertSoraRuntimeSupport({} as never)).toThrow("Videos API");
-  });
-
-  it("accepts an sdk client with the typed videos api when sora is enabled", () => {
-    process.env["ENABLE_SORA"] = "true";
-
-    expect(() =>
-      assertSoraRuntimeSupport({
-        videos: {
-          create: jest.fn(),
-          downloadContent: jest.fn(),
-          retrieve: jest.fn(),
-        },
-      } as never)
-    ).not.toThrow();
   });
 });
