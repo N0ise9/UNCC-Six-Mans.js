@@ -1,23 +1,23 @@
 import {
   ButtonInteraction,
-  EmbedField,
   ActionRowBuilder,
-  ButtonBuilder as MessageButton,
-  EmbedBuilder as MessageEmbed,
   BaseMessageOptions as MessageOptions,
+  ButtonBuilder as MessageButton,
+  ButtonStyle,
+  EmbedField,
+  EmbedBuilder as MessageEmbed,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
-  ButtonStyle,
 } from "discord.js";
-import { ActiveMatchCreated } from "../../services/MatchService";
+import { ActiveMatchCreated } from "../../domain/match";
 import { Team } from "../../types/common";
-import { ColorCodes, getEnvVariable } from "../utils";
+import { ColorCodes } from "../utils";
 import { PlayerInQueue } from "../../repositories/QueueRepository/types";
+import { CaptainDraftStep, formatMatchSizeLabel } from "../../runtime/sixMansRules";
 import EmbedBuilder, { BaseEmbed } from "./EmbedBuilder";
 import ButtonBuilder from "./ButtonBuilder";
-import CustomButton, { ButtonCustomID } from "./CustomButtons";
+import CustomButton, { ButtonCustomID, createVoteMatchSizeCustomId } from "./CustomButtons";
 import { ActiveMatchTeams } from "../../repositories/ActiveMatchRepository/types";
-import EventRepository from "../../repositories/EventRepository/EventRepository";
 
 export const enum MenuCustomID {
   BlueSelect = "blueSelect",
@@ -27,23 +27,59 @@ export const enum MenuCustomID {
 export default class MessageBuilder {
   private static readonly normIconURL =
     "https://raw.githubusercontent.com/N0ise9/UNCC-Six-Mans.js/main/media/norm_still.png";
-  private static readonly isDev = getEnvVariable("ENVIRONMENT") === "dev";
 
-  private static fourQueue = 4;
+  private static isDevEnvironment(): boolean {
+    return process.env["ENVIRONMENT"] === "dev";
+  }
 
-  static leaderboardMessage(leaderboardInfo: string[]): MessageOptions {
+  private static lowerTierVoteMarker(matchSize: number): string {
+    if (matchSize >= 1 && matchSize <= 9) {
+      return `${matchSize}\uFE0F\u20E3`;
+    }
+
+    if (matchSize === 10) {
+      return "\uD83D\uDD1F";
+    }
+
+    if (matchSize === 11) {
+      return "1\uFE0F\u20E31\uFE0F\u20E3";
+    }
+
+    return "";
+  }
+
+  static leaderboardMessage(leaderboardInfo: string[]): MessageOptions[] {
     const embeds = leaderboardInfo.map((content, index) => {
       const embedCtr = leaderboardInfo.length > 1 ? `(${index + 1}/${leaderboardInfo.length})` : "";
 
       return EmbedBuilder.leaderboardEmbed("```" + content + "```", `UNCC 6 Mans | Leaderboard ${embedCtr}`.trim());
     });
 
+    return MessageBuilder.chunkEmbeds(embeds);
+  }
+
+  static queueStartupLoadingComponents(): Pick<MessageOptions, "components"> {
     return {
-      embeds,
+      components: [
+        new ActionRowBuilder<ButtonBuilder>({
+          components: [
+            new MessageButton({
+              customId: "queueStartupLoading",
+              disabled: true,
+              label: "Please Wait...",
+              style: ButtonStyle.Secondary,
+            }),
+          ],
+        }),
+      ],
     };
   }
 
-  static queueMessage(ballchasers: ReadonlyArray<Readonly<PlayerInQueue>>): MessageOptions {
+  static queueMessage(
+    ballchasers: ReadonlyArray<Readonly<PlayerInQueue>>,
+    targetPlayerCount: number,
+    voteMatchSize: number | null = null
+  ): MessageOptions {
     let embed;
     if (ballchasers.length == 0) {
       embed = EmbedBuilder.queueEmbed("Queue is Empty", "Click the green button to join the queue!");
@@ -57,7 +93,7 @@ export default class MessageBuilder {
         .join("\n");
 
       embed = EmbedBuilder.queueEmbed(
-        `Current Queue: ${ballchasers.length}/6`,
+        `Current Queue: ${ballchasers.length}/${targetPlayerCount}`,
         "Click the green button to join the queue! \n\n" + ballChaserList
       );
     }
@@ -74,26 +110,30 @@ export default class MessageBuilder {
       style: ButtonStyle.Danger,
     });
 
-    const twosButton = new MessageButton({
-      customId: ButtonCustomID.Twos,
-      label: "Vote 2v2",
-      style: ButtonStyle.Primary,
-    });
+    const components = [joinButton, leaveButton];
+    if (voteMatchSize !== null) {
+      components.push(
+        new MessageButton({
+          customId: createVoteMatchSizeCustomId(voteMatchSize),
+          label: `Vote ${formatMatchSizeLabel(voteMatchSize)}`,
+          style: ButtonStyle.Primary,
+        })
+      );
+    } else if (this.isDevEnvironment()) {
+      components.push(new CustomButton({ customId: ButtonCustomID.FillTeam }));
+      components.push(new CustomButton({ customId: ButtonCustomID.RemoveAll }));
+    }
 
     return {
-      components:
-        ballchasers.length == this.fourQueue
-          ? [
-              new ActionRowBuilder<ButtonBuilder>({
-                components: [joinButton, leaveButton, twosButton],
-              }),
-            ]
-          : [ButtonBuilder.queueButtons()],
+      components: [new ActionRowBuilder<ButtonBuilder>({ components })],
       embeds: [embed],
     };
   }
 
-  static fullQueueMessage(ballchasers: ReadonlyArray<Readonly<PlayerInQueue>>): MessageOptions {
+  static fullQueueMessage(
+    ballchasers: ReadonlyArray<Readonly<PlayerInQueue>>,
+    matchSize: number
+  ): MessageOptions {
     const embed = new MessageEmbed({
       color: ColorCodes.Green,
       thumbnail: { url: this.normIconURL },
@@ -127,11 +167,11 @@ export default class MessageBuilder {
       .join("\n");
 
     embed
-      .setTitle("Queue is Full")
+      .setTitle(`${formatMatchSizeLabel(matchSize)} Queue is Full`)
       .setDescription("Vote for Captains or Random teams to get started! \n\n" + ballChaserList);
 
     return {
-      components: this.isDev
+      components: this.isDevEnvironment()
         ? [
             new ActionRowBuilder<ButtonBuilder>({
               components: [pickCaptainsButton, randomTeamsButton, leaveButton, removeAllButton],
@@ -142,7 +182,7 @@ export default class MessageBuilder {
     };
   }
 
-  static async activeMatchMessage({ blue, orange }: ActiveMatchCreated): Promise<MessageOptions> {
+  static async activeMatchMessage({ blue, orange }: ActiveMatchCreated, mmrMultiplier = 1): Promise<MessageOptions> {
     //const embed = await EmbedBuilder.activeMatchEmbed({ blue, orange });
     const blueTeam: Array<string> = blue.players.map((player) => "<@" + player.id + ">");
     const orangeTeam: Array<string> = orange.players.map((player) => "<@" + player.id + ">");
@@ -169,9 +209,9 @@ export default class MessageBuilder {
       winner = "Both teams are";
     }
 
-    const event = await EventRepository.getCurrentEvent();
-    const blueMMR = blue.mmrStake * event.mmrMult;
-    const orangeMMR = orange.mmrStake * event.mmrMult;
+    const eventMultiplier = mmrMultiplier;
+    const blueMMR = blue.mmrStake * eventMultiplier;
+    const orangeMMR = orange.mmrStake * eventMultiplier;
 
     activeMatchEmbed.addFields({
       name: "MMR Stake & Probability Rating:\n",
@@ -191,10 +231,10 @@ export default class MessageBuilder {
         "%** chance of winning.",
     });
 
-    if (event.mmrMult > 1) {
+    if (eventMultiplier > 1) {
       activeMatchEmbed.addFields({
-        name: "X" + event.mmrMult.toString() + " MMR Event!",
-        value: "Winnings are multiplied by **" + event.mmrMult.toString() + "** for this match!",
+        name: "X" + eventMultiplier.toString() + " MMR Event!",
+        value: "Winnings are multiplied by **" + eventMultiplier.toString() + "** for this match!",
       });
     }
 
@@ -206,28 +246,25 @@ export default class MessageBuilder {
     };
   }
 
-  static captainChooseMessage(
-    firstPick = true,
-    ballChasers: ReadonlyArray<PlayerInQueue>,
-    twos: boolean
-  ): MessageOptions {
+  static captainChooseMessage(draftStep: CaptainDraftStep, ballChasers: ReadonlyArray<PlayerInQueue>): MessageOptions {
     //Get Available Players and Map players
     const availablePlayers: Array<StringSelectMenuOptionBuilder> = [];
     const orangeTeam: Array<string> = [];
     const blueTeam: Array<string> = [];
     let captain = "";
     let playerName = "";
-    const embedColor = firstPick ? Team.Blue : Team.Orange;
+    const isBluePick = draftStep.team === Team.Blue;
+    const embedColor = isBluePick ? Team.Blue : Team.Orange;
 
     ballChasers.forEach((player) => {
       if (player.team === Team.Blue) {
-        if (player.isCap && firstPick) {
+        if (player.isCap && isBluePick) {
           captain = `<@${player.id}>`;
           playerName = player.name;
         }
         blueTeam.push("<@" + player.id + ">");
       } else if (player.team === Team.Orange) {
-        if (player.isCap && !firstPick) {
+        if (player.isCap && !isBluePick) {
           captain = `<@${player.id}>`;
           playerName = player.name;
         }
@@ -244,18 +281,13 @@ export default class MessageBuilder {
     });
 
     const playerChoices = new StringSelectMenuBuilder();
-
-    if (firstPick) {
-      playerChoices.setCustomId(MenuCustomID.BlueSelect).setPlaceholder(playerName + " choose a player");
-    } else {
-      if (!twos) {
-        playerChoices
-          .setCustomId(MenuCustomID.OrangeSelect)
-          .setPlaceholder(captain + " choose 2 players")
-          .setMinValues(2)
-          .setMaxValues(2);
-      }
-    }
+    const pickCount = draftStep.picks;
+    const playerWord = pickCount === 1 ? "player" : "players";
+    playerChoices
+      .setCustomId(isBluePick ? MenuCustomID.BlueSelect : MenuCustomID.OrangeSelect)
+      .setPlaceholder(`${playerName || captain} choose ${pickCount} ${playerWord}`)
+      .setMinValues(pickCount)
+      .setMaxValues(pickCount);
 
     playerChoices.addOptions(availablePlayers);
 
@@ -265,7 +297,7 @@ export default class MessageBuilder {
     ]);
 
     const components = [new ActionRowBuilder<ButtonBuilder>({ components: [playerChoices] })];
-    if (this.isDev) {
+    if (this.isDevEnvironment()) {
       components.push(ButtonBuilder.breakMatchButtons());
     }
     return {
@@ -277,7 +309,8 @@ export default class MessageBuilder {
   static async voteBrokenQueueMessage(
     { blue, orange }: ActiveMatchCreated,
     brokenQueuePlayers: ActiveMatchTeams,
-    brokenQueueVotes: number
+    brokenQueueVotes: number,
+    mmrMultiplier = 1
   ): Promise<MessageOptions> {
     const brokenHeart = "\uD83D\uDC94";
     const blueTeam = blue.players.map((player) => {
@@ -329,9 +362,9 @@ export default class MessageBuilder {
       winner = "Both teams are";
     }
 
-    const event = await EventRepository.getCurrentEvent();
-    const blueMMR = blue.mmrStake * event.mmrMult;
-    const orangeMMR = orange.mmrStake * event.mmrMult;
+    const eventMultiplier = mmrMultiplier;
+    const blueMMR = blue.mmrStake * eventMultiplier;
+    const orangeMMR = orange.mmrStake * eventMultiplier;
 
     activeMatchEmbed.addFields({
       name: "MMR Stake & Probability Rating:\n",
@@ -351,10 +384,10 @@ export default class MessageBuilder {
         "%** chance of winning.",
     });
 
-    if (event.mmrMult != 1) {
+    if (eventMultiplier != 1) {
       activeMatchEmbed.addFields({
-        name: "X" + event.mmrMult.toString() + " MMR Event!",
-        value: "Winnings are multiplied by **" + event.mmrMult.toString() + "** for this match!",
+        name: "X" + eventMultiplier.toString() + " MMR Event!",
+        value: "Winnings are multiplied by **" + eventMultiplier.toString() + "** for this match!",
       });
     }
 
@@ -371,13 +404,13 @@ export default class MessageBuilder {
     };
   }
 
-  static vote2v2sMessage(
+  static voteMatchSizeMessage(
     ballchasers: ReadonlyArray<Readonly<PlayerInQueue>>,
-    twosVotes: number,
+    matchSize: number,
+    voteCount: number,
     voterList: PlayerInQueue[],
-    players: Map<string, string>
+    players: Map<string, number>
   ): MessageOptions {
-    const twosCounterLabel = twosVotes;
     const embed = new MessageEmbed({
       color: ColorCodes.Green,
       thumbnail: { url: this.normIconURL },
@@ -392,9 +425,9 @@ export default class MessageBuilder {
       label: "Leave",
       style: ButtonStyle.Danger,
     });
-    const vote2v2Button = new MessageButton({
-      customId: ButtonCustomID.Twos,
-      label: "Vote 2v2 (" + twosCounterLabel.toString() + "/4)",
+    const voteMatchSizeButton = new MessageButton({
+      customId: createVoteMatchSizeCustomId(matchSize),
+      label: `Vote ${formatMatchSizeLabel(matchSize)} (${voteCount}/${ballchasers.length})`,
       style: ButtonStyle.Primary,
     });
     const removeAllButton = new MessageButton({
@@ -403,15 +436,15 @@ export default class MessageBuilder {
       style: ButtonStyle.Danger,
     });
 
-    const two = "\u0032\u20E3";
+    const voteMarker = this.lowerTierVoteMarker(matchSize);
     const ballChaserList = ballchasers
       .map((ballChaser) => {
         // + 1 since it seems that joining the queue calculates to 59 instead of 60
         const queueTime = ballChaser.queueTime?.diffNow().as("minutes") ?? 0;
         const voter = voterList.find((p) => p.id == ballChaser.id);
         const vote = players.get(ballChaser.id);
-        if (voter && vote == ButtonCustomID.Twos) {
-          return `${two} <@${ballChaser.id}> (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
+        if (voter && vote === matchSize && voteMarker) {
+          return `${voteMarker} <@${ballChaser.id}> (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
         } else {
           return `<@${ballChaser.id}> (${Math.min(queueTime + 1, 60).toFixed()} mins)`;
         }
@@ -419,17 +452,21 @@ export default class MessageBuilder {
       .join("\n");
 
     embed
-      .setTitle("Voting For 2v2's Has Started")
-      .setDescription("All four players must vote for 2v2's in order to proceed with the match! \n\n" + ballChaserList);
+      .setTitle(`Voting For ${formatMatchSizeLabel(matchSize)} Has Started`)
+      .setDescription(
+        `All ${ballchasers.length} queued players must vote for ${formatMatchSizeLabel(matchSize)} ` +
+          "in order to proceed with the match! \n\n" +
+          ballChaserList
+      );
 
     return {
-      components: this.isDev
+      components: this.isDevEnvironment()
         ? [
             new ActionRowBuilder<ButtonBuilder>({
-              components: [joinButton, leaveButton, vote2v2Button, removeAllButton],
+              components: [joinButton, leaveButton, voteMatchSizeButton, removeAllButton],
             }),
           ]
-        : [new ActionRowBuilder<ButtonBuilder>({ components: [joinButton, leaveButton, vote2v2Button] })],
+        : [new ActionRowBuilder<ButtonBuilder>({ components: [joinButton, leaveButton, voteMatchSizeButton] })],
       embeds: [embed],
     };
   }
@@ -491,7 +528,7 @@ export default class MessageBuilder {
       .setDescription("Vote for Captains or Random teams to get started! \n\n" + ballChaserList);
 
     return {
-      components: this.isDev
+      components: this.isDevEnvironment()
         ? [
             new ActionRowBuilder<ButtonBuilder>({
               components: [pickCaptainsButton, randomTeamsButton, leaveButton, removeAllButton],
@@ -561,7 +598,7 @@ export default class MessageBuilder {
       .setDescription("Vote for Captains or Random teams to get started! \n\n" + ballChaserList);
 
     return {
-      components: this.isDev
+      components: this.isDevEnvironment()
         ? [
             new ActionRowBuilder<ButtonBuilder>({
               components: [pickCaptainsButton, randomTeamsButton, leaveButton, removeAllButton],
@@ -616,5 +653,17 @@ export default class MessageBuilder {
       components: [new ActionRowBuilder<ButtonBuilder>({ components: [reportBlue, reportOrange] })],
       embeds: [embed],
     };
+  }
+
+  private static chunkEmbeds(embeds: MessageEmbed[]): MessageOptions[] {
+    const payloads: MessageOptions[] = [];
+
+    for (let index = 0; index < embeds.length; index += 10) {
+      payloads.push({
+        embeds: embeds.slice(index, index + 10),
+      });
+    }
+
+    return payloads;
   }
 }

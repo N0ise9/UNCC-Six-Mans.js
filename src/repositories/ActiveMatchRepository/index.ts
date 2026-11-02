@@ -1,1 +1,1 @@
-export { default } from "./ActiveMatchRepository";
+export { ActiveMatchRepository } from "./ActiveMatchRepository";

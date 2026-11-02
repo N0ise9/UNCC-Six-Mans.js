@@ -1,35 +1,40 @@
 import * as faker from "faker";
 import { ActiveMatchBuilder, BallChaserQueueBuilder } from "../../../../.jest/Builder";
-import ActiveMatchRepository from "../ActiveMatchRepository";
+import { ActiveMatchRepository } from "../ActiveMatchRepository";
 import { PlayerInActiveMatch } from "../types";
 import { Team } from "../../../types/common";
-import { ActiveMatch, BallChaser, PrismaClient } from "@prisma/client";
+import { ActiveMatch, BallChaser, PrismaClient } from "../../../prisma";
 import { waitForAllPromises } from "../../../utils";
+import { LeaderboardRepository } from "../../LeaderboardRepository";
+import { EventRepository } from "../../EventRepository";
+import {
+  createIntegrationTestPrismaClient,
+  ensureDefaultIntegrationEvent,
+  resetIntegrationDatabase,
+} from "../../../../.jest/integrationPrisma";
 
 let prisma: PrismaClient;
+let eventRepository: EventRepository;
+let leaderboardRepository: LeaderboardRepository;
+let activeMatchRepository: ActiveMatchRepository;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  await resetIntegrationDatabase(prisma);
+  await ensureDefaultIntegrationEvent(prisma);
+  eventRepository = new EventRepository(prisma);
+  leaderboardRepository = new LeaderboardRepository(prisma, eventRepository);
+  activeMatchRepository = new ActiveMatchRepository(prisma, leaderboardRepository);
 });
 
 beforeAll(async () => {
-  prisma = new PrismaClient();
+  prisma = createIntegrationTestPrismaClient();
   await prisma.$connect();
-  await prisma.leaderboard.deleteMany();
-  await prisma.activeMatch.deleteMany();
-  await prisma.queue.deleteMany();
-  await prisma.ballChaser.deleteMany();
-});
-
-afterEach(async () => {
-  await prisma.leaderboard.deleteMany();
-  await prisma.activeMatch.deleteMany();
-  await prisma.queue.deleteMany();
-  await prisma.ballChaser.deleteMany();
 });
 
 afterAll(async () => {
-  await prisma.$disconnect();
+  await resetIntegrationDatabase(prisma);
+  await prisma?.$disconnect();
 });
 
 async function manuallyAddActiveMatch(activeMatch: PlayerInActiveMatch | Array<PlayerInActiveMatch>) {
@@ -42,6 +47,7 @@ async function manuallyAddActiveMatch(activeMatch: PlayerInActiveMatch | Array<P
         name: faker.name.firstName(),
         activeMatch: {
           create: {
+            brokenQueue: activeMatch.brokenQueue,
             id: activeMatch.matchId,
             team: activeMatch.team,
             reportedTeam: activeMatch.reportedTeam,
@@ -76,7 +82,7 @@ describe("ActiveMatchRepository Tests", () => {
       const mockBallChasers = BallChaserQueueBuilder.many(6);
       await manuallyAddBallChaser(mockBallChasers);
 
-      await ActiveMatchRepository.addActiveMatch(mockBallChasers.map((p) => ({ id: p.id, team: p.team! })));
+      await activeMatchRepository.addActiveMatch(mockBallChasers.map((p) => ({ id: p.id, team: p.team! })));
 
       const actual = await prisma.activeMatch.findMany();
       expect(actual).toHaveLength(6);
@@ -103,7 +109,7 @@ describe("ActiveMatchRepository Tests", () => {
       const mockPlayers = ActiveMatchBuilder.many(6, { matchId: mockMatchId });
       await manuallyAddActiveMatch(mockPlayers);
 
-      await ActiveMatchRepository.removeAllPlayersInActiveMatch(mockPlayers[0].id);
+      await activeMatchRepository.removeAllPlayersInActiveMatch(mockPlayers[0].id);
 
       const count = await prisma.activeMatch.count();
       expect(count).toBe(0);
@@ -111,8 +117,8 @@ describe("ActiveMatchRepository Tests", () => {
 
     it("throws when trying to remove a player not in an active match", async () => {
       await expect(
-        ActiveMatchRepository.removeAllPlayersInActiveMatch(BallChaserQueueBuilder.single().id)
-      ).rejects.toThrowError();
+        activeMatchRepository.removeAllPlayersInActiveMatch(BallChaserQueueBuilder.single().id)
+      ).rejects.toThrow();
     });
 
     it("retreives all players part of an active match", async () => {
@@ -121,7 +127,7 @@ describe("ActiveMatchRepository Tests", () => {
       await manuallyAddActiveMatch(mockPlayers);
 
       const oneOfThePlayers = faker.random.arrayElement(mockPlayers);
-      const allPlayersInActiveMatch = await ActiveMatchRepository.getAllPlayersInActiveMatch(oneOfThePlayers.id);
+      const allPlayersInActiveMatch = await activeMatchRepository.getAllPlayersInActiveMatch(oneOfThePlayers.id);
 
       allPlayersInActiveMatch.blueTeam.forEach((player) => {
         const expectedPlayer = mockPlayers.find((p) => p.id === player.id);
@@ -140,7 +146,7 @@ describe("ActiveMatchRepository Tests", () => {
     });
 
     it("returns an empty array when trying to retreive a player not in an active match", async () => {
-      const allPlayers = await ActiveMatchRepository.getAllPlayersInActiveMatch(BallChaserQueueBuilder.single().id);
+      const allPlayers = await activeMatchRepository.getAllPlayersInActiveMatch(BallChaserQueueBuilder.single().id);
       expect(allPlayers).toEqual({ blueTeam: [], orangeTeam: [] });
     });
 
@@ -154,7 +160,7 @@ describe("ActiveMatchRepository Tests", () => {
       const reportedTeam = faker.random.arrayElement([Team.Orange, Team.Blue]);
       const oneOfThePlayersIndex = mockPlayers.findIndex((mockPlayer) => mockPlayer.id === oneOfThePlayers.id);
 
-      await ActiveMatchRepository.updatePlayerInActiveMatch(mockPlayers[oneOfThePlayersIndex].id, {
+      await activeMatchRepository.updatePlayerInActiveMatch(mockPlayers[oneOfThePlayersIndex].id, {
         reportedTeam: reportedTeam,
       });
 
@@ -179,19 +185,88 @@ describe("ActiveMatchRepository Tests", () => {
         }
       });
     });
+
+    it("returns whether a player is currently in an active match", async () => {
+      const mockMatchId = faker.datatype.uuid();
+      const mockPlayers = ActiveMatchBuilder.many(6, { matchId: mockMatchId });
+      await manuallyAddActiveMatch(mockPlayers);
+
+      await expect(activeMatchRepository.isPlayerInActiveMatch(mockPlayers[0].id)).resolves.toBe(true);
+      await expect(activeMatchRepository.isPlayerInActiveMatch("not-in-match")).resolves.toBe(false);
+    });
+
+    it("retrieves a single player in an active match with their mmr", async () => {
+      const mockPlayer = ActiveMatchBuilder.single({ id: "player-1", matchId: "match-1", mmr: 145, team: Team.Blue });
+      await manuallyAddBallChaser({
+        id: mockPlayer.id,
+        name: "player-1",
+      });
+      await prisma.leaderboard.create({
+        data: {
+          eventId: 1,
+          mmr: 145,
+          playerId: mockPlayer.id,
+        },
+      });
+      await prisma.activeMatch.create({
+        data: {
+          id: mockPlayer.matchId,
+          playerId: mockPlayer.id,
+          team: mockPlayer.team,
+        },
+      });
+
+      const actual = await activeMatchRepository.getPlayerInActiveMatch(mockPlayer.id);
+
+      expect(actual).toEqual(
+        expect.objectContaining({
+          id: mockPlayer.id,
+          matchId: mockPlayer.matchId,
+          mmr: 145,
+          team: Team.Blue,
+        })
+      );
+    });
+
+    it("counts broken queue votes in an active match", async () => {
+      const mockMatchId = faker.datatype.uuid();
+      const mockPlayers = [
+        ActiveMatchBuilder.single({ id: "player-1", brokenQueue: true, matchId: mockMatchId, team: Team.Blue }),
+        ActiveMatchBuilder.single({ id: "player-2", brokenQueue: false, matchId: mockMatchId, team: Team.Blue }),
+        ActiveMatchBuilder.single({ id: "player-3", brokenQueue: true, matchId: mockMatchId, team: Team.Orange }),
+      ];
+      await manuallyAddActiveMatch(mockPlayers);
+
+      await expect(activeMatchRepository.getAllBrokenQueueVotesInActiveMatch("player-1")).resolves.toBe(2);
+    });
+
+    it("returns broken queue voters partitioned by team", async () => {
+      const mockMatchId = faker.datatype.uuid();
+      const mockPlayers = [
+        ActiveMatchBuilder.single({ id: "blue-1", brokenQueue: true, matchId: mockMatchId, team: Team.Blue }),
+        ActiveMatchBuilder.single({ id: "blue-2", brokenQueue: false, matchId: mockMatchId, team: Team.Blue }),
+        ActiveMatchBuilder.single({ id: "orange-1", brokenQueue: true, matchId: mockMatchId, team: Team.Orange }),
+      ];
+      await manuallyAddActiveMatch(mockPlayers);
+
+      const voters = await activeMatchRepository.getAllBrokenQueueVotersInActiveMatch("blue-1");
+
+      expect(voters.blueTeam.map((player) => player.id)).toEqual(["blue-1"]);
+      expect(voters.orangeTeam.map((player) => player.id)).toEqual(["orange-1"]);
+    });
   });
 
   describe("Exception handling tests", () => {
     it("throws if trying to add a ballchaser to an active match with no team", async () => {
       await expect(
-        ActiveMatchRepository.addActiveMatch([BallChaserQueueBuilder.single({ team: null }) as any])
-      ).rejects.toThrowError();
+        activeMatchRepository.addActiveMatch([BallChaserQueueBuilder.single({ team: null }) as any])
+      ).rejects.toThrow();
     });
 
     it("throws when trying to update a player not in an active match", async () => {
       await expect(
-        ActiveMatchRepository.updatePlayerInActiveMatch(BallChaserQueueBuilder.single().id, { reportedTeam: Team.Blue })
-      ).rejects.toThrowError();
+        activeMatchRepository.updatePlayerInActiveMatch(BallChaserQueueBuilder.single().id, { reportedTeam: Team.Blue })
+      ).rejects.toThrow();
     });
   });
 });

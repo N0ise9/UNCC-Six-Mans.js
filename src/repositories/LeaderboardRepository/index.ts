@@ -1,1 +1,1 @@
-export { default } from "./LeaderboardRepository";
+export { LeaderboardRepository } from "./LeaderboardRepository";

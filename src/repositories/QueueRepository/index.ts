@@ -1,1 +1,1 @@
-export { default } from "./QueueRepository";
+export { QueueRepository } from "./QueueRepository";

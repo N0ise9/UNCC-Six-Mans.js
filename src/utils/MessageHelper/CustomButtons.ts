@@ -11,7 +11,25 @@ export const enum ButtonCustomID {
   ReportBlue = "reportBlue",
   ReportOrange = "reportOrange",
   BrokenQueue = "brokenQueue",
-  Twos = "twosQueue",
+}
+
+export const VOTE_MATCH_SIZE_PREFIX = "voteMatchSize:";
+
+export function createVoteMatchSizeCustomId(matchSize: number): string {
+  return `${VOTE_MATCH_SIZE_PREFIX}${matchSize}`;
+}
+
+export function parseVoteMatchSizeCustomId(customId: string): number | null {
+  if (!customId.startsWith(VOTE_MATCH_SIZE_PREFIX)) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(customId.slice(VOTE_MATCH_SIZE_PREFIX.length), 10);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return null;
+  }
+
+  return parsed;
 }
 
 interface CustomButtonOptions extends Partial<Omit<ButtonBuilder, "customId">> {
@@ -38,8 +56,6 @@ export default class CustomButton extends ButtonBuilder {
         return new ButtonBuilder().setCustomId("breakMatch").setLabel("DEV: Break Match").setStyle(ButtonStyle.Danger);
       case ButtonCustomID.BrokenQueue:
         return new ButtonBuilder().setCustomId("brokenQueue").setLabel("Broken Queue").setStyle(ButtonStyle.Danger);
-      case ButtonCustomID.Twos:
-        return new ButtonBuilder().setCustomId("twosQueue").setLabel("2v2").setStyle(ButtonStyle.Primary);
       case ButtonCustomID.ReportBlue:
         return new ButtonBuilder()
           .setCustomId("reportBlue")

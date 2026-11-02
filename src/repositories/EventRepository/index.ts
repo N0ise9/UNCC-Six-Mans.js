@@ -1,1 +1,1 @@
-export { default } from "./EventRepository";
+export { EventRepository } from "./EventRepository";

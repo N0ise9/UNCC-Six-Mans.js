@@ -1,4 +1,4 @@
-import { BallChaser, Queue } from "@prisma/client";
+import { BallChaser, Queue } from "../../prisma";
 import { DateTime } from "luxon";
 import { Team } from "../../types/common";
 

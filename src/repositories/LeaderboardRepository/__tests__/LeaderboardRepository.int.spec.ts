@@ -1,53 +1,38 @@
-import { BallChaser, PrismaClient } from "@prisma/client";
+import { BallChaser, PrismaClient } from "../../../prisma";
 import * as faker from "faker";
 import { LeaderboardBuilder } from "../../../../.jest/Builder";
 import { waitForAllPromises } from "../../../utils";
-import LeaderboardRepository from "../LeaderboardRepository";
+import { LeaderboardRepository } from "../LeaderboardRepository";
+import { EventRepository } from "../../EventRepository";
 import { PlayerStats } from "../types";
+import {
+  createIntegrationTestPrismaClient,
+  DEFAULT_TEST_EVENT_ID,
+  ensureDefaultIntegrationEvent,
+  resetIntegrationDatabase,
+} from "../../../../.jest/integrationPrisma";
 
 let prisma: PrismaClient;
-let eventId: number = 1;
+let eventId: number = DEFAULT_TEST_EVENT_ID;
+let eventRepository: EventRepository;
+let leaderboardRepository: LeaderboardRepository;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  await resetIntegrationDatabase(prisma);
+  await ensureDefaultIntegrationEvent(prisma, eventId, "Spring 2022");
+  eventRepository = new EventRepository(prisma);
+  leaderboardRepository = new LeaderboardRepository(prisma, eventRepository);
 });
 
 beforeAll(async () => {
-  prisma = new PrismaClient();
+  prisma = createIntegrationTestPrismaClient();
   await prisma.$connect();
-  await prisma.leaderboard.deleteMany();
-  await prisma.event.deleteMany();
-
-  await prisma.event.create({
-    data: {
-      id: eventId,
-      name: "Spring 2022",
-    },
-  });
-
-  await prisma.activeMatch.deleteMany();
-  await prisma.queue.deleteMany();
-  await prisma.ballChaser.deleteMany();
-});
-
-afterEach(async () => {
-  await prisma.leaderboard.deleteMany();
-  await prisma.event.deleteMany();
-
-  await prisma.event.create({
-    data: {
-      id: eventId,
-      name: "Spring 2022",
-    },
-  });
-
-  await prisma.activeMatch.deleteMany();
-  await prisma.queue.deleteMany();
-  await prisma.ballChaser.deleteMany();
 });
 
 afterAll(async () => {
-  await prisma.$disconnect();
+  await resetIntegrationDatabase(prisma);
+  await prisma?.$disconnect();
 });
 
 const validatePlayerStats = (expected: PlayerStats, actual: PlayerStats | null) => {
@@ -59,6 +44,20 @@ const validatePlayerStats = (expected: PlayerStats, actual: PlayerStats | null) 
   expect(actual!.name).toBe(expected.name);
   expect(actual!.winPerc).toBe(expected.winPerc);
   expect(actual!.wins).toBe(expected.wins);
+};
+
+const expectPlayersSortedByLeaderboardOrder = (players: ReadonlyArray<Readonly<PlayerStats>>) => {
+  for (let i = 0; i < players.length - 1; i++) {
+    const current = players[i];
+    const next = players[i + 1];
+
+    if (current.mmr === next.mmr) {
+      expect(current.wins).toBeGreaterThanOrEqual(next.wins);
+      continue;
+    }
+
+    expect(current.mmr).toBeGreaterThan(next.mmr);
+  }
 };
 
 async function manuallyAddPlayerStatsToLeaderboard(ballChaser: PlayerStats | Array<PlayerStats>) {
@@ -96,13 +95,13 @@ describe("LeaderboardRepository tests", () => {
     const mockPlayerStats = LeaderboardBuilder.single();
     await manuallyAddPlayerStatsToLeaderboard(mockPlayerStats);
 
-    const result = await LeaderboardRepository.getPlayerStats(mockPlayerStats.id);
+    const result = await leaderboardRepository.getPlayerStats(mockPlayerStats.id);
 
     validatePlayerStats(mockPlayerStats, result);
   });
 
   it("returns null when looking for player that does not exist", async () => {
-    const result = await LeaderboardRepository.getPlayerStats(faker.datatype.uuid());
+    const result = await leaderboardRepository.getPlayerStats(faker.datatype.uuid());
     expect(result).toBeNull();
   });
 
@@ -112,7 +111,7 @@ describe("LeaderboardRepository tests", () => {
 
     const mockPlayerUpdates = LeaderboardBuilder.single({ id: mockPlayerStats.id, name: mockPlayerStats.name });
 
-    await LeaderboardRepository.updatePlayersStats([mockPlayerUpdates]);
+    await leaderboardRepository.updatePlayersStats([mockPlayerUpdates]);
 
     const actual = await prisma.leaderboard.findUnique({
       include: {
@@ -142,7 +141,7 @@ describe("LeaderboardRepository tests", () => {
     const mockPlayerStats = LeaderboardBuilder.single();
     await manuallyAddBallChaser(mockPlayerStats);
 
-    await LeaderboardRepository.updatePlayersStats([mockPlayerStats]);
+    await leaderboardRepository.updatePlayersStats([mockPlayerStats]);
 
     const actual = await prisma.leaderboard.findUnique({
       include: {
@@ -177,7 +176,7 @@ describe("LeaderboardRepository tests", () => {
     const mockPlayerStats = LeaderboardBuilder.single();
     await manuallyAddBallChaser(mockPlayerStats);
 
-    await LeaderboardRepository.updatePlayersStats([mockPlayerStats]);
+    await leaderboardRepository.updatePlayersStats([mockPlayerStats]);
 
     const actual = await prisma.leaderboard.findUnique({
       include: {
@@ -194,37 +193,100 @@ describe("LeaderboardRepository tests", () => {
     expect(actual).not.toBeNull();
   });
 
+  it("creates a leaderboard row with default losses when only wins are provided", async () => {
+    const mockPlayerStats = LeaderboardBuilder.single({ id: "winner", losses: 0, mmr: 115, wins: 1 });
+    await manuallyAddBallChaser({
+      id: mockPlayerStats.id,
+      name: mockPlayerStats.name,
+    });
+
+    await leaderboardRepository.updatePlayersStats([
+      {
+        id: mockPlayerStats.id,
+        mmr: 115,
+        wins: 1,
+      },
+    ]);
+
+    const created = await prisma.leaderboard.findUnique({
+      where: {
+        eventId_playerId: {
+          eventId,
+          playerId: mockPlayerStats.id,
+        },
+      },
+    });
+
+    expect(created?.wins).toBe(1);
+    expect(created?.losses).toBe(0);
+    expect(created?.mmr).toBe(115);
+  });
+
+  it("preserves omitted wins or losses when updating an existing leaderboard row", async () => {
+    const existingPlayer = LeaderboardBuilder.single({
+      id: "player-1",
+      losses: 4,
+      mmr: 100,
+      name: "player-1",
+      wins: 7,
+    });
+    await manuallyAddPlayerStatsToLeaderboard(existingPlayer);
+
+    await leaderboardRepository.updatePlayersStats([
+      {
+        id: existingPlayer.id,
+        losses: existingPlayer.losses + 1,
+        mmr: 90,
+      },
+    ]);
+
+    await leaderboardRepository.updatePlayersStats([
+      {
+        id: existingPlayer.id,
+        mmr: 110,
+        wins: existingPlayer.wins + 1,
+      },
+    ]);
+
+    const updated = await prisma.leaderboard.findUnique({
+      where: {
+        eventId_playerId: {
+          eventId,
+          playerId: existingPlayer.id,
+        },
+      },
+    });
+
+    expect(updated?.wins).toBe(existingPlayer.wins + 1);
+    expect(updated?.losses).toBe(existingPlayer.losses + 1);
+    expect(updated?.mmr).toBe(110);
+  });
+
   it("gets top n player stats", async () => {
     const playersToAdd = LeaderboardBuilder.many(10);
     await manuallyAddPlayerStatsToLeaderboard(playersToAdd);
 
-    const allPlayers = await LeaderboardRepository.getPlayersStats(5);
+    const allPlayers = await leaderboardRepository.getPlayersStats(5);
 
     expect(allPlayers).toHaveLength(5);
-    // 5 - 1 since you can't [i + 1] on the last item
-    for (let i = 0; i < 5 - 1; i++) {
-      expect(allPlayers[i].mmr).toBeGreaterThan(allPlayers[i + 1].mmr);
-    }
+    expectPlayersSortedByLeaderboardOrder(allPlayers);
   });
 
   it("gets all player stats sorted correctly based on MMR", async () => {
     const playersToAdd = LeaderboardBuilder.many(10);
     await manuallyAddPlayerStatsToLeaderboard(playersToAdd);
 
-    const allPlayers = await LeaderboardRepository.getPlayersStats();
+    const allPlayers = await leaderboardRepository.getPlayersStats();
 
     expect(allPlayers).toHaveLength(playersToAdd.length);
-    // playersToAdd.length - 1 since you can't [i + 1] on the last item
-    for (let i = 0; i < playersToAdd.length - 1; i++) {
-      expect(allPlayers[i].mmr).toBeGreaterThan(allPlayers[i + 1].mmr);
-    }
+    expectPlayersSortedByLeaderboardOrder(allPlayers);
   });
 
   it("gets all player stats sorted correctly by wins when MMR is equal", async () => {
     const playersToAdd = LeaderboardBuilder.many(5, { mmr: 100 });
     await manuallyAddPlayerStatsToLeaderboard(playersToAdd);
 
-    const allPlayers = await LeaderboardRepository.getPlayersStats();
+    const allPlayers = await leaderboardRepository.getPlayersStats();
 
     expect(allPlayers).toHaveLength(playersToAdd.length);
     // playersToAdd.length - 1 since you can't [i + 1] on the last item
@@ -276,6 +338,6 @@ describe("Leaderboard schema tests", () => {
           },
         },
       })
-    ).resolves.not.toThrowError();
+    ).resolves.not.toThrow();
   });
 });

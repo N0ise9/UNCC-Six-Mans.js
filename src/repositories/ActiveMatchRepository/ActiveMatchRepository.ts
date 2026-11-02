@@ -1,16 +1,14 @@
-import { ActiveMatch, Prisma, PrismaClient } from "@prisma/client";
-import { PrismaClientKnownRequestError } from "@prisma/client/runtime";
+import { ActiveMatch, Prisma, PrismaClient } from "../../prisma";
 import { Team } from "../../types/common";
-import LeaderboardRepository from "../LeaderboardRepository";
+import { LeaderboardRepository } from "../LeaderboardRepository";
 import { generateRandomId, splitArray, waitForAllPromises } from "../../utils";
 import { ActiveMatchTeams, NewActiveMatchInput, PlayerInActiveMatch, UpdatePlayerInActiveMatchInput } from "./types";
 
 export class ActiveMatchRepository {
-  #ActiveMatch: Prisma.ActiveMatchDelegate<Prisma.RejectOnNotFound | Prisma.RejectPerOperation | undefined>;
-
-  constructor() {
-    this.#ActiveMatch = new PrismaClient().activeMatch;
-  }
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly leaderboardRepository: Pick<LeaderboardRepository, "getPlayerStats">
+  ) {}
 
   async addActiveMatch(newActiveMatchPlayers: Array<NewActiveMatchInput>): Promise<void> {
     const notEveryoneHasATeam = newActiveMatchPlayers.some((player) => !Number.isInteger(player.team));
@@ -20,7 +18,7 @@ export class ActiveMatchRepository {
 
     const matchId = generateRandomId();
 
-    await this.#ActiveMatch.createMany({
+    await this.prisma.activeMatch.createMany({
       data: newActiveMatchPlayers.map((newActiveMatchPlayer) => ({
         id: matchId,
         playerId: newActiveMatchPlayer.id,
@@ -30,7 +28,7 @@ export class ActiveMatchRepository {
   }
 
   async updatePlayerInActiveMatch(playerInMatchId: string, updates: UpdatePlayerInActiveMatchInput): Promise<void> {
-    await this.#ActiveMatch
+    await this.prisma.activeMatch
       .update({
         data: {
           brokenQueue: updates.brokenQueue,
@@ -41,14 +39,14 @@ export class ActiveMatchRepository {
         },
       })
       .catch((err) => {
-        if (err instanceof PrismaClientKnownRequestError && err.code === "P2025") {
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
           throw new Error(`Player with ID: ${playerInMatchId} is not in an active match.`);
         }
       });
   }
 
   async removeAllPlayersInActiveMatch(playerInMatchId: string): Promise<void> {
-    await this.#ActiveMatch
+    await this.prisma.activeMatch
       .findUnique({
         select: {
           id: true,
@@ -62,7 +60,7 @@ export class ActiveMatchRepository {
           throw new Error(`Player with ID: ${playerInMatchId} is not in an active match.`);
         }
 
-        return this.#ActiveMatch.deleteMany({
+        return this.prisma.activeMatch.deleteMany({
           where: {
             id: match.id,
           },
@@ -71,7 +69,7 @@ export class ActiveMatchRepository {
   }
 
   async getAllBrokenQueueVotesInActiveMatch(playerInMatchId: string): Promise<number> {
-    const allPlayersInMatch = await this.#ActiveMatch
+    return await this.prisma.activeMatch
       .findUnique({
         select: {
           id: true,
@@ -81,19 +79,17 @@ export class ActiveMatchRepository {
         },
       })
       .then((match) => {
-        return this.#ActiveMatch.count({
+        return this.prisma.activeMatch.count({
           where: {
             brokenQueue: true,
             id: match?.id,
           },
         });
       });
-
-    return allPlayersInMatch;
   }
 
   async getAllBrokenQueueVotersInActiveMatch(playerInMatchId: string): Promise<ActiveMatchTeams> {
-    const allPlayersInMatch = await this.#ActiveMatch
+    const allPlayersInMatch = await this.prisma.activeMatch
       .findUnique({
         select: {
           id: true,
@@ -108,7 +104,7 @@ export class ActiveMatchRepository {
           return [];
         }
 
-        return this.#ActiveMatch.findMany({
+        return this.prisma.activeMatch.findMany({
           where: {
             brokenQueue: true,
             id: match.id,
@@ -129,7 +125,7 @@ export class ActiveMatchRepository {
   }
 
   async getAllPlayersInActiveMatch(playerInMatchId: string): Promise<ActiveMatchTeams> {
-    const allPlayersInMatch = await this.#ActiveMatch
+    const allPlayersInMatch = await this.prisma.activeMatch
       .findUnique({
         select: {
           id: true,
@@ -144,7 +140,7 @@ export class ActiveMatchRepository {
           return [];
         }
 
-        return this.#ActiveMatch.findMany({
+        return this.prisma.activeMatch.findMany({
           where: {
             id: match.id,
           },
@@ -164,7 +160,7 @@ export class ActiveMatchRepository {
   }
 
   async #getPlayerInActiveMatchWithMmr(playerInMatch: ActiveMatch): Promise<PlayerInActiveMatch> {
-    const stats = await LeaderboardRepository.getPlayerStats(playerInMatch.playerId);
+    const stats = await this.leaderboardRepository.getPlayerStats(playerInMatch.playerId);
     return {
       brokenQueue: playerInMatch.brokenQueue,
       id: playerInMatch.playerId,
@@ -176,7 +172,7 @@ export class ActiveMatchRepository {
   }
 
   async isPlayerInActiveMatch(playerInMatchId: string): Promise<boolean> {
-    const playerInMatch = await this.#ActiveMatch.count({
+    const playerInMatch = await this.prisma.activeMatch.count({
       where: {
         playerId: playerInMatchId,
       },
@@ -186,19 +182,16 @@ export class ActiveMatchRepository {
   }
 
   async getPlayerInActiveMatch(playerInMatchId: string): Promise<PlayerInActiveMatch | null> {
-    const playerInMatch = await this.#ActiveMatch.findUnique({
+    const playerInMatch = await this.prisma.activeMatch.findUnique({
       where: {
         playerId: playerInMatchId,
       },
     });
 
     if (playerInMatch) {
-      const player = this.#getPlayerInActiveMatchWithMmr(playerInMatch);
-      return player;
+      return this.#getPlayerInActiveMatchWithMmr(playerInMatch);
     } else {
       return null;
     }
   }
 }
-
-export default new ActiveMatchRepository();
