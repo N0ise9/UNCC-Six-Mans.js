@@ -1,6 +1,5 @@
 import {
   ChannelType,
-  PermissionFlagsBits,
   REST,
   RESTPostAPIApplicationCommandsJSONBody,
   Routes,
@@ -53,7 +52,8 @@ function buildSlashCommands(): Array<RESTPostAPIApplicationCommandsJSONBody> {
   const setup = new SlashCommandBuilder()
     .setName("setup")
     .setDescription("Configure this guild for the single-instance bot runtime.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    // Discord permissions apply to the whole command; each subcommand is authorized at runtime.
+    .setDefaultMemberPermissions(null)
     .addSubcommand((subcommand) => {
       return subcommand.setName("show").setDescription("Show the current guild configuration.");
     })

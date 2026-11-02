@@ -68,6 +68,25 @@ describe("registerAllSlashCommands", () => {
     expect(commands.map((command) => command.name)).toEqual(["setup", "kick", "clear", "prisma", "norm"]);
   });
 
+  it.each(["startup", "guild join"])("clears the default /setup permission restriction on %s", async (registration) => {
+    const put = jest.spyOn(REST.prototype, "put").mockResolvedValue(undefined as never);
+
+    if (registration === "startup") {
+      await registerAllSlashCommands("client-1", "token-1", ["guild-c"]);
+    } else {
+      await registerGuildSlashCommands("client-1", "token-1", "guild-c");
+    }
+
+    const [, payload] = put.mock.calls.find(
+      ([route]) => route === Routes.applicationGuildCommands("client-1", "guild-c")
+    ) ?? [];
+    const commands = (payload as { body: Array<Record<string, unknown>> }).body;
+
+    expect(commands.find((command) => command.name === "setup")).toEqual(
+      expect.objectContaining({ default_member_permissions: null })
+    );
+  });
+
   it("registers /norm with file attachment options", async () => {
     const put = jest.spyOn(REST.prototype, "put").mockResolvedValue(undefined as never);
 

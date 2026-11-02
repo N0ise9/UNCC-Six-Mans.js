@@ -146,6 +146,10 @@ export class ApiStatusRuntime {
     this.registrations.clear();
   }
 
+  isGuildRegistered(guildId: string, channelId: string): boolean {
+    return this.registrations.get(guildId)?.channel.id === channelId;
+  }
+
   async registerGuild(guildId: string, channel: TextChannel): Promise<void> {
     const release = await this.getRegistrationLock(guildId).acquire();
     try {

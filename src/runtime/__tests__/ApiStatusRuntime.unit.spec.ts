@@ -195,11 +195,18 @@ describe("ApiStatusRuntime", () => {
     const secondChannel = createChannel("channel-2");
 
     try {
+      expect(runtime.isGuildRegistered("guild-1", firstChannel.id)).toBe(false);
       await runtime.registerGuild("guild-1", firstChannel);
       await runtime.registerGuild("guild-2", secondChannel);
 
       expect(firstChannel.send).toHaveBeenCalledTimes(1);
       expect(secondChannel.send).toHaveBeenCalledTimes(1);
+      expect(runtime.isGuildRegistered("guild-1", firstChannel.id)).toBe(true);
+      expect(runtime.isGuildRegistered("guild-1", secondChannel.id)).toBe(false);
+      expect(runtime.isGuildRegistered("guild-2", secondChannel.id)).toBe(true);
+      runtime.unregisterGuild("guild-1");
+      expect(runtime.isGuildRegistered("guild-1", firstChannel.id)).toBe(false);
+      expect(runtime.isGuildRegistered("guild-2", secondChannel.id)).toBe(true);
     } finally {
       await runtime.dispose();
     }

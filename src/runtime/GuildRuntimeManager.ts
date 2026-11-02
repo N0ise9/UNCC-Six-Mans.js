@@ -22,7 +22,7 @@ import { Team } from "../types/common";
 import MessageBuilder, { MenuCustomID } from "../utils/MessageHelper/MessageBuilder";
 import { ButtonCustomID } from "../utils/MessageHelper/CustomButtons";
 import { ApiStatusRuntime } from "./ApiStatusRuntime";
-import { GuildConfigStore, maskSecret } from "./GuildConfigStore";
+import { GuildConfigReadResult, GuildConfigStore, maskSecret } from "./GuildConfigStore";
 import { DiscordWorkScheduler } from "./DiscordWorkScheduler";
 import { GuildRepositories } from "./GuildRepositories";
 import { InteractiveSurfaceRegistry } from "./InteractiveSurfaceRegistry";
@@ -421,12 +421,18 @@ export class GuildRuntimeManager {
       return;
     }
 
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-      await responder.edit("You need Manage Server permissions to run setup.");
+    const subcommand = interaction.options.getSubcommand();
+    const hasManageGuild = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false;
+    if (!hasManageGuild && (subcommand !== "set" || !(await this.hasSetupBotAdminRole(interaction)))) {
+      await responder.edit(
+        subcommand === "set"
+          ? "You need Manage Server permissions or the Bot Admin role to run /setup set."
+          : `You need Manage Server permissions to run /setup ${subcommand}.`
+      );
       return;
     }
 
-    switch (interaction.options.getSubcommand()) {
+    switch (subcommand) {
       case "show": {
         const configResult = this.configStore.getGuildConfigResult(interaction.guildId);
         if (!configResult) {
@@ -551,6 +557,26 @@ export class GuildRuntimeManager {
     }
   }
 
+  private async hasSetupBotAdminRole(interaction: ChatInputCommandInteraction): Promise<boolean> {
+    const memberRoles = interaction.member?.roles;
+    if (!memberRoles || !interaction.guildId) return false;
+
+    if (!Array.isArray(memberRoles)) {
+      return memberRoles.cache.some((role) => role.name === "Bot Admin");
+    }
+    if (memberRoles.length === 0) return false;
+
+    try {
+      // Uncached interaction members carry role IDs, so resolve their names within this guild.
+      const guild = interaction.guild ?? await this.client.guilds.fetch(interaction.guildId);
+      const roles = await guild.roles.fetch();
+      return memberRoles.some((roleId) => roles.get(roleId)?.name === "Bot Admin");
+    } catch (error) {
+      console.warn(`[${interaction.guildId}] Could not verify the Bot Admin role for /setup set.`, error);
+      return false;
+    }
+  }
+
   async initializeConfiguredGuilds(): Promise<void> {
     const configs = this.configStore.getGuildConfigResults();
     for (const configResult of configs) {
@@ -629,7 +655,24 @@ export class GuildRuntimeManager {
 
     await this.teardownContext(guildId);
 
-    const configResult = this.configStore.getGuildConfigResult(guildId);
+    // Read after teardown so setup changes saved during disconnect are included.
+    let configResult: GuildConfigReadResult | null;
+    try {
+      configResult = this.configStore.getGuildConfigResult(guildId);
+    } catch (error) {
+      this.apiStatusRuntime?.unregisterGuild(guildId);
+      throw error;
+    }
+    const config = configResult?.config;
+    // Keep status messages and polling alive when unrelated guild settings change.
+    const preserveApiStatus = Boolean(
+      !configResult?.error && config?.enabled && config.apiStatusChannelId &&
+      this.apiStatusRuntime?.isGuildRegistered(guildId, config.apiStatusChannelId)
+    );
+    if (!preserveApiStatus) {
+      this.apiStatusRuntime?.unregisterGuild(guildId);
+    }
+
     if (!configResult) {
       return null;
     }
@@ -645,7 +688,6 @@ export class GuildRuntimeManager {
       };
     }
 
-    const config = configResult.config;
     if (!config || !config.enabled) {
       return null;
     }
@@ -683,8 +725,11 @@ export class GuildRuntimeManager {
     }
 
     await this.refreshLeaderboard(context);
-    if (context.channels.apiStatusChannel) {
-      await this.apiStatusRuntime?.registerGuild(context.guildId, context.channels.apiStatusChannel);
+    const apiStatusChannel = context.channels.apiStatusChannel;
+    if (apiStatusChannel) {
+      if (!this.apiStatusRuntime?.isGuildRegistered(context.guildId, apiStatusChannel.id)) {
+        await this.apiStatusRuntime?.registerGuild(context.guildId, apiStatusChannel);
+      }
     } else {
       this.apiStatusRuntime?.unregisterGuild(context.guildId);
     }
@@ -866,12 +911,8 @@ export class GuildRuntimeManager {
     this.startupQueueSurfaceSnapshots.delete(guildId);
 
     const existing = this.contexts.get(guildId);
-    if (!existing) {
-      this.apiStatusRuntime?.unregisterGuild(guildId);
-      return;
-    }
+    if (!existing) return;
 
-    this.apiStatusRuntime?.unregisterGuild(guildId);
     await existing.prisma.$disconnect().catch(() => undefined);
     this.contexts.delete(guildId);
   }

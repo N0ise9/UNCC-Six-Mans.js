@@ -1,4 +1,14 @@
-import { ButtonStyle, ChannelType, Client, Message, MessageFlags, TextChannel } from "discord.js";
+import {
+  ButtonStyle,
+  ChannelType,
+  Client,
+  Collection,
+  Message,
+  MessageFlags,
+  PermissionFlagsBits,
+  PermissionsBitField,
+  TextChannel,
+} from "discord.js";
 import { DateTime } from "luxon";
 import OpenAI from "openai";
 import * as EasterEggsController from "../../controllers/EasterEggs";
@@ -156,7 +166,13 @@ function createSetupInteraction(options?: {
   booleans?: Partial<Record<string, boolean>>;
   channels?: Partial<Record<"api_status_channel" | "chat_channel" | "leaderboard_channel" | "queue_channel", TextChannel>>;
   guildId?: string;
+  guildRoleFetchError?: Error;
+  guildRoles?: Array<{ id: string; name: string }>;
+  hasAdministrator?: boolean;
   hasManageGuild?: boolean;
+  memberRoleIds?: string[];
+  memberRoleNames?: string[];
+  missingMember?: boolean;
   strings?: Partial<Record<"conversation_id" | "database_url", string>>;
   subcommand?: "disable" | "set" | "show";
 }) {
@@ -166,11 +182,28 @@ function createSetupInteraction(options?: {
 
   return {
     editReply: jest.fn(async () => undefined),
+    guild: options?.guildRoles || options?.guildRoleFetchError ? {
+      roles: {
+        fetch: jest.fn(async () => {
+          if (options.guildRoleFetchError) throw options.guildRoleFetchError;
+          return new Collection((options.guildRoles ?? []).map((role) => [role.id, role]));
+        }),
+      },
+    } : null,
     guildId: options?.guildId ?? "guild-1",
     id: `setup-${options?.subcommand ?? "set"}`,
-    memberPermissions: {
-      has: jest.fn(() => options?.hasManageGuild ?? true),
+    member: options?.missingMember ? null : {
+      roles: options?.memberRoleIds ?? {
+        cache: new Collection((options?.memberRoleNames ?? []).map((name, index) => [
+          `role-${index}`,
+          { id: `role-${index}`, name },
+        ])),
+      },
     },
+    memberPermissions: new PermissionsBitField([
+      ...(options?.hasManageGuild ?? true ? [PermissionFlagsBits.ManageGuild] : []),
+      ...(options?.hasAdministrator ? [PermissionFlagsBits.Administrator] : []),
+    ]),
     options: {
       getBoolean: jest.fn((name: string) => booleans[name as keyof typeof booleans] ?? null),
       getChannel: jest.fn((name: string) => channels[name as keyof typeof channels] ?? null),
@@ -313,6 +346,7 @@ describe("GuildRuntimeManager", () => {
     } as unknown as GuildConfigStore;
     const apiStatusRegistration = createDeferred();
     const apiStatusRuntime = {
+      isGuildRegistered: jest.fn(() => false),
       registerGuild: jest.fn(async () => await apiStatusRegistration.promise),
       unregisterGuild: jest.fn(),
     } as unknown as ApiStatusRuntime;
@@ -768,6 +802,153 @@ describe("GuildRuntimeManager", () => {
       refreshQueueSurfaceSpy.mockRestore();
       await manager.dispose();
     }
+  });
+
+  describe("setup authorization", () => {
+    let configStore: {
+      disableGuild: jest.Mock;
+      getGuildConfigResult: jest.Mock;
+      setGuildConfig: jest.Mock;
+    };
+    let fetchGuild: jest.Mock;
+    let manager: GuildRuntimeManager;
+    let reloadSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      configStore = {
+        disableGuild: jest.fn(() => createConfig("guild-1")),
+        getGuildConfigResult: jest.fn(() => createConfigResult("guild-1")),
+        setGuildConfig: jest.fn(() => createConfig("guild-1")),
+      };
+      fetchGuild = jest.fn();
+      const client = { guilds: { fetch: fetchGuild } } as unknown as Client;
+      manager = new GuildRuntimeManager(
+        client,
+        {} as OpenAI,
+        configStore as unknown as GuildConfigStore,
+        new DiscordWorkScheduler(1, 0)
+      );
+      reloadSpy = jest.spyOn(manager, "reloadContext").mockResolvedValue(null);
+    });
+
+    afterEach(async () => {
+      reloadSpy.mockRestore();
+      await manager.dispose();
+    });
+
+    it.each([
+      { label: "Bot Admin role", memberRoleNames: ["Bot Admin"], subcommand: "set" as const },
+      ...(["set", "show", "disable"] as const).flatMap((subcommand) => [
+        { hasManageGuild: true, label: "Manage Server", subcommand },
+        { hasAdministrator: true, label: "Administrator", subcommand },
+      ]),
+    ])("allows $label to use /setup $subcommand", async (options) => {
+      const interaction = createSetupInteraction({ hasManageGuild: false, ...options });
+
+      await manager.handleSetupCommand(interaction);
+
+      if (options.subcommand === "set") {
+        expect(configStore.setGuildConfig).toHaveBeenCalledTimes(1);
+        expect(reloadSpy).toHaveBeenCalledWith("guild-1");
+        expect(interaction.editReply).toHaveBeenCalledWith("Guild configuration saved and runtime refreshed.");
+      } else if (options.subcommand === "show") {
+        expect(configStore.getGuildConfigResult).toHaveBeenCalledWith("guild-1");
+        expect(interaction.editReply).toHaveBeenCalledWith(expect.stringContaining("Guild: guild-1"));
+      } else {
+        expect(configStore.disableGuild).toHaveBeenCalledWith("guild-1");
+        expect(reloadSpy).toHaveBeenCalledWith("guild-1");
+        expect(interaction.editReply).toHaveBeenCalledWith("Guild configuration disabled.");
+      }
+      expect(fetchGuild).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ...(["set", "show", "disable"] as const).map((subcommand) => ({
+        label: "ordinary member",
+        subcommand,
+      })),
+      ...(["show", "disable"] as const).map((subcommand) => ({
+        label: "Bot Admin role only",
+        memberRoleNames: ["Bot Admin"],
+        subcommand,
+      })),
+      ...["bot admin", "Bot Admin Helper", "BotAdmin"].map((roleName) => ({
+        label: roleName,
+        memberRoleNames: [roleName],
+        subcommand: "set" as const,
+      })),
+      { label: "missing member", missingMember: true, subcommand: "set" as const },
+      {
+        guildRoles: [{ id: "bot-admin-id", name: "Bot Admin" }],
+        label: "role name supplied as a raw role ID",
+        memberRoleIds: ["Bot Admin"],
+        subcommand: "set" as const,
+      },
+      {
+        guildRoles: [{ id: "other-id", name: "Member" }],
+        label: "unprivileged raw role ID",
+        memberRoleIds: ["other-id"],
+        subcommand: "set" as const,
+      },
+    ])("denies $label /setup $subcommand before accessing configuration", async (options) => {
+      const interaction = createSetupInteraction({ hasManageGuild: false, ...options });
+
+      await manager.handleSetupCommand(interaction);
+
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        options.subcommand === "set"
+          ? "You need Manage Server permissions or the Bot Admin role to run /setup set."
+          : `You need Manage Server permissions to run /setup ${options.subcommand}.`
+      );
+      expect(configStore.getGuildConfigResult).not.toHaveBeenCalled();
+      expect(configStore.setGuildConfig).not.toHaveBeenCalled();
+      expect(configStore.disableGuild).not.toHaveBeenCalled();
+      expect(reloadSpy).not.toHaveBeenCalled();
+      expect(fetchGuild).not.toHaveBeenCalled();
+    });
+
+    it.each([true, false])("resolves raw role IDs with a cached guild: %s", async (cachedGuild) => {
+      const roles = [{ id: "bot-admin-id", name: "Bot Admin" }];
+      const interaction = createSetupInteraction({
+        guildRoles: cachedGuild ? roles : undefined,
+        hasManageGuild: false,
+        memberRoleIds: ["bot-admin-id"],
+      });
+      const fetchRoles = jest.fn(async () => new Collection(roles.map((role) => [role.id, role])));
+      fetchGuild.mockResolvedValue({ roles: { fetch: fetchRoles } });
+
+      await manager.handleSetupCommand(interaction);
+
+      expect(configStore.setGuildConfig).toHaveBeenCalledTimes(1);
+      expect(interaction.editReply).toHaveBeenCalledWith("Guild configuration saved and runtime refreshed.");
+      if (cachedGuild) {
+        expect(fetchGuild).not.toHaveBeenCalled();
+        expect(interaction.guild?.roles.fetch).toHaveBeenCalledTimes(1);
+      } else {
+        expect(fetchGuild).toHaveBeenCalledWith("guild-1");
+        expect(fetchRoles).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it.each(["role fetch fails", "guild unavailable"])("denies raw role access when %s", async (failure) => {
+      const interaction = createSetupInteraction({
+        guildRoleFetchError: failure === "role fetch fails" ? new Error("Role fetch failed") : undefined,
+        hasManageGuild: false,
+        memberRoleIds: ["bot-admin-id"],
+      });
+      jest.spyOn(console, "warn").mockImplementation(() => undefined);
+      fetchGuild.mockRejectedValue(new Error("Guild unavailable"));
+
+      await manager.handleSetupCommand(interaction);
+
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        "You need Manage Server permissions or the Bot Admin role to run /setup set."
+      );
+      expect(configStore.getGuildConfigResult).not.toHaveBeenCalled();
+      expect(configStore.setGuildConfig).not.toHaveBeenCalled();
+      expect(configStore.disableGuild).not.toHaveBeenCalled();
+      expect(reloadSpy).not.toHaveBeenCalled();
+    });
   });
 
   it("allows first-time /setup set when all required fields are provided", async () => {

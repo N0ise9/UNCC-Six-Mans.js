@@ -126,6 +126,13 @@ When a guild database is loaded for the first time, Norm auto-creates a default 
 
 After the bot is online in a guild, configure that server with `/setup set`.
 
+Setup commands only work inside a server. Access depends on the subcommand:
+
+- `/setup set`: requires **Manage Server** permission (including **Administrator**) or a role named exactly `Bot Admin` (case-sensitive).
+- `/setup show` and `/setup disable`: require **Manage Server** permission (including **Administrator**). The `Bot Admin` role alone does not grant access to these subcommands.
+
+Discord applies command permissions to `/setup` as a whole, so the command picker may show all setup subcommands even when a member cannot run them. Norm checks access for each subcommand when it runs. Existing restrictions under **Server Settings > Integrations** can still prevent access. Restart the bot after updating it so `/setup` is registered again with the current permissions.
+
 Current `/setup set` shape:
 
 ```text
@@ -139,10 +146,14 @@ database_url:<postgres connection string>
 [enable_1v1:true|false] ... [enable_12v12:true|false]
 ```
 
-Required fields:
+Required fields for first-time setup:
 - `queue_channel`
 - `leaderboard_channel`
 - `database_url`
+
+For later updates, provide only the options you want to change; omitted options keep their stored values.
+
+Updating other settings, such as `chat_channel`, preserves active API status monitoring when `api_status_channel` stays the same. Existing status messages stay in place and regular service checks continue on their current schedule. Changing `api_status_channel` initializes monitoring in the new channel; `/setup disable` stops monitoring for that guild. A failed runtime reload also stops that guild's monitoring until the runtime can load successfully.
 
 Optional fields:
 - `chat_channel`
